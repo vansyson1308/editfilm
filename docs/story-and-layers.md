@@ -35,10 +35,17 @@ order, the blink as the mark of a completed thought, cut rates set against blink
 representative frame of a shot, and trying versions against each other.
 
 A **shot** is read from the picture: at each moment, the topmost enabled clip of footage (media,
-subclips, nested sequences) that shows its whole picture. Titles, graphics and adjustment layers
-ride on a shot and do not start one. Neither does a clip masked down to a region, which is what
-`layers.extract`, `layers.lift` and `layers.retime` make: it rides on the shot under it. (With
-nothing whole on screen, the lowest masked clip is the shot.) A **cut** is where the shot's clip
+subclips, nested sequences) that shows a whole picture. Titles, graphics and adjustment layers
+ride on a shot and do not start one. Neither does footage that shows only part of a picture:
+
+- a clip masked down to a region, which is what `layers.extract`, `layers.lift` and
+  `layers.retime` make;
+- footage with an alpha channel: a logo, a watermark, a plate;
+- a clip placed over less than half the frame: a picture in a picture, a face camera in a
+  corner. (Letterboxed footage covers most of the frame and is a shot.)
+
+These ride on the shot under them, so a watermark across the whole film hides no cut. With
+nothing whole on screen, the lowest of them is the shot. A **cut** is where the shot's clip
 changes. Black between clips counts as a shot, except at the head and tail.
 
 A cut need not fall on a frame of the sequence (a clip re-timed to 66.67 frames, a trim made in
@@ -78,8 +85,8 @@ For each cut:
 
 | Field | Meaning |
 |---|---|
-| `change` | How different the last outgoing and first incoming frames are (`difference`, 0…1), how alike they are in what is where (`likeness`, −1…1, `null` for a frame too even to have a pattern), and what that reads as: `match` (difference below 0.035, the same picture), `jump` (0.035 to 0.13: changed, but not enough to read as a new shot), `clean` (a new picture). `likeness` qualifies a `jump`: at 0.6 or more it is the same picture, shifted, and a jump cut for certain; below that it may also be a new shot in the same tones (two night exteriors, two shots in one grey room), which two frames alone cannot tell from a subject that hopped on a plain backdrop, and the issue says to look. Inside a transition the frames outside it are compared. |
-| `eye` | Where the eye most likely rests before and after, and the `travel` between them as a fraction of the frame diagonal. Contrast draws the eye; movement draws it ten times as hard, but only movement gathered in one place. When the whole picture moves (water, foliage, a pan, a hand-held frame) it leads the eye nowhere and is left out. |
+| `change` | How different the last outgoing and first incoming frames are (`difference`, 0…1), how alike they are in what is where (`likeness`, −1…1, `null` for a frame too even to have a pattern), and what that reads as: `match` (difference below 0.035, the same picture), `jump` (0.035 to 0.13: changed, but not enough to read as a new shot), `clean` (a new picture). `likeness` qualifies a `jump`: at 0.6 or more it is the same picture, shifted, and a jump cut for certain; below that, or with no pattern to compare, it may also be a new shot in the same tones (two night exteriors, two shots in one grey room), which two frames alone cannot tell from a subject that hopped on a plain backdrop, and the issue says to look. A cut to or from black is never called a jump cut. Inside a transition the frames outside it are compared. |
+| `eye` | Where the eye most likely rests before and after (fractions of the frame's width and height), and the `travel` between them as a fraction of the frame's diagonal as displayed, so that it means the same in a wide frame and a vertical one. Contrast draws the eye; movement draws it ten times as hard, but only movement gathered in one place. When the whole picture moves (water, foliage, a pan, a hand-held frame) it leads the eye nowhere and is left out. |
 | `direction` | Dominant horizontal movement on each side (−1 left, +1 right, 0 none) and whether it `reverses`. |
 | `light` | Mean luma on each side. |
 | `sound` | `pause`: whether the mix drops at least 12 dB at the cut against the half second before it (`null` without sound). `edit`: `straight`, `L`, `J`, `L+J`, `continuous`, or `null` when neither clip has linked sound. `continuous` is one unbroken recording running under the cut on every track it is on (a film cut into pieces after it was mixed): nothing changes there for the ear, and it is not a split edit. A clip's sound is all of its linked sound, on however many tracks. |
@@ -114,7 +121,8 @@ Candidate cut points in a timeline clip (sequence time) or in a project item's r
   quite still.
 - `both`: a movement that completes within four frames of a phrase end.
 
-A picture clip is read with all the sound linked to it, and a sound clip with its linked picture.
+A picture clip is read with all the sound linked to it, and a sound clip with its linked picture
+(where that picture clip is on the timeline).
 Sound is looked for only where the clip has sound: after a split edit, or under a sound clip
 shorter than its picture, the stretch with nothing in it is not taken for a pause, and `notes`
 says so. `analysed` says whether sound and picture could actually be read; `notes` says why
@@ -140,7 +148,8 @@ Without `item`: one frame per shot of the active sequence, the one of five frame
 the shot that is most like the other four (always a frame the shot itself is on screen for). With
 `item`: `count` frames spread evenly across that clip's media (for a subclip, across the subclip).
 Cells run left to right, top to bottom, labelled with their number and time, and `cells` says what
-each is. A board whose sheet (whole rows of cells, with the gaps between them) would exceed
+each is. Frames are laid out as they are shown: anamorphic footage is not squeezed. `path` must
+end in `.png` and may not be a file the project reads. A board whose sheet (whole rows of cells, with the gaps between them) would exceed
 16 million pixels is refused before anything is rendered, and the message gives the size it would
 have had: lower `width`, `max` or `count`. The MCP tool `story_board` takes the same options
 (snake case, no `path`) and returns the image.
@@ -174,12 +183,19 @@ item has; a `name` is used as it is given.
 between the active sequence and another:
 
 - `shots`: each shot of the active sequence lined up with the shot of the other version that shows
-  the same footage. `status` is `same`, `changed` or `new`; `what` lists `moved`, `shorter`,
-  `longer`, `looks different`; `there` is the other version's shot, `shiftSeconds` how far it
-  moved. With `picture`, up to `limit` shots are also rendered in both versions and compared
+  the same footage (footage used twice in a film is lined up use for use). `status` is `same`,
+  `changed` or `new`; `what` is a list of `moved`, `shorter`, `longer`, `looks different` (empty
+  when nothing is); `there` is the other version's shot, `shiftSeconds` how far it moved; a `new`
+  row says why in `note`. A shot that plays reversed or holds a frame cannot be lined up by
+  time: it is the same shot where the other version plays the same stretch the same way, and
+  `new` otherwise.
+- With `picture`, up to `limit` shots are also rendered in both versions and compared
   (`picture.reads`: `none`, `subtle`, `visible`, `strong`), which is how a grade or a layer shows
-  up. A shot that plays reversed or held is reported as `new` (it cannot be lined up by time).
+  up. When the two sequences' frames are not the same shape (a 16:9 master against a vertical
+  version) no picture can be compared: `picture` is `null` and `notes` says so.
 - `shotsOnlyThere`: shots of the other version this one no longer has.
+- `summary` counts every shot. At most 500 rows are listed on each side; `truncated` and `notes`
+  say when there are more.
 - `cutsShared`, `cutsOnlyHere`, `cutsOnlyThere` (cuts within half a frame are the same cut), the
   rhythm of both, and `secondsDifference`.
 - `sameShots`: the same stretches of the same footage at the same times, with the same effects on
@@ -210,17 +226,20 @@ editable afterwards.
 
 | Command | Parameters | What it does |
 |---|---|---|
-| `layers.extract` | `clip`, `region`, `feather`=12, `follow`=false, `cutOut`=false, `name`? | Copies the clip onto a new track above it and masks the copy to the region. `follow` tracks the mask through the clip. `cutOut` takes the region out of the original. |
-| `layers.cleanPlate` | `clip`, `path` (PNG), `samples`=15, `region`?, `feather`=24, `place`=true | Writes the per-pixel median of `samples` frames across the clip, imports it and lays it on a new track above the clip, masked to `region` when one is given. Reports `stillness` and `pictureChange`. |
+| `layers.extract` | `clip`, `region`, `feather`=12, `follow`=false, `cutOut`=false, `name`? | Copies the clip onto a new track above it and masks the copy to the region. `follow` tracks the mask through the clip. `cutOut` takes the region out of the original. The picture is unchanged until the layer is moved or altered. |
+| `layers.cleanPlate` | `clip`, `path` (PNG), `samples`=15, `region`?, `feather`=24, `place`=true | Writes the per-pixel median of `samples` frames across the clip, imports it and lays it on a new track above the clip, masked to `region` when one is given. Reports `stillness`. |
 | `layers.lift` | `clip`, `region`, `path`, `feather`=12, `samples`=15, `follow`=false | A plate over the region, then the region as a layer above it: the layer can be moved, scaled, re-timed or switched off without a double underneath. |
 | `layers.retime` | `clip`, `region`, `speed` (per cent), `feather`=12, `interpolation`? | Extracts the region and plays it at `speed`. Slower, the layer is trimmed to end with the shot; faster, it runs out before the shot does (`untilShotEnd` false, `seconds` says how long it covers). |
-| `layers.adjust` | `clip`, `region`, `effect`, `params`?, `feather`=12, `follow`=false | Applies an effect with a mask of the region. Reports `pictureChange`. |
+| `layers.adjust` | `clip`, `region`, `effect`, `params`?, `feather`=12, `follow`=false | Applies an effect with a mask of the region. |
+
+Every one of them returns `warnings` (a list, empty when there is nothing to watch) and
+`pictureChange` (`layers.cleanPlate` with `place` false changes no picture and reports none).
 
 What to expect:
 
 - **New tracks go above the clip and above what was already made from it** (its plates and
-  layers, in the order they were made), and under whatever else lies over it: a cutaway or a
-  title above the clip still covers them.
+  masked layers, in the order they were made), and under whatever else lies over it: a cutaway,
+  a title, or a second clip of the same footage (a punch-in) still covers them.
 - **A layer and a plate take everything that shapes the clip's picture**: its place in its media,
   speed and direction, Motion, Opacity, effects and masks. A trimmed, re-timed, reversed, graded,
   flipped or animated clip gets a plate that stays in step with it.
@@ -268,7 +287,11 @@ Lighting Effects adds one soft light where the sun or the moon stands, or at `li
   move is.
 - **It writes over what is there.** It uses the clip's Color Grading and Lighting Effects if it
   has them, replacing the Basic Correction values and the first light; `warnings` says when a
-  grade that was already set is replaced. Running it again rewrites the same two effects.
+  grade that was already set is replaced. Running it again rewrites the same two effects. An
+  effect with a mask is a region's own adjustment (`layers.adjust`): it is left alone, and the
+  shot gets a grade of its own.
+- `lightStrength` 0 adds no light, and switches off one that is there (keeping its settings).
+- 00:00 to 24:00 is the whole day; 24:00 to 00:00 is no time at all.
 - A clip that shows one moment of its media (a frame hold with Hold Filters) has no time for the
   light to change in: it gets the light of `time`, still, and `keyframes` is 0.
 - `pictureChange` says how much the grade shows. A clip on a locked track is refused.
@@ -285,6 +308,11 @@ sensitivity that is right for the rest of the film, and is still one sharp step 
 stretch. Those are found too (`lookAlike`, on by default): they are among `cuts`, and
 `lookAlikeCuts` lists which they are, with the difference each made. A flash, a lightning stroke
 or a dropped frame changes the picture and changes it back; that is two steps, and no cut.
+Frames shown twice (slowed footage, or 25 fps media in a 50 fps sequence) are not taken for a
+quiet stretch.
+
+The lists come back with `"wait": true`. A job that is not waited for applies its cuts when it
+finishes and says how many were between look-alike shots in its message.
 
 With `"lookAlike": false` only the sensitivity decides. The cuts it leaves out are then listed as
 `nearMisses`, each with the `sensitivity` that would find it, and `warnings` names the sensitivity

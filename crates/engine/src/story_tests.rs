@@ -7,10 +7,63 @@ use serde_json::{Value, json};
 use crate::Session;
 use crate::media_test_util::tmp_dir;
 
-fn demo() -> Session {
+/// The demo project as it ships: six clips on V1 and, over the end of the second and the start of
+/// the third, a small inset (a picture in a picture, 32% in a corner) on V2.
+fn demo_as_shipped() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s
+}
+
+/// The demo with its inset laid over the whole frame, as a cutaway: a seventh shot. (Set in the
+/// project itself, so that the session has no undo step and is not dirty.)
+fn demo() -> Session {
+    let mut s = demo_as_shipped();
+    let id = s.state.active_sequence.unwrap();
+    let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+    let motion = q.video_tracks[1].items[0].effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+    motion.params.get_mut("scale").unwrap().value = filmcraft_project::ParamValue::Float(100.0);
+    motion.params.get_mut("position").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(960.0, 540.0));
+    s
+}
+
+#[test]
+fn what_shows_part_of_a_picture_rides_on_the_shot_under_it() {
+    // the inset as shipped is no shot: under it V1 cuts from the second clip to the third, and that is the cut
+    let mut s = demo_as_shipped();
+    let q = s.active_sequence().unwrap().clone();
+    let v1: Vec<ClipId> = q.video_tracks[0].items.iter().map(|i| i.id).collect();
+    let seen: Vec<Option<ClipId>> = crate::story::shots(&s.project, &q).unwrap().iter().map(|sh| sh.clip).collect();
+    assert_eq!(seen, v1.iter().copied().map(Some).collect::<Vec<_>>());
+    let r = s.execute("story.rhythm", json!({})).unwrap();
+    assert_eq!((r["shots"].as_u64(), r["cuts"].as_u64()), (Some(6), Some(5)));
+    // a picture in a picture across the whole film (a face camera) hides no cut either
+    let (item, end) = (q.video_tracks[0].items[3].item.0, q.duration());
+    let pip = s.execute("timeline.place", json!({"item": item, "track": "V3", "seconds": 0.0, "audio": false, "duration": end.0})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    s.execute("effects.setParam", json!({"clip": pip, "effect": "motion", "param": "scale", "value": 30.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": pip, "effect": "motion", "param": "position", "value": [1500.0, 200.0]})).unwrap();
+    let r = s.execute("story.rhythm", json!({})).unwrap();
+    assert_eq!((r["shots"].as_u64(), r["cuts"].as_u64()), (Some(6), Some(5)), "{r}");
+    assert_eq!(s.execute("story.cuts", json!({})).unwrap()["cutsInSequence"], 5);
+    // Laid over most of the frame it is the picture: one shot, as a letterboxed film would be.
+    s.execute("effects.setParam", json!({"clip": pip, "effect": "motion", "param": "scale", "value": 85.0})).unwrap();
+    assert_eq!(s.execute("story.rhythm", json!({})).unwrap()["shots"], 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("clip.enable", json!({"clips": [pip]})).unwrap();
+    // a logo with an alpha channel, full frame, across the film: still six shots
+    let dir = tmp_dir("story-logo");
+    let path = dir.join("logo.png");
+    let mut px = vec![0u8; 64 * 36 * 4];
+    px[..64 * 4 * 6].fill(255);
+    std::fs::write(&path, filmcraft_export::encode_png(px, 64, 36).unwrap()).unwrap();
+    let logo = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let placed = s.execute("timeline.place", json!({"item": logo, "track": "new", "seconds": 0.0, "duration": end.0})).unwrap()["clips"][0].as_u64().unwrap();
+    s.execute("effects.setParam", json!({"clip": placed, "effect": "motion", "param": "scale", "value": 3000.0})).unwrap();
+    let r = s.execute("story.rhythm", json!({})).unwrap();
+    assert_eq!((r["shots"].as_u64(), r["cuts"].as_u64()), (Some(6), Some(5)), "{r}");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn secs(v: &Value) -> f64 {
@@ -852,11 +905,12 @@ fn a_plate_over_a_shot_keeps_the_shots_sound() {
     let q = s.active_sequence().unwrap();
     let (clip, cut) = (q.video_tracks[0].items[3].id.0, q.video_tracks[0].items[3].start);
     let dir = tmp_dir("story-plate-sound");
-    // a whole-frame plate stands in for the shot's picture; the sound is still the clip's underneath
+    // a whole-frame plate stands in for the shot's picture; the shot, and its sound, are still the clip's underneath
     let plate =
         s.execute("layers.cleanPlate", json!({"clip": clip, "samples": 3, "path": dir.join("p.png").to_string_lossy()})).unwrap()["clip"].as_u64().unwrap();
     let c = s.execute("story.cuts", json!({"time": cut.0})).unwrap();
-    assert_eq!((c["cuts"][0]["to"]["clip"].as_u64(), c["cuts"][0]["sound"]["edit"].as_str()), (Some(plate), Some("straight")), "{c}");
+    assert_ne!(plate, clip);
+    assert_eq!((c["cuts"][0]["to"]["clip"].as_u64(), c["cuts"][0]["sound"]["edit"].as_str()), (Some(clip), Some("straight")), "{c}");
     // rolling the picture would pull the plate away from its clip: refused, with the way to go on
     let e = s.execute("story.splitEdit", json!({"kind": "L", "roll": "video", "time": cut.0})).unwrap_err().to_string();
     assert!(e.contains("plate") && e.contains("audio"), "{e}");
@@ -1142,5 +1196,137 @@ fn a_board_too_large_is_refused_for_what_it_would_measure() {
     // three rows fit
     let r = s.execute("story.board", json!({"item": item, "count": 12, "width": 1280, "columns": 4, "path": path})).unwrap();
     assert_eq!(r["width"], 5150);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_long_film_is_lined_up_shot_for_shot_beyond_what_is_listed() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    // a cut on every frame of the first twenty-odd seconds: well over five hundred shots
+    for frame in 1..=520 {
+        s.execute("sequence.addEdit", json!({"time": rate.tick_of(frame).0})).unwrap();
+    }
+    let shots = crate::story::shots(&s.project, s.active_sequence().unwrap()).unwrap().len();
+    assert!(shots > 520, "{shots}");
+    let shadow = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
+    let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    // nothing differs, and nothing is reported gone because it lay past the five hundredth row
+    assert_eq!((r["identical"].as_bool(), r["sameShots"].as_bool()), (Some(true), Some(true)));
+    // (the forest is in the film twice, as the cutaway and as a shot of its own: each use is lined up with itself)
+    assert_eq!(r["summary"], json!({"same": shots, "changed": 0, "new": 0, "onlyThere": 0}), "{}", r["summary"]);
+    assert!(r["shotsOnlyThere"].as_array().unwrap().is_empty());
+    assert_eq!((r["shots"].as_array().unwrap().len(), r["truncated"].as_bool()), (500, Some(true)));
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("more shots than are listed")));
+}
+
+#[test]
+fn a_reversed_or_held_shot_that_did_not_change_is_the_same_shot() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (reversed, held) = (q.video_tracks[0].items[3].id.0, q.video_tracks[0].items[4].id.0);
+    s.execute("clip.speedDuration", json!({"clips": [reversed], "speed": 100, "reverse": true})).unwrap();
+    s.execute("timeline.select", json!({"clips": [held]})).unwrap();
+    s.execute("clip.frameHoldOptions", json!({"holdOn": "in"})).unwrap();
+    let shadow = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
+    let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    assert_eq!(r["summary"], json!({"same": 7, "changed": 0, "new": 0, "onlyThere": 0}), "{r}");
+    assert_eq!(r["identical"], true);
+    // played another way, it is another shot
+    s.execute("timeline.slip", json!({"clip": reversed, "deltaFrames": 4})).unwrap();
+    let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    let row = r["shots"].as_array().unwrap().iter().find(|x| x["clip"].as_u64() == Some(reversed)).unwrap().clone();
+    // `what` is a list on every row; why a shot is new is said in `note`
+    assert_eq!((row["status"].as_str(), row["what"].clone()), (Some("new"), json!([])), "{row}");
+    assert!(row["note"].as_str().unwrap().contains("reversed or held"));
+}
+
+#[test]
+fn versions_of_another_shape_are_said_not_to_be_compared_by_picture() {
+    let mut s = demo();
+    let shadow = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
+    // the vertical version of the same cut
+    s.edit("vertical", |pr, _| {
+        let q = pr.sequence_mut(filmcraft_project::ItemId(shadow)).ok_or(crate::EngineError::NoSequence)?;
+        (q.settings.width, q.settings.height) = (1080, 1920);
+        Ok(())
+    })
+    .unwrap();
+    let r = s.execute("story.compare", json!({"with": shadow})).unwrap();
+    let rows = r["shots"].as_array().unwrap();
+    assert!(rows.iter().all(|x| x.get("picture").is_some_and(Value::is_null)), "asked for, and not compared: {rows:?}");
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("not the same shape")), "{r}");
+    // not asked for: no field, no note
+    let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    assert!(r["shots"].as_array().unwrap().iter().all(|x| x.get("picture").is_none()) && r["notes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_cut_to_black_or_between_even_frames_is_not_called_a_jump_cut() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "dark", "width": 320, "height": 180, "fps": 24.0})).unwrap();
+    let matte = |s: &mut Session, color: &str, at: f64| {
+        let item = s.execute("file.newColorMatte", json!({"color": color, "width": 320, "height": 180, "seconds": 1.0})).unwrap()["item"].as_u64().unwrap();
+        s.execute("timeline.place", json!({"item": item, "track": "V1", "seconds": at})).unwrap();
+    };
+    // near black, a second of nothing, all but black, then a shade lighter
+    matte(&mut s, "#0a0a0a", 0.0);
+    matte(&mut s, "#010101", 2.0);
+    matte(&mut s, "#0f0f0f", 3.0);
+    let r = s.execute("story.cuts", json!({})).unwrap();
+    let cuts = r["cuts"].as_array().unwrap();
+    assert_eq!(cuts.len(), 3, "{r}");
+    let says = |c: &Value, what: &str| c["issues"].as_array().unwrap().iter().any(|i| i.as_str().unwrap().contains(what));
+    // into black: the amount is a jump cut's, and there is no second picture to jump to
+    let c = &cuts[0];
+    assert_eq!((c["change"]["kind"].as_str(), c["change"]["likeness"].is_null(), c["to"]["clip"].is_null()), (Some("jump"), true, true), "{c}");
+    assert!(c["issues"].as_array().unwrap().is_empty(), "{c}");
+    // Between two even frames nothing says it is the same picture shifted: it is not called a
+    // jump cut for certain, and the two frames are left to be looked at.
+    let c = &cuts[2];
+    assert_eq!(c["change"]["kind"], "jump", "{c}");
+    assert!(says(c, "Look at the two frames") && !says(c, "jump cut: "), "{c}");
+}
+
+#[test]
+fn every_look_of_a_span_is_taken_at_any_frame_rate() {
+    let second = Tick(254_016_000_000);
+    // ten minutes at 25 fps, a look every third frame: five thousand looks, where eight a second were assumed
+    assert_eq!(crate::story::looks_in(Tick(second.0 * 600), Tick(second.0 * 3 / 25)), 5000);
+    assert_eq!(crate::story::looks_in(Tick(second.0 * 600), Tick(second.0 / 10)), 6000);
+    assert_eq!(crate::story::looks_in(Tick(second.0 * 600), Tick(second.0 / 8)), 4800);
+    // nothing to look at, and a step that is no step
+    assert_eq!(
+        (crate::story::looks_in(Tick::ZERO, second), crate::story::looks_in(Tick(-5), second), crate::story::looks_in(second, Tick::ZERO)),
+        (0, 0, 144_000)
+    );
+}
+
+#[test]
+fn a_board_is_a_png_of_its_own_and_shows_frames_as_wide_as_they_are_seen() {
+    let dir = tmp_dir("story-board-shape");
+    let movie = dir.join("clip.png");
+    // a 120×90 still whose pixels are twice as wide as they are tall: seen 240×90
+    std::fs::write(&movie, filmcraft_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap()).unwrap();
+    let mut s = Session::default();
+    let item = s.execute("file.import", json!({"paths": [movie.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    s.execute("file.newSequence", json!({"name": "wide", "width": 240, "height": 90, "fps": 24.0})).unwrap();
+    let path = dir.join("board.png").to_string_lossy().into_owned();
+    let square = s.execute("story.board", json!({"item": item, "count": 1, "width": 120, "path": path})).unwrap();
+    assert_eq!((square["width"].as_u64(), square["height"].as_u64()), (Some(120 + 12), Some(90 + 12)));
+    s.execute("clip.interpretFootage", json!({"items": [item], "pixelAspect": [2, 1]})).unwrap();
+    let wide = s.execute("story.board", json!({"item": item, "count": 1, "width": 120, "path": path})).unwrap();
+    assert_eq!((wide["width"].as_u64(), wide["height"].as_u64()), (Some(120 + 12), Some(45 + 12)), "half as tall for its width: {wide}");
+    // it writes a PNG, and never over a file the project reads
+    refuses(
+        &mut s,
+        "story.board",
+        &[
+            json!({"item": item, "path": dir.join("board.jpg").to_string_lossy()}),
+            json!({"item": item, "path": dir.join("board").to_string_lossy()}),
+            json!({"item": item, "path": movie.to_string_lossy()}),
+        ],
+    );
+    assert_eq!(std::fs::read(&movie).unwrap(), filmcraft_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap(), "the media is as it was");
     let _ = std::fs::remove_dir_all(dir);
 }

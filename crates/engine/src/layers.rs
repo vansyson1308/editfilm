@@ -276,13 +276,24 @@ fn edge_warnings(s: &Session, it: &TrackItem, what: &str) -> Vec<String> {
     )]
 }
 
-/// Whether `x` was made from `base` and lies over it: a layer (a copy of the same footage within
-/// the clip's span) or a plate (a still over exactly the clip's span).
-fn of_its_stack(p: &filmcraft_project::Project, base: &TrackItem, x: &TrackItem) -> bool {
+/// Whether `x` was made from `base` and lies over it: a layer (an unlinked copy of the same
+/// footage within the clip's span, masked down to a region) or a plate (a still over exactly the
+/// clip's span). A second clip of the same footage that is not masked is an edit of its own, a
+/// punch-in or a cutaway back to the same take, and is not part of the stack.
+pub(crate) fn of_its_stack(p: &filmcraft_project::Project, base: &TrackItem, x: &TrackItem) -> bool {
     let within = x.start >= base.start && x.end() <= base.end();
     let still =
         p.item(x.item).is_some_and(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(m.info.kind, filmcraft_media::MediaKind::Still)));
-    x.id != base.id && within && (x.item == base.item || (still && x.start == base.start && x.end() == base.end()))
+    let masked = x.effects.iter().any(|e| e.effect == "opacity" && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None));
+    let layer = x.item == base.item && x.link.is_none() && masked;
+    x.id != base.id && within && (layer || (still && x.start == base.start && x.end() == base.end()))
+}
+
+/// Whether `path` is a file some media of the project is read from.
+pub(crate) fn is_project_media(s: &Session, path: &str) -> bool {
+    s.project.items.values().any(
+        |i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(&m.media, filmcraft_project::MediaRef::File { path: used } if used == path)),
+    )
 }
 
 /// A new video track for something made from `clip`: above the clip and above the layers and
@@ -417,6 +428,7 @@ fn extract(s: &mut Session, p: &Value) -> Result<Value> {
         follow_fits(s, &it, CMD)?;
     }
     let warnings = edge_warnings(s, &it, "the layer");
+    let before = crate::story::looks_across(s, it.start, it.end());
     s.edit_group("Extract Layer", |s| {
         let layer = extract_layer(s, &it, &shape, feather, do_follow, CMD)?;
         if let Some(n) = name {
@@ -434,6 +446,8 @@ fn extract(s: &mut Session, p: &Value) -> Result<Value> {
         }
         // the layer is what the next command most likely works on
         s.state.selection = vec![layer.clip];
+        // a layer shows what was already there: until it is moved or changed this reads `none`
+        out["pictureChange"] = crate::story::change_json(&before, &crate::story::looks_across(s, it.start, it.end()));
         Ok(out)
     })
 }
@@ -532,10 +546,7 @@ fn median_plate(s: &Session, it: &TrackItem, samples: usize, cmd: &str) -> Resul
 /// on a new track over the clip, masked to `shape` when one is given.
 fn make_plate(s: &mut Session, it: &TrackItem, path: &str, samples: usize, cover: Option<(&Value, f64)>, place: bool, cmd: &str) -> Result<Plate> {
     // a path a project item already reads would change that item under its clips, and undo could not put it back
-    let in_use = s.project.items.values().any(
-        |i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(&m.media, filmcraft_project::MediaRef::File { path: used } if used == path)),
-    );
-    if in_use {
+    if is_project_media(s, path) {
         return Err(bad(cmd, format!("{path} is already media of this project; write the plate to another file")));
     }
     let (plate, w, h, still, used) = median_plate(s, it, samples, cmd)?;
@@ -651,6 +662,7 @@ fn lift(s: &mut Session, p: &Value) -> Result<Value> {
     if do_follow {
         follow_fits(s, &it, CMD)?;
     }
+    let before = crate::story::looks_across(s, it.start, it.end());
     s.edit_group("Lift Layer", |s| {
         // bottom to top, each directly above the last: the clip, the plate over the place the subject stood, the subject
         let plate = make_plate(s, &it, &path, samples, Some((&shape, feather)), true, CMD)?;
@@ -666,6 +678,9 @@ fn lift(s: &mut Session, p: &Value) -> Result<Value> {
             "mask": layer.mask,
             "of": it.id.0,
             "tracking": layer.tracking,
+            "warnings": plate.report["warnings"].clone(),
+            // the subject is back where it stood, over its plate: this reads `none` until the layer is moved
+            "pictureChange": crate::story::change_json(&before, &crate::story::looks_across(s, it.start, it.end())),
             "plate": plate.report,
             "note": "move, scale or re-time the layer (its Motion, `clip.speedDuration`), or switch it off (`clip.enable`) to take the subject out; the plate hides the original underneath",
         }))
@@ -691,6 +706,8 @@ fn retime(s: &mut Session, p: &Value) -> Result<Value> {
                 .to_string(),
         ),
     };
+    let warnings = edge_warnings(s, &it, "the layer");
+    let before = crate::story::looks_across(s, it.start, it.end());
     s.edit_group("Retime Region", |s| {
         let layer = extract_layer(s, &it, &shape, feather, false, CMD)?;
         // the layer keeps the shot's direction: Speed/Duration plays forward unless told otherwise
@@ -714,6 +731,8 @@ fn retime(s: &mut Session, p: &Value) -> Result<Value> {
             "speed": speed,
             "seconds": (covers.seconds() * 1000.0).round() / 1000.0,
             "untilShotEnd": covers >= it.duration,
+            "warnings": warnings,
+            "pictureChange": crate::story::change_json(&before, &crate::story::looks_across(s, it.start, it.end())),
             "note": "inside the region the shot plays at the new speed, outside at its own. It reads as one picture while the subject stays inside the region and the camera holds still; for a subject that leaves it, `layers.lift` first and re-time the lifted layer",
         }))
     })
@@ -755,6 +774,6 @@ fn adjust(s: &mut Session, p: &Value) -> Result<Value> {
         let tracking = if do_follow { Some(follow(s, &it, it.id, json!(index), mask)?) } else { None };
         // what it did to the picture: an adjustment nobody can see is worth knowing about
         let after = crate::story::looks_across(s, it.start, it.end());
-        Ok(json!({"clip": it.id.0, "effect": id, "index": index, "mask": mask, "tracking": tracking, "pictureChange": crate::story::change_json(&before, &after)}))
+        Ok(json!({"clip": it.id.0, "effect": id, "index": index, "mask": mask, "tracking": tracking, "warnings": [], "pictureChange": crate::story::change_json(&before, &after)}))
     })
 }

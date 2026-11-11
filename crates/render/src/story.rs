@@ -182,10 +182,13 @@ pub fn attention(cur: &Glance, prev: Option<&Glance>) -> Attention {
     }
 }
 
-/// How far the eye travels between two attention points, 0 … 1 (1 = corner to corner).
-pub fn eye_travel(a: Attention, b: Attention) -> f32 {
-    let (dx, dy) = (a.x - b.x, a.y - b.y);
-    ((dx * dx + dy * dy).sqrt() / std::f32::consts::SQRT_2).clamp(0.0, 1.0)
+/// How far the eye travels between two attention points, as a fraction of the frame's diagonal
+/// (1 = corner to corner). `aspect` is the frame's width over its height as displayed: the points
+/// are fractions of each side, and half the width of a wide frame is further than half its height.
+pub fn eye_travel(a: Attention, b: Attention, aspect: f32) -> f32 {
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect.clamp(0.05, 20.0) } else { 1.0 };
+    let (dx, dy) = ((a.x - b.x) * aspect, a.y - b.y);
+    ((dx * dx + dy * dy).sqrt() / (aspect * aspect + 1.0).sqrt()).clamp(0.0, 1.0)
 }
 
 /// The dominant on-screen motion between two frames.
@@ -665,6 +668,9 @@ pub struct Sheet {
     pub cell_h: usize,
     /// Space between cells and around the sheet, pixels.
     pub gap: usize,
+    /// The shape of the frames' pixels, width over height as (numerator, denominator): frames of
+    /// anamorphic footage are stored narrower than they are shown, and are laid out as shown.
+    pub pixel_aspect: (u32, u32),
 }
 
 /// Most cells one sheet holds.
@@ -693,13 +699,14 @@ pub fn contact_sheet(cells: &[(Image, String)], s: Sheet) -> Option<Image> {
     for (i, (img, label)) in cells.iter().enumerate() {
         let (x0, y0) = (s.gap + (i % s.columns) * (s.cell_w + s.gap), s.gap + (i / s.columns) * (s.cell_h + s.gap));
         if img.w > 0 && img.h > 0 {
-            // fit inside the cell, centred, keeping the frame's shape
-            let k = (s.cell_w as f32 / img.w as f32).min(s.cell_h as f32 / img.h as f32);
-            let (dw, dh) = (((img.w as f32 * k).round() as usize).clamp(1, s.cell_w), ((img.h as f32 * k).round() as usize).clamp(1, s.cell_h));
+            // fit inside the cell, centred, keeping the frame's shape as it is shown
+            let wide = if s.pixel_aspect.0 > 0 && s.pixel_aspect.1 > 0 { (s.pixel_aspect.0 as f32 / s.pixel_aspect.1 as f32).clamp(0.1, 10.0) } else { 1.0 };
+            let k = (s.cell_w as f32 / (img.w as f32 * wide)).min(s.cell_h as f32 / img.h as f32);
+            let (dw, dh) = (((img.w as f32 * wide * k).round() as usize).clamp(1, s.cell_w), ((img.h as f32 * k).round() as usize).clamp(1, s.cell_h));
             let (ox, oy) = (x0 + (s.cell_w - dw) / 2, y0 + (s.cell_h - dh) / 2);
             for y in 0..dh {
                 for x in 0..dw {
-                    let p = img.sample_bilinear_clamped((x as f32 + 0.5) / k - 0.5, (y as f32 + 0.5) / k - 0.5);
+                    let p = img.sample_bilinear_clamped((x as f32 + 0.5) / (k * wide) - 0.5, (y as f32 + 0.5) / k - 0.5);
                     // over the board (the frame may be transparent where nothing was drawn)
                     let i4 = ((oy + y) * w + ox + x) * 4;
                     if let Some(d) = out.px.get_mut(i4..i4 + 4) {

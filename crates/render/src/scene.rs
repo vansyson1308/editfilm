@@ -171,19 +171,26 @@ pub struct NearMiss {
 /// A difference too small for any sensitivity is not reported.
 pub fn near_misses(diffs: &[f32], opt: &SceneOptions) -> Vec<NearMiss> {
     const WINDOW: usize = 5;
+    // A difference this small is the same picture shown again: 25 fps footage in a 50 fps
+    // sequence, or a clip slowed to half speed, repeats every frame.
+    const REPEAT: f32 = 1e-5;
     let thr = opt.threshold();
     let lowest = SceneOptions { sensitivity: 100.0, ..*opt }.threshold();
     let cuts = detect_cuts(diffs, opt);
     let gap = opt.min_shot_frames.max(1);
+    // The steps at which the picture changed at all. A repeated frame says nothing about how busy
+    // the footage is: counted in, half the differences around a step would be zero, the "quiet
+    // stretch" would be quiet by construction, and a flash would have its two steps further apart.
+    let live: Vec<usize> = (1..diffs.len()).filter(|&i| diffs.get(i).is_some_and(|d| d.is_finite() && *d > REPEAT)).collect();
+    let at = |k: usize| live.get(k).and_then(|&i| diffs.get(i)).copied().unwrap_or(0.0);
     let mut out: Vec<NearMiss> = Vec::new();
-    for i in 1..diffs.len() {
-        let d = diffs[i];
-        if !d.is_finite() || d >= thr || d < lowest {
+    for (k, &i) in live.iter().enumerate() {
+        let d = at(k);
+        if d >= thr || d < lowest {
             continue;
         }
-        let lo = i.saturating_sub(WINDOW).max(1);
-        let hi = (i + WINDOW + 1).min(diffs.len());
-        let mut around: Vec<f32> = (lo..hi).filter(|&j| j != i).filter_map(|j| diffs.get(j).copied()).collect();
+        let (lo, hi) = (k.saturating_sub(WINDOW), (k + WINDOW + 1).min(live.len()));
+        let mut around: Vec<f32> = (lo..hi).filter(|&j| j != k).map(at).collect();
         around.sort_by(f32::total_cmp);
         let med = around.get(around.len() / 2).copied().unwrap_or(0.0);
         if d < 8.0 * med + 0.05 {
@@ -192,7 +199,7 @@ pub fn near_misses(diffs: &[f32], opt: &SceneOptions) -> Vec<NearMiss> {
         // A cut is one step: the picture changes and stays changed. A photographer's flash, a
         // lightning stroke or a dropped frame changes it and changes it back, which is two steps
         // a frame or two apart, and no cut.
-        let alone = (i.saturating_sub(2)..(i + 3).min(diffs.len())).filter(|&j| j != i && j >= 1).all(|j| diffs.get(j).is_none_or(|n| *n < 0.5 * d));
+        let alone = (k.saturating_sub(2)..(k + 3).min(live.len())).filter(|&j| j != k).all(|j| at(j) < 0.5 * d);
         if !alone {
             continue;
         }
@@ -378,6 +385,33 @@ mod tests {
         let mut cut = vec![0.008f32; 60];
         cut[30] = 0.20;
         assert_eq!(near_misses(&cut, &opt).len(), 1);
+    }
+
+    #[test]
+    fn repeated_frames_do_not_make_busy_footage_look_quiet() {
+        let opt = SceneOptions::default();
+        // hand-held footage: every frame differs by 0.03, and one step of 0.13 is movement, not a cut
+        let mut busy = vec![0.03f32; 60];
+        busy[30] = 0.13;
+        assert!(near_misses(&busy, &opt).is_empty());
+        // The same footage at half speed, or in a sequence of twice its frame rate: every frame
+        // is shown twice. It is no quieter for that.
+        let doubled: Vec<f32> = busy.iter().flat_map(|d| [*d, 0.0]).collect();
+        assert!(near_misses(&doubled, &opt).is_empty(), "{:?}", near_misses(&doubled, &opt));
+        // a flash in doubled footage is still two steps, now four frames apart
+        let mut flash = vec![0.008f32; 60];
+        (flash[30], flash[31]) = (0.20, 0.19);
+        let flash: Vec<f32> = flash.iter().flat_map(|d| [*d, 0.0, 0.0, 0.0]).collect();
+        assert!(near_misses(&flash, &opt).is_empty());
+        // and a look-alike cut in doubled footage is still found, at its own frame
+        let mut cut = vec![0.008f32; 60];
+        cut[30] = 0.20;
+        let cut: Vec<f32> = cut.iter().flat_map(|d| [*d, 0.0]).collect();
+        assert_eq!(near_misses(&cut, &opt).iter().map(|m| m.frame).collect::<Vec<_>>(), vec![60]);
+        // a picture that never changes and then does: nothing around it to be busy
+        let mut still = vec![0.0f32; 60];
+        still[30] = 0.20;
+        assert_eq!(near_misses(&still, &opt).len(), 1);
     }
 
     #[test]

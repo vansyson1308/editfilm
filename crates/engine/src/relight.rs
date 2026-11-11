@@ -131,8 +131,9 @@ fn clock(hour: f64) -> String {
 /// start is on the next day, so 22:00 to 02:00 is four hours through midnight, not twenty back
 /// through noon.
 fn hours_between(from: f64, to: f64) -> f64 {
-    let d = (to - from).rem_euclid(24.0);
-    if (1e-9..=24.0 - 1e-9).contains(&d) { d } else { 0.0 }
+    // midnight to midnight, written 0 to 24, is the whole day (a time-lapse); written 24 to 0 it is no time at all
+    let d = if to > from { to - from } else { (to - from).rem_euclid(24.0) };
+    if (1e-9..=24.0).contains(&d) { d } else { 0.0 }
 }
 
 /// The hours a move from `from` to `to` passes: both ends and every hour of the table between
@@ -165,6 +166,13 @@ fn write(e: &mut EffectInstance, id: &str, keys: &[(Tick, ParamValue)]) {
     }
 }
 
+/// Whether `e` is effect `id` over the clip's whole picture. One with a mask is an adjustment of a
+/// region (`layers.adjust`): relighting the shot through it would light that region alone and
+/// write over the adjustment.
+fn whole(e: &EffectInstance, id: &str) -> bool {
+    e.effect == id && e.masks.is_empty()
+}
+
 /// What a relight asks for.
 struct Ask {
     from: f64,
@@ -186,7 +194,7 @@ fn apply(it: &mut TrackItem, size: (u32, u32), ask: &Ask) -> usize {
         stops.truncate(1);
     }
     let when: Vec<Tick> = stops.iter().map(|(k, _)| at(*k)).collect();
-    if let Some(e) = it.effects.iter_mut().find(|e| e.effect == "lumetri") {
+    if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lumetri")) {
         e.enabled = true;
         write(e, "basic_on", &[(Tick::ZERO, ParamValue::Bool(true))]);
         for (i, id) in GRADE.iter().enumerate() {
@@ -194,10 +202,14 @@ fn apply(it: &mut TrackItem, size: (u32, u32), ask: &Ask) -> usize {
             write(e, id, &keys);
         }
     }
-    if let Some(e) = it.effects.iter_mut().find(|e| e.effect == "lighting_effects") {
+    // no light asked for: one that is there is switched off and otherwise left as it was
+    if ask.light_strength <= 0.0 {
+        if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lighting_effects")) {
+            e.enabled = false;
+        }
+    } else if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lighting_effects")) {
         let (w, h) = (f64::from(size.0), f64::from(size.1));
-        let on = ask.light_strength > 0.0;
-        e.enabled = on;
+        e.enabled = true;
         let lights: Vec<(Vec2, [f32; 3], f64)> = stops.iter().map(|(_, hr)| sun_at(*hr)).collect();
         let keys =
             |f: &dyn Fn(&(Vec2, [f32; 3], f64)) -> ParamValue| -> Vec<(Tick, ParamValue)> { lights.iter().zip(&when).map(|(l, t)| (*t, f(l))).collect() };
@@ -235,11 +247,11 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, format!("track {} is locked", tr.name)));
     }
     let size = filmcraft_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(CMD, "the clip has no picture"))?;
-    let has = |id: &str| it.effects.iter().any(|e| e.effect == id);
+    let has = |id: &str| it.effects.iter().any(|e| whole(e, id));
     let (need_grade, need_light) = (!has("lumetri"), !has("lighting_effects") && ask.light_strength > 0.0);
     // What is already on the clip and is about to be written over: said, not done in silence.
     let mut warnings: Vec<String> = Vec::new();
-    if let Some(e) = it.effects.iter().find(|e| e.effect == "lumetri") {
+    if let Some(e) = it.effects.iter().find(|e| whole(e, "lumetri")) {
         let set = GRADE.iter().zip(NEUTRAL).any(|(id, neutral)| {
             e.params.get(*id).is_some_and(|prm| !prm.keyframes.is_empty() || !matches!(prm.value, ParamValue::Float(v) if (v - neutral).abs() < 1e-9))
         });
@@ -249,8 +261,12 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
             );
         }
     }
-    if it.effects.iter().any(|e| e.effect == "lighting_effects") && ask.light_strength > 0.0 {
-        warnings.push("the clip already had Lighting Effects: its first light and ambience were replaced".into());
+    if let Some(e) = it.effects.iter().find(|e| whole(e, "lighting_effects")) {
+        if ask.light_strength > 0.0 {
+            warnings.push("the clip already had Lighting Effects: its first light and ambience were replaced".into());
+        } else if e.enabled {
+            warnings.push("the clip's Lighting Effects was switched off (`lightStrength` 0); its settings are as they were".into());
+        }
     }
     let hours = hours_between(from, to);
     if to < from && hours > 0.0 {

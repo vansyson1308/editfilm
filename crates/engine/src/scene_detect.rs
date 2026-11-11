@@ -338,6 +338,9 @@ pub fn poll(s: &mut Session) {
 
 fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Vec<ClipScenes>) -> Result<Value> {
     let n_cuts: usize = results.iter().map(|r| r.cuts.len()).sum();
+    // said here too: a job that was not waited for has only this to report through
+    let alike: usize = results.iter().filter(|r| r.near_taken).map(|r| r.near.len()).sum();
+    let left_out: usize = results.iter().filter(|r| !r.near_taken).map(|r| r.near.len()).sum();
     let warning = unanalysed_warning(&results);
     let warnings: Vec<&String> = warning.iter().collect();
     if n_cuts == 0 {
@@ -409,11 +412,17 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
         }
         Ok(())
     })?;
-    s.toast(format!("Scene Edit Detection: {n_cuts} cut point(s)"));
+    s.toast(match alike {
+        0 => format!("Scene Edit Detection: {n_cuts} cut point(s)"),
+        n => format!("Scene Edit Detection: {n_cuts} cut point(s), {n} of them between shots that look alike"),
+    });
+    if left_out > 0 {
+        s.toast(format!("Scene Edit Detection: {left_out} likely cut(s) between shots that look alike were left out at this sensitivity"));
+    }
     if let Some(w) = &warning {
         s.toast(w.clone());
     }
-    Ok(json!({"cuts": n_cuts, "warnings": warnings}))
+    Ok(json!({"cuts": n_cuts, "lookAlikeCuts": alike, "leftOut": left_out, "warnings": warnings}))
 }
 
 #[cfg(test)]

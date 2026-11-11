@@ -128,25 +128,33 @@ fn nearest_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<Tick>> {
 /// Pixels between the cells of a board, and around it.
 const BOARD_GAP: usize = 6;
 
-/// The height of a board cell `width` wide for a picture of `size`.
-fn cell_height(width: f64, size: (usize, usize)) -> usize {
-    ((width * size.1.max(1) as f64 / size.0.max(1) as f64).round() as usize).clamp(8, 4 * (width as usize).max(2))
+/// The height of a board cell `width` wide for a picture of `size` pixels shaped `par` (width over
+/// height): the picture as it is shown, not as it is stored.
+fn cell_height(width: f64, size: (usize, usize), par: (u32, u32)) -> usize {
+    let shown = size.0.max(1) as f64 * filmcraft_project::par_ratio(filmcraft_project::sane_par(par));
+    ((width * size.1.max(1) as f64 / shown.max(1.0)).round() as usize).clamp(8, 4 * (width as usize).max(2))
 }
 
 /// Refuse a board of `cells` frames, `width` wide, in `columns` columns, that would exceed what one
 /// sheet holds, before any frame is rendered. The sheet is whole rows with gaps between them, so
 /// it is larger than its frames put together.
-fn board_budget(cells: usize, columns: usize, width: f64, size: (u32, u32), cmd: &str) -> Result<()> {
+fn board_budget(cells: usize, columns: usize, width: f64, size: (u32, u32), par: (u32, u32), cmd: &str) -> Result<()> {
     let columns = columns.clamp(1, cells.max(1));
     let rows = cells.div_ceil(columns).max(1);
     // a pixel to spare: a frame may decode a line taller than its nominal shape
-    let cell_h = cell_height(width, (size.0 as usize, size.1 as usize)).saturating_add(1);
+    let cell_h = cell_height(width, (size.0 as usize, size.1 as usize), par).saturating_add(1);
     let w = columns.saturating_mul(width as usize).saturating_add(BOARD_GAP.saturating_mul(columns + 1));
     let h = rows.saturating_mul(cell_h).saturating_add(BOARD_GAP.saturating_mul(rows + 1));
     if w.saturating_mul(h) > filmcraft_render::story::MAX_SHEET_PIXELS {
         return Err(bad(cmd, format!("the board would be {w}×{h} pixels, more than one sheet holds; lower `width`, `max` or `count`")));
     }
     Ok(())
+}
+
+/// The sequence's frame as displayed: width over height, pixel shape included.
+fn display_aspect(q: &Sequence) -> f32 {
+    let par = filmcraft_project::sane_par(q.settings.par);
+    (f64::from(q.settings.width.max(1)) * filmcraft_project::par_ratio(par) / f64::from(q.settings.height.max(1))) as f32
 }
 
 /// The first frame of the sequence's grid at or after `t`.
@@ -191,18 +199,34 @@ fn is_footage(p: &Project, it: &TrackItem) -> bool {
         && p.item(it.item).is_some_and(|i| matches!(i.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)))
 }
 
-/// Whether a clip shows only part of its picture (an Opacity mask): a layer laid over a shot, or
-/// a shot with a piece taken out. Where a whole picture is on screen, that is the shot.
-fn is_partial(it: &TrackItem) -> bool {
-    it.effects.iter().any(|e| e.effect == "opacity" && e.enabled && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None))
+/// Whether a clip shows only part of a picture, so that it rides on a shot rather than being one
+/// while there is a whole picture on screen:
+///
+/// - a clip masked down to a region (an Opacity mask): a layer over a shot, or a shot with a piece
+///   taken out;
+/// - footage with an alpha channel: a logo, a watermark, a lower third rendered elsewhere;
+/// - a clip placed over less than half the frame: a picture in a picture, a bug in a corner.
+///   (Letterboxed footage covers three quarters of the frame and more, and is a shot.)
+fn is_partial(p: &Project, q: &Sequence, it: &TrackItem) -> bool {
+    if it.effects.iter().any(|e| e.effect == "opacity" && e.enabled && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None)) {
+        return true;
+    }
+    if p.resolve_media(it.item).is_some_and(|(_, m, _)| m.info.video.as_ref().is_some_and(|v| v.has_alpha)) {
+        return true;
+    }
+    let Some(size) = filmcraft_render::source_size(p, it.item).filter(|(w, h)| *w > 0 && *h > 0) else { return false };
+    let placed = filmcraft_render::motion_matrix(q, it, size, filmcraft_render::source_par(p, it.item), it.effect_time_at(it.start));
+    let frame = f64::from(q.settings.width.max(1)) * f64::from(q.settings.height.max(1));
+    let covered = placed.determinant().abs() * f64::from(size.0) * f64::from(size.1);
+    covered.is_finite() && covered < 0.5 * frame
 }
 
 /// The shots of a sequence, in order, without leading or trailing black.
 ///
-/// The clip of a shot is the topmost one showing its whole picture. A clip masked down to a
-/// region (what `layers.extract`, `layers.lift` and `layers.retime` make) rides on the shot under
-/// it and neither starts nor ends one; with nothing whole on screen, the lowest masked clip is
-/// the shot.
+/// The clip of a shot is the topmost one showing a whole picture. What shows part of one
+/// ([`is_partial`]: a layer made by `layers.extract`, `layers.lift` or `layers.retime`, a logo
+/// with an alpha channel, a picture in a picture) rides on the shot under it and neither starts
+/// nor ends one; with nothing whole on screen, the lowest such clip is the shot.
 pub fn shots(p: &Project, q: &Sequence) -> Result<Vec<Shot>> {
     // top track first: the clip seen is the topmost one
     let layers: Vec<Vec<(Tick, Tick, ClipId, bool)>> = q
@@ -212,7 +236,7 @@ pub fn shots(p: &Project, q: &Sequence) -> Result<Vec<Shot>> {
         .filter(|t| t.enabled)
         .map(|t| {
             let mut v: Vec<(Tick, Tick, ClipId, bool)> =
-                t.items.iter().filter(|it| is_footage(p, it)).map(|it| (it.start, it.end(), it.id, is_partial(it))).collect();
+                t.items.iter().filter(|it| is_footage(p, it)).map(|it| (it.start, it.end(), it.id, is_partial(p, q, it))).collect();
             v.sort_by_key(|c| c.0);
             v
         })
@@ -550,7 +574,7 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
     let likeness = filmcraft_render::scene::likeness(&out1.sig, &in0.sig);
     let change = Change::of(diff);
     let (eye_out, eye_in): (Attention, Attention) = (attention(&out1.glance, Some(&out0.glance)), attention(&in0.glance, Some(&in1.glance)));
-    let travel = (eye_out.strength > 0.0 && eye_in.strength > 0.0).then(|| eye_travel(eye_out, eye_in));
+    let travel = (eye_out.strength > 0.0 && eye_in.strength > 0.0).then(|| eye_travel(eye_out, eye_in, display_aspect(q)));
     let (dir_out, dir_in) = (screen_direction(drift(&out0.glance, &out1.glance)), screen_direction(drift(&in0.glance, &in1.glance)));
     let reverses = dir_out != 0 && dir_in != 0 && dir_out != dir_in;
     let pause = sound_at(s, q, t);
@@ -564,14 +588,17 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
         issues.push("media is offline at this cut: what was compared is the offline slate, not the footage. Relink the media and ask again".into());
     }
     match change {
+        // to or from black there is no second picture to jump to
+        Change::Jump if before.clip.is_none() || after.clip.is_none() => {}
         // the same picture, shifted: a jump cut for certain
-        Change::Jump if likeness.is_none_or(|l| l >= Change::SAME_PICTURE_FROM) => issues.push(
+        Change::Jump if likeness.is_some_and(|l| l >= Change::SAME_PICTURE_FROM) => issues.push(
             "jump cut: the picture changes too little to read as a new shot and too much to pass as the same one; cut to a clearly different framing, or do not cut".into(),
         ),
-        // Little differs in sum, yet what is where has changed. Two frames cannot tell a subject
-        // that hopped on a plain backdrop from a new shot in the same tones (two night exteriors).
+        // Little differs in sum, yet what is where has changed, or a frame is too even to say (fog,
+        // near black). Two frames cannot tell a subject that hopped on a plain backdrop from a new
+        // shot in the same tones (two night exteriors).
         Change::Jump => issues.push(
-            "the picture changes little in sum, but what is where in it has changed: a jump cut on a plain background, or simply a new shot in the same tones. Look at the two frames".into(),
+            "the picture changes little in sum, but it is not plainly the same picture shifted: a jump cut on a plain background, or simply a new shot in the same tones. Look at the two frames".into(),
         ),
         Change::Match if before.clip.is_some() && after.clip.is_some() => {
             issues.push("the picture barely changes: either a deliberate match cut or a cut that is not needed".into());
@@ -795,6 +822,12 @@ fn phrase_points(pr: &Probe, min_pause: f64) -> (Vec<BlinkPoint>, bool) {
     (points, heard)
 }
 
+/// How many looks `step` apart fit in `span`: every one of them, whatever the frame rate (the
+/// span is at most [`MAX_BLINK_SECONDS`] long, and a look is never less than a frame apart).
+pub(crate) fn looks_in(span: Tick, step: Tick) -> i64 {
+    (span.0 / step.0.max(1)).clamp(0, (MAX_BLINK_SECONDS * 240.0) as i64)
+}
+
 /// The cut points the picture gives, and whether any frame could be read.
 fn movement_points(pr: &Probe) -> (Vec<BlinkPoint>, bool) {
     let Some(picture) = &pr.picture else { return (Vec::new(), false) };
@@ -802,7 +835,7 @@ fn movement_points(pr: &Probe) -> (Vec<BlinkPoint>, bool) {
     // about eight looks a second are enough to see a movement start and stop
     let stride = ((pr.rate.as_f64() / 8.0).round() as i64).clamp(1, 60);
     let step = Tick(fd.0.saturating_mul(stride).max(1));
-    let n = ((pr.to - pr.from).0 / step.0).clamp(0, (MAX_BLINK_SECONDS * 8.0) as i64 + 16);
+    let n = looks_in(pr.to - pr.from, step);
     let mut prev: Option<Signature> = None;
     let mut activity: Vec<f32> = Vec::with_capacity(n as usize);
     for i in 0..n {
@@ -925,6 +958,11 @@ fn clip_probe(s: &Session, p: &Value, clip: ClipId, picture: bool) -> Result<Pro
         src.info().video.as_ref()?;
         let (v, scale) = (v.clone(), frame_scale(&src));
         Some(Box::new(move |t: Tick| {
+            // only where the picture clip is on the timeline: after a split edit the sound runs
+            // past it, over media the picture clip does not show
+            if t < v.start || t >= v.end() {
+                return None;
+            }
             let f = src.video_frame(filmcraft_media::FrameRequest { time: v.source_time_at(t), scale }).ok()?;
             Some((f.to_rgba8(), f.width as usize, f.height as usize))
         }) as Box<dyn Fn(Tick) -> Option<(Vec<u8>, usize, usize)>>)
@@ -1088,7 +1126,7 @@ fn clock(t: Tick) -> String {
 }
 
 /// One cell per shot of the active sequence: the frame most like the others sampled in the shot.
-fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize) -> Result<(Vec<Cell>, bool)> {
+fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize) -> Result<(Vec<Cell>, bool, (u32, u32))> {
     const CMD: &str = "story.board";
     let (_, q) = active(s, CMD)?;
     let rate = q.frame_rate();
@@ -1097,7 +1135,8 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize
     let wanted: Vec<(usize, &Shot)> =
         all.iter().enumerate().filter(|(_, sh)| sh.clip.is_some() && from.is_none_or(|f| sh.end > f) && to.is_none_or(|x| sh.start < x)).collect();
     let truncated = wanted.len() > max;
-    board_budget(wanted.len().min(max), columns, width, (q.settings.width, q.settings.height), CMD)?;
+    let par = filmcraft_project::sane_par(q.settings.par);
+    board_budget(wanted.len().min(max), columns, width, (q.settings.width, q.settings.height), par, CMD)?;
     let scale = (width / f64::from(q.settings.width.max(1))).clamp(0.01, 1.0) as f32;
     let mut cells = Vec::new();
     for (i, sh) in wanted.into_iter().take(max) {
@@ -1125,11 +1164,11 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize
             info: json!({"shot": i + 1, "start": time_json(sh.start, rate), "end": time_json(sh.end, rate), "frame": time_json(best.0, rate), "clip": sh.clip.map(|c| c.0), "name": clip_name(q, sh.clip)}),
         });
     }
-    Ok((cells, truncated))
+    Ok((cells, truncated, par))
 }
 
 /// `count` frames spread evenly across a project item's media.
-fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, columns: usize) -> Result<Vec<Cell>> {
+fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, columns: usize) -> Result<(Vec<Cell>, (u32, u32))> {
     const CMD: &str = "story.board";
     let pi = s.project.item(item).ok_or_else(|| bad(CMD, format!("no project item {}", item.0)))?;
     let (lo, hi) = item_span(s, item, pi);
@@ -1140,7 +1179,9 @@ fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, co
     }
     let rate = item_rate(s, item, pi);
     let (w, h) = filmcraft_render::source_size(&s.project, item).ok_or_else(|| bad(CMD, format!("`{}` has no picture", pi.name)))?;
-    board_budget(count, columns, width, (w, h), CMD)?;
+    // media is decoded as it is stored; anamorphic footage is shown wider than that
+    let par = filmcraft_render::source_par(&s.project, item).map_or((1, 1), filmcraft_project::sane_par);
+    board_budget(count, columns, width, (w, h), par, CMD)?;
     let scale = (width / f64::from(w.max(1))).clamp(0.01, 1.0) as f32;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let mut cells = Vec::new();
@@ -1153,7 +1194,7 @@ fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, co
     if cells.is_empty() {
         return Err(bad(CMD, format!("no frame of `{}` could be decoded", pi.name)));
     }
-    Ok(cells)
+    Ok((cells, par))
 }
 
 fn count_p(p: &Value, key: &str, default: usize, range: std::ops::RangeInclusive<u64>, cmd: &str) -> Result<usize> {
@@ -1172,21 +1213,31 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|x| !x.trim().is_empty())
         .map(crate::export_tools::expand_home)
         .ok_or_else(|| bad(CMD, "need `path`: where to write the PNG"))?;
+    if !path.to_ascii_lowercase().ends_with(".png") {
+        return Err(bad(CMD, "`path` must end in .png"));
+    }
+    // writing over a file the project reads would change that media under its clips
+    if crate::layers::is_project_media(s, &path) {
+        return Err(bad(CMD, format!("{path} is media of this project; write the board to another file")));
+    }
     let columns = count_p(p, "columns", 4, 1..=12, CMD)?;
     let width = count_p(p, "width", 320, 64..=1280, CMD)? as f64;
     let labels = flag_p(p, "labels", true, CMD)?;
-    let (cells, truncated, of) = match item_p(p, "item") {
-        Some(item) => (item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?, columns)?, false, "item"),
+    let (cells, truncated, par, of) = match item_p(p, "item") {
+        Some(item) => {
+            let (c, par) = item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?, columns)?;
+            (c, false, par, "item")
+        }
         None => {
-            let (c, t) = sequence_cells(s, p, width, count_p(p, "max", 48, 1..=96, CMD)?, columns)?;
-            (c, t, "sequence")
+            let (c, t, par) = sequence_cells(s, p, width, count_p(p, "max", 48, 1..=96, CMD)?, columns)?;
+            (c, t, par, "sequence")
         }
     };
     let Some(first) = cells.first() else { return Err(bad(CMD, "there is no picture to lay out")) };
     // a source may decode a little smaller or larger than asked: the cell is the asked width, shaped like the frame
     let cell_w = width as usize;
-    let cell_h = cell_height(width, (first.image.w, first.image.h));
-    let sheet = Sheet { columns: columns.min(cells.len()), cell_w, cell_h, gap: BOARD_GAP };
+    let cell_h = cell_height(width, (first.image.w, first.image.h), par);
+    let sheet = Sheet { columns: columns.min(cells.len()), cell_w, cell_h, gap: BOARD_GAP, pixel_aspect: par };
     let info: Vec<Value> = cells.iter().map(|c| c.info.clone()).collect();
     let laid: Vec<(filmcraft_render::Image, String)> = cells.into_iter().map(|c| (c.image, if labels { c.label } else { String::new() })).collect();
     let img = contact_sheet(&laid, sheet).ok_or_else(|| bad(CMD, "the board would be too large; lower `width`, `max` or `count`"))?;
@@ -1263,7 +1314,13 @@ fn split_edit(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     if roll_video {
-        if out_c != out || inc_c != inc {
+        // something made from one of the two clips lies over it and would be left behind
+        let stacked = |c: ClipId| {
+            q.find_item(c).is_some_and(|(_, base)| {
+                q.video_tracks.iter().flat_map(|t| t.items.iter()).any(|x| x.enabled && crate::layers::of_its_stack(&s.project, base, x))
+            })
+        };
+        if out_c != out || inc_c != inc || stacked(out) || stacked(inc) {
             return Err(bad(
                 CMD,
                 "a layer or a plate lies over one of the shots at this cut: rolling the picture would move it away from the clip it was made from. Roll the sound instead (`roll: \"audio\"`)",
@@ -1512,42 +1569,107 @@ fn sequence_rgba(s: &Session, id: ItemId, q: &Sequence, t: Tick) -> (Vec<u8>, us
     (img.over_black_rgba8(), img.w, img.h)
 }
 
+/// What a shot is when it cannot be lined up by time (it plays reversed, or holds a frame): the
+/// clip's footage and how it plays it. Two such shots are the same shot when these are equal.
+fn played(q: &Sequence, sh: &Shot) -> Option<(ItemId, Tick, Tick, u64, bool, Option<Tick>)> {
+    let it = q.find_item(sh.clip?)?.1;
+    Some((it.item, it.source_in, it.duration, it.speed.to_bits(), it.reverse, it.frame_hold))
+}
+
+/// What [`compare_shots`] found.
+struct ShotsCompared {
+    rows: Vec<Value>,
+    /// Shots of the other version this one has no shot for.
+    removed: Vec<Value>,
+    /// More shots than are listed on either side.
+    truncated: bool,
+    /// The two versions' frames are not the same shape, so no picture could be compared.
+    unlike_frames: bool,
+    tally: [usize; 4],
+}
+
 /// Line the shots of `mine` up with the shots of `theirs` by what they show, and say for each
 /// what is different: where it sits, how long it runs, what it looks like.
-fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId, &Sequence, &[Shot]), pictures: usize) -> (Vec<Value>, Vec<Value>) {
+fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId, &Sequence, &[Shot]), pictures: usize) -> ShotsCompared {
     let ((id, q, mine), (other_id, other, theirs)) = (here, there);
     let rate = q.frame_rate();
     let half = Tick(rate.frame_duration().0 / 2);
     let theirs_shown: Vec<Option<Shown>> = theirs.iter().map(|sh| shown(other, sh)).collect();
+    // their shots by the footage they show, so that a film of thousands of shots is lined up
+    // against the few that share each clip's footage and not against all of them
+    let mut by_item: std::collections::HashMap<ItemId, Vec<usize>> = std::collections::HashMap::new();
+    for (j, sh) in theirs.iter().enumerate() {
+        if let Some(item) = sh.clip.and_then(|c| other.find_item(c)).map(|(_, it)| it.item) {
+            by_item.entry(item).or_default().push(j);
+        }
+    }
     let mut matched = vec![false; theirs.len()];
     let mut out = Vec::new();
-    let mut compared = 0usize;
-    for (i, sh) in mine.iter().enumerate().take(MAX_LISTED) {
+    let (mut compared, mut unlike_frames) = (0usize, false);
+    // same, changed, new, and shots of mine in all
+    let mut tally = [0usize; 4];
+    for (i, sh) in mine.iter().enumerate() {
         if sh.clip.is_none() {
             continue;
         }
+        tally[3] += 1;
+        let listed = out.len() < MAX_LISTED;
         let mut row = json!({"shot": i + 1, "start": time_json(sh.start, rate), "end": time_json(sh.end, rate), "clip": sh.clip.map(|c| c.0), "name": clip_name(q, sh.clip)});
         let me = shown(q, sh);
-        // the shot of the other version that shows the most of the same footage
-        let best = me.as_ref().and_then(|m| {
-            theirs_shown
-                .iter()
-                .enumerate()
-                .filter_map(|(j, t)| {
-                    let t = t.as_ref()?;
-                    let overlap = (m.to.min(t.to) - m.from.max(t.from)).0;
-                    (t.item == m.item && (t.speed - m.speed).abs() < 1e-9 && overlap > 0).then_some((j, overlap))
-                })
-                .max_by_key(|(_, overlap)| *overlap)
-        });
-        let (Some(m), Some((j, _))) = (me.as_ref(), best) else {
-            row["status"] = json!("new");
-            row["what"] =
-                json!(if me.is_none() { "plays reversed or held: not lined up with the other version" } else { "footage the other version does not show" });
-            out.push(row);
+        let candidates = sh.clip.and_then(|c| q.find_item(c)).and_then(|(_, it)| by_item.get(&it.item)).map(Vec::as_slice).unwrap_or(&[]);
+        let Some(m) = me.as_ref() else {
+            // Reversed or held: there is no running time to line up, so it is the same shot only
+            // where the other version plays the same stretch the same way.
+            let mine_played = played(q, sh);
+            let twin = candidates.iter().copied().find(|&j| matched.get(j) == Some(&false) && theirs.get(j).is_some_and(|th| played(other, th) == mine_played));
+            match twin.and_then(|j| theirs.get(j).map(|th| (j, th))) {
+                Some((j, th)) => {
+                    if let Some(slot) = matched.get_mut(j) {
+                        *slot = true;
+                    }
+                    let shift = sh.start - th.start;
+                    let moved = shift.abs() > half;
+                    tally[usize::from(moved)] += 1;
+                    row["status"] = json!(if moved { "changed" } else { "same" });
+                    row["what"] = json!(if moved { vec!["moved"] } else { Vec::new() });
+                    row["there"] = json!({"shot": j + 1, "start": time_json(th.start, rate), "end": time_json(th.end, rate)});
+                    row["shiftSeconds"] = json!(round3(shift.seconds()));
+                }
+                None => {
+                    tally[2] += 1;
+                    row["status"] = json!("new");
+                    row["what"] = json!([]);
+                    row["note"] = json!("plays reversed or held, and the other version has no shot that plays the same stretch the same way");
+                }
+            }
+            if listed {
+                out.push(row);
+            }
             continue;
         };
-        let (Some(t), Some(th)) = (theirs_shown.get(j).and_then(Option::as_ref), theirs.get(j)) else { continue };
+        // The shot of the other version that shows the most of the same footage. Footage used
+        // twice in a film (a piece of B-roll that comes back) is shown as fully by either use: of
+        // those, the one nearest in the film, and one not already taken.
+        let best = candidates
+            .iter()
+            .filter_map(|&j| {
+                let (t, th) = (theirs_shown.get(j)?.as_ref()?, theirs.get(j)?);
+                let overlap = (m.to.min(t.to) - m.from.max(t.from)).0;
+                let free = matched.get(j) == Some(&false);
+                (t.item == m.item && (t.speed - m.speed).abs() < 1e-9 && overlap > 0)
+                    .then_some((j, (overlap, free, std::cmp::Reverse((th.start - sh.start).abs()))))
+            })
+            .max_by_key(|(_, key)| *key);
+        let Some((j, t, th)) = best.and_then(|(j, _)| Some((j, theirs_shown.get(j)?.as_ref()?, theirs.get(j)?))) else {
+            tally[2] += 1;
+            row["status"] = json!("new");
+            row["what"] = json!([]);
+            row["note"] = json!("footage the other version does not show");
+            if listed {
+                out.push(row);
+            }
+            continue;
+        };
         if let Some(slot) = matched.get_mut(j) {
             *slot = true;
         }
@@ -1564,7 +1686,7 @@ fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId
         if (len_here - len_there).abs() > half {
             what.push(if len_here < len_there { "shorter" } else { "longer" });
         }
-        if compared < pictures {
+        if compared < pictures && listed {
             compared += 1;
             let mut worst: Option<filmcraft_render::story::PictureChange> = None;
             for k in 1..=3 {
@@ -1572,6 +1694,7 @@ fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId
                 let x = lo + Tick((hi - lo).0 / 4 * k);
                 let (a, b) = (sequence_rgba(s, id, q, here_at(x)), sequence_rgba(s, other_id, other, there_at(x)));
                 if (a.1, a.2) != (b.1, b.2) {
+                    unlike_frames = true;
                     continue;
                 }
                 if let Some(c) = filmcraft_render::story::picture_change(&a.0, &b.0, a.1, a.2)
@@ -1580,29 +1703,31 @@ fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId
                     worst = Some(c);
                 }
             }
-            if let Some(c) = worst {
-                row["picture"] = json!({"mean": round3(f64::from(c.mean)), "strongest": round3(f64::from(c.strongest)), "reads": c.reads()});
-                if c.reads() != "none" {
-                    what.push("looks different");
-                }
+            // `null`: asked for and not compared (the versions' frames are not the same shape)
+            row["picture"] =
+                worst.map_or(Value::Null, |c| json!({"mean": round3(f64::from(c.mean)), "strongest": round3(f64::from(c.strongest)), "reads": c.reads()}));
+            if worst.is_some_and(|c| c.reads() != "none") {
+                what.push("looks different");
             }
         }
+        tally[usize::from(!what.is_empty())] += 1;
         row["status"] = json!(if what.is_empty() { "same" } else { "changed" });
         row["what"] = json!(what);
         row["there"] = json!({"shot": j + 1, "start": time_json(th.start, rate), "end": time_json(th.end, rate)});
         row["shiftSeconds"] = json!(round3(shift.seconds()));
         row["secondsHere"] = json!(round3(len_here.seconds()));
         row["secondsThere"] = json!(round3(len_there.seconds()));
-        out.push(row);
+        if listed {
+            out.push(row);
+        }
     }
-    let removed: Vec<Value> = theirs
-        .iter()
-        .enumerate()
-        .filter(|(j, sh)| sh.clip.is_some() && matched.get(*j) == Some(&false))
+    let gone = || theirs.iter().enumerate().filter(|(j, sh)| sh.clip.is_some() && matched.get(*j) == Some(&false));
+    let removed: Vec<Value> = gone()
         .take(MAX_LISTED)
         .map(|(j, sh)| json!({"shot": j + 1, "start": time_json(sh.start, rate), "end": time_json(sh.end, rate), "name": clip_name(other, sh.clip)}))
         .collect();
-    (out, removed)
+    let truncated = tally[3] > out.len() || gone().count() > removed.len();
+    ShotsCompared { rows: out, removed, truncated, unlike_frames, tally: [tally[0], tally[1], tally[2], gone().count()] }
 }
 
 fn compare(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1635,8 +1760,14 @@ fn compare(s: &mut Session, p: &Value) -> Result<Value> {
     let end = |v: &[Shot]| v.last().map_or(Tick::ZERO, |sh| sh.end) - v.first().map_or(Tick::ZERO, |sh| sh.start);
     let list = |v: &[Tick]| v.iter().take(MAX_LISTED).map(|t| time_json(*t, rate)).collect::<Vec<_>>();
     let pictures = if flag_p(p, "picture", true, CMD)? { count_p(p, "limit", 60, 1..=MAX_LISTED as u64, CMD)? } else { 0 };
-    let (rows, removed) = compare_shots(s, (id, q, &mine), (other_id, other, &theirs), pictures);
-    let tally = |status: &str| rows.iter().filter(|r| r["status"] == status).count();
+    let ShotsCompared { rows, removed, truncated: more_shots, unlike_frames, tally } = compare_shots(s, (id, q, &mine), (other_id, other, &theirs), pictures);
+    let mut notes: Vec<&str> = Vec::new();
+    if unlike_frames {
+        notes.push("the two sequences' frames are not the same shape (another size or aspect): their pictures were not compared, and `picture` is null");
+    }
+    if more_shots {
+        notes.push("more shots than are listed: `summary` counts them all");
+    }
     // what a shot shows: which footage, from where, how, and with what done to it
     let content = |q: &Sequence, sh: &Shot| {
         sh.clip.and_then(|c| q.find_item(c)).map(|(_, it)| (it.item, it.source_time_at(sh.start), it.speed, it.reverse, it.frame_hold, it.effects.clone()))
@@ -1646,14 +1777,15 @@ fn compare(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({
         "shots": rows,
         "shotsOnlyThere": removed,
-        "summary": {"same": tally("same"), "changed": tally("changed"), "new": tally("new"), "onlyThere": removed.len()},
+        "summary": {"same": tally[0], "changed": tally[1], "new": tally[2], "onlyThere": tally[3]},
+        "notes": notes,
         "this": {"sequence": id.0, "rhythm": rhythm_json(&mine)},
         "other": {"sequence": other_id.0, "rhythm": rhythm_json(&theirs)},
         "secondsDifference": round3((end(&mine) - end(&theirs)).seconds()),
         "cutsShared": shared,
         "cutsOnlyHere": list(&only_here),
         "cutsOnlyThere": list(&only_there),
-        "truncated": only_here.len() > MAX_LISTED || only_there.len() > MAX_LISTED,
+        "truncated": more_shots || only_here.len() > MAX_LISTED || only_there.len() > MAX_LISTED,
         "sameShots": same_shots,
         "identical": q.video_tracks == other.video_tracks && q.audio_tracks == other.audio_tracks && q.caption_tracks == other.caption_tracks,
         "note": "`sameShots`: the same stretches of the same footage at the same times, with the same effects on them. `identical`: nothing on any track differs at all, sound and titles included",

@@ -67,8 +67,21 @@ fn attention_rests_on_what_stands_out() {
     let right = glance(&frame(256, 144, 40, &[(212, 60, 24, 24, 255)]), 256, 144);
     let b = attention(&right, None);
     assert!(b.x > 0.75, "{b:?}");
-    assert!(eye_travel(a, b) > 0.4, "the eye crosses the frame: {}", eye_travel(a, b));
-    assert!(eye_travel(a, a) < 1e-6);
+    assert!(eye_travel(a, b, 16.0 / 9.0) > 0.4, "the eye crosses the frame: {}", eye_travel(a, b, 16.0 / 9.0));
+    assert!(eye_travel(a, a, 16.0 / 9.0) < 1e-6);
+    // Corner to corner is the whole diagonal whatever the frame's shape; across a wide frame is
+    // further than down it, and in a tall frame the other way about.
+    let at = |x: f32, y: f32| Attention { x, y, ..a };
+    for aspect in [16.0 / 9.0, 1.0, 9.0 / 16.0] {
+        assert!((eye_travel(at(0.0, 0.0), at(1.0, 1.0), aspect) - 1.0).abs() < 1e-5);
+    }
+    let (across, down) = (eye_travel(at(0.0, 0.5), at(1.0, 0.5), 16.0 / 9.0), eye_travel(at(0.5, 0.0), at(0.5, 1.0), 16.0 / 9.0));
+    assert!((across - 0.8716).abs() < 1e-3 && (down - 0.4903).abs() < 1e-3, "{across} {down}");
+    assert!((eye_travel(at(0.0, 0.5), at(1.0, 0.5), 9.0 / 16.0) - down).abs() < 1e-5, "a tall frame is the wide one turned");
+    // a shape that is no shape is read as square, not divided by
+    for junk in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+        assert!((eye_travel(at(0.0, 0.0), at(1.0, 0.0), junk) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5);
+    }
 }
 
 #[test]
@@ -272,7 +285,7 @@ fn cell(v: f32) -> Image {
 #[test]
 fn a_contact_sheet_reads_like_a_page() {
     let cells: Vec<(Image, String)> = (0..5).map(|i| (cell(0.1 + i as f32 * 0.2), String::new())).collect();
-    let s = Sheet { columns: 3, cell_w: 32, cell_h: 18, gap: 4 };
+    let s = Sheet { columns: 3, cell_w: 32, cell_h: 18, gap: 4, pixel_aspect: (1, 1) };
     let sheet = contact_sheet(&cells, s).unwrap();
     assert_eq!((sheet.w, sheet.h), (3 * 32 + 4 * 4, 2 * 18 + 3 * 4));
     let at = |col: usize, row: usize| sheet.get(4 + col * 36 + 16, 4 + row * 22 + 9)[0];
@@ -289,21 +302,21 @@ fn a_contact_sheet_reads_like_a_page() {
 fn a_frame_keeps_its_shape_inside_its_cell() {
     // a tall frame in a wide cell is pillarboxed, not stretched
     let tall = Image::filled(10, 40, [0.8, 0.8, 0.8, 1.0]);
-    let sheet = contact_sheet(&[(tall, String::new())], Sheet { columns: 1, cell_w: 80, cell_h: 40, gap: 0 }).unwrap();
+    let sheet = contact_sheet(&[(tall, String::new())], Sheet { columns: 1, cell_w: 80, cell_h: 40, gap: 0, pixel_aspect: (1, 1) }).unwrap();
     assert!((sheet.get(40, 20)[0] - 0.8).abs() < 1e-4, "the frame is in the middle");
     assert!((sheet.get(5, 20)[0] - 0.013).abs() < 1e-4 && (sheet.get(75, 20)[0] - 0.013).abs() < 1e-4, "board at the sides");
     // a transparent frame shows the board through
     let clear = Image::new(8, 8);
-    let sheet = contact_sheet(&[(clear, String::new())], Sheet { columns: 1, cell_w: 8, cell_h: 8, gap: 0 }).unwrap();
+    let sheet = contact_sheet(&[(clear, String::new())], Sheet { columns: 1, cell_w: 8, cell_h: 8, gap: 0, pixel_aspect: (1, 1) }).unwrap();
     assert!((sheet.get(4, 4)[0] - 0.013).abs() < 1e-4);
     // an empty frame leaves its cell blank
-    assert!(contact_sheet(&[(Image::new(0, 0), String::new())], Sheet { columns: 1, cell_w: 8, cell_h: 8, gap: 0 }).is_some());
+    assert!(contact_sheet(&[(Image::new(0, 0), String::new())], Sheet { columns: 1, cell_w: 8, cell_h: 8, gap: 0, pixel_aspect: (1, 1) }).is_some());
 }
 
 #[test]
 fn labels_are_burned_into_their_cells() {
-    let plain = contact_sheet(&[(cell(0.2), String::new())], Sheet { columns: 1, cell_w: 160, cell_h: 90, gap: 0 }).unwrap();
-    let labelled = contact_sheet(&[(cell(0.2), "12".into())], Sheet { columns: 1, cell_w: 160, cell_h: 90, gap: 0 }).unwrap();
+    let plain = contact_sheet(&[(cell(0.2), String::new())], Sheet { columns: 1, cell_w: 160, cell_h: 90, gap: 0, pixel_aspect: (1, 1) }).unwrap();
+    let labelled = contact_sheet(&[(cell(0.2), "12".into())], Sheet { columns: 1, cell_w: 160, cell_h: 90, gap: 0, pixel_aspect: (1, 1) }).unwrap();
     assert_ne!(plain, labelled);
     // only the top-left corner changed
     assert_eq!(plain.get(150, 80), labelled.get(150, 80));
@@ -311,7 +324,7 @@ fn labels_are_burned_into_their_cells() {
 
 #[test]
 fn oversized_and_empty_sheets_are_refused() {
-    let s = Sheet { columns: 4, cell_w: 32, cell_h: 18, gap: 2 };
+    let s = Sheet { columns: 4, cell_w: 32, cell_h: 18, gap: 2, pixel_aspect: (1, 1) };
     assert!(contact_sheet(&[], s).is_none());
     assert!(contact_sheet(&[(cell(0.1), String::new())], Sheet { columns: 0, ..s }).is_none());
     assert!(contact_sheet(&[(cell(0.1), String::new())], Sheet { cell_w: 2, ..s }).is_none());
@@ -458,4 +471,26 @@ fn a_change_is_measured_where_it_is_strongest() {
     assert!(picture_change(&base, &base[..8], w, h).is_none());
     assert!(picture_change(&[], &[], 0, 0).is_none());
     assert!(picture_change(&base, &base, usize::MAX, usize::MAX).is_none());
+}
+
+#[test]
+fn a_sheet_shows_anamorphic_frames_as_wide_as_they_are_seen() {
+    // a 30×40 frame of pixels twice as wide as they are tall is seen 60×40: left half white, right half black
+    let mut frame = Image::filled(30, 40, [0.0, 0.0, 0.0, 1.0]);
+    for y in 0..40 {
+        for x in 0..15 {
+            frame.px[(y * 30 + x) * 4..(y * 30 + x) * 4 + 3].fill(1.0);
+        }
+    }
+    let lay = |pixel_aspect| contact_sheet(&[(frame.clone(), String::new())], Sheet { columns: 1, cell_w: 60, cell_h: 40, gap: 0, pixel_aspect }).unwrap();
+    let wide = lay((2, 1));
+    // the frame fills the cell, and its middle is still its middle
+    assert!(wide.get(2, 20)[0] > 0.9 && wide.get(27, 20)[0] > 0.9, "white up to the middle");
+    assert!(wide.get(33, 20)[0] < 0.1 && wide.get(57, 20)[0] < 0.1, "black after it");
+    // with square pixels the same frame stands narrow in the middle of the cell, the board showing either side
+    let square = lay((1, 1));
+    assert!(square.get(2, 20)[0] < 0.05 && square.get(57, 20)[0] < 0.05, "{:?}", square.get(2, 20));
+    assert!(square.get(20, 20)[0] > 0.9 && square.get(40, 20)[0] < 0.1);
+    // a shape that is no shape is taken as square
+    assert_eq!(lay((0, 0)).px, square.px);
 }

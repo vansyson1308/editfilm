@@ -525,7 +525,7 @@ async fn story_board_returns_the_board_and_its_cells() {
     let img = image::load_from_memory(&png).unwrap();
     let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
     assert_eq!((u64::from(img.width()), u64::from(img.height())), (v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()));
-    assert_eq!((v["of"].as_str(), v["cells"].as_array().map(Vec::len), v["columns"].as_u64()), (Some("sequence"), Some(7), Some(3)), "{v}");
+    assert_eq!((v["of"].as_str(), v["cells"].as_array().map(Vec::len), v["columns"].as_u64()), (Some("sequence"), Some(6), Some(3)), "{v}");
     assert!(v.get("path").is_none(), "the temporary file is not the caller's business: {v}");
     // the same board without its labels: the same sheet, other pixels
     let bare = c.call(20, "story_board", json!({"width": 96, "columns": 3, "labels": false})).await;
@@ -566,7 +566,7 @@ async fn story_and_layer_commands_run_over_the_wire() {
         assert!(ids.iter().any(|x| x == id), "{id} is not in the catalog: {ids:?}");
     }
     let r = c.call(2, "command_run", json!({"id": "story.rhythm"})).await;
-    assert_eq!(text(&r)["cuts"], 6, "{r}");
+    assert_eq!(text(&r)["cuts"], 5, "the five cuts of V1; the inset in the corner is no shot: {r}");
     let r = c.call(3, "command_run", json!({"id": "story.cuts", "params": {"limit": 1}})).await;
     assert_eq!(text(&r)["analysed"], 1, "{r}");
     let clip = text(&r)["cuts"][0]["from"]["clip"].as_u64().unwrap();
