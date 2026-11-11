@@ -403,7 +403,7 @@ mod tests {
                 }
             }
         }
-        px.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+        px.iter_mut().skip(3).step_by(4).for_each(|a| *a = 255);
         px
     }
 
