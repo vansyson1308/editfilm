@@ -283,6 +283,7 @@ The control protocol is documented in [docs/control-protocol.md](docs/control-pr
 | [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
 | [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
 | [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
+| [docs/story-and-layers.md](docs/story-and-layers.md) | Commands that measure an edit (rhythm, cuts, blink points, the board) and work on part of a picture (layers, clean plates, relight) |
 | [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
 | [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
 | [ROADMAP.md](ROADMAP.md) | Stage, parity numbers, languages, what's next and the progress log |

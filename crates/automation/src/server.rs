@@ -182,6 +182,51 @@ pub struct ControlParams {
     pub params: Option<Value>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct BoardParams {
+    /// Project item id: lay out frames across this clip's rushes. Omit for one frame per shot of the active sequence.
+    #[serde(default)]
+    pub item: Option<u64>,
+    /// Frames to show of an `item` (default 12).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Most shots of the sequence to show (default 48).
+    #[serde(default)]
+    pub max: Option<u32>,
+    /// Only what lies after this time, in seconds.
+    #[serde(default)]
+    pub from_seconds: Option<f64>,
+    /// Only what lies before this time, in seconds.
+    #[serde(default)]
+    pub to_seconds: Option<f64>,
+    /// Frames per row (default 4).
+    #[serde(default)]
+    pub columns: Option<u32>,
+    /// Width of one frame in pixels (default 320).
+    #[serde(default)]
+    pub width: Option<u32>,
+}
+
+/// `story.board` params for a `story_board` call writing to `path`.
+fn board_params(p: BoardParams, path: &str) -> Value {
+    let mut v = json!({"path": path});
+    let fields: [(&str, Option<Value>); 7] = [
+        ("item", p.item.map(Value::from)),
+        ("count", p.count.map(Value::from)),
+        ("max", p.max.map(Value::from)),
+        ("fromSeconds", p.from_seconds.map(Value::from)),
+        ("toSeconds", p.to_seconds.map(Value::from)),
+        ("columns", p.columns.map(Value::from)),
+        ("width", p.width.map(Value::from)),
+    ];
+    for (key, value) in fields {
+        if let Some(value) = value {
+            v[key] = value;
+        }
+    }
+    v
+}
+
 fn ok_json(v: &Value) -> CallToolResult {
     CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(v).unwrap_or_default())])
 }
@@ -499,6 +544,35 @@ impl FilmcraftMcp {
     }
 
     #[tool(
+        title = "Story board",
+        description = "See the film at a glance: one representative frame per shot of the active sequence (or `count` frames across a project `item`'s rushes), laid out left to right, top to bottom, each labelled with its number and time. Returns the PNG and, as JSON, what each frame is (shot, times, clip).",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn story_board(&self, Parameters(p): Parameters<BoardParams>) -> Result<CallToolResult, McpError> {
+        // The command writes a file (the bridged app can hand back nothing else): a fresh,
+        // owner-only folder, as for screenshots, removed when the call returns.
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(e) => return Ok(fail(format!("story_board: {e}"))),
+        };
+        let path = dir.path().join("board.png");
+        let info = match self.run("story.board", board_params(p, &path.to_string_lossy())).await {
+            Ok(v) => v,
+            Err(e) => return Ok(fail(e)),
+        };
+        let png = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) => return Ok(fail(format!("story_board: {e}"))),
+        };
+        // the temporary path means nothing to the caller
+        let mut info = info;
+        if let Some(o) = info.as_object_mut() {
+            o.remove("path");
+        }
+        Ok(png_result(&png, &serde_json::to_string_pretty(&info).unwrap_or_default()))
+    }
+
+    #[tool(
         title = "Live app: UI state",
         description = "Live app: UI state (tool, workspace, panels, timeline zoom, playback, selection, fps).",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
@@ -624,7 +698,7 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`).";
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep and compare versions. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the frame; `color.relight` grades a shot toward a time of day. These work from the frames that exist: none of them generates new picture content.";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";
