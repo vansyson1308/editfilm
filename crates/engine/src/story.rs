@@ -88,7 +88,13 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             split_edit,
         ),
         edit("story.shadowCut", "Keep a Shadow Cut", r#"{"name":str?}"#, shadow_cut),
-        query("story.compare", "Compare With Another Cut", r#"{"with":sequenceItemId}"#, compare),
+        query(
+            "story.compare",
+            "Compare With Another Cut",
+            r#"{"with":sequenceItemId,"picture":bool=true (also compare what each shot looks like),"limit":n=60 (shots compared by picture)}"#,
+            compare,
+        ),
+        query("sequence.clips", "List Clips", r#"{"fromSeconds":f64?,"toSeconds":f64?,"track":"V1"|"A2"? (default: every track)}"#, list_clips),
     ]
 }
 
@@ -119,14 +125,40 @@ fn nearest_p(s: &Session, p: &Value, cmd: &str) -> Result<Option<Tick>> {
     }
 }
 
-/// Refuse a board whose `cells` frames of `width`×`height` pixels would exceed what one sheet holds,
-/// before any frame is rendered.
-fn board_budget(cells: usize, width: f64, size: (u32, u32), cmd: &str) -> Result<()> {
-    let height = width * f64::from(size.1.max(1)) / f64::from(size.0.max(1));
-    if cells as f64 * width * height > filmcraft_render::story::MAX_SHEET_PIXELS as f64 {
-        return Err(bad(cmd, "the board would be too large; lower `width`, `max` or `count`"));
+/// Pixels between the cells of a board, and around it.
+const BOARD_GAP: usize = 6;
+
+/// The height of a board cell `width` wide for a picture of `size`.
+fn cell_height(width: f64, size: (usize, usize)) -> usize {
+    ((width * size.1.max(1) as f64 / size.0.max(1) as f64).round() as usize).clamp(8, 4 * (width as usize).max(2))
+}
+
+/// Refuse a board of `cells` frames, `width` wide, in `columns` columns, that would exceed what one
+/// sheet holds, before any frame is rendered. The sheet is whole rows with gaps between them, so
+/// it is larger than its frames put together.
+fn board_budget(cells: usize, columns: usize, width: f64, size: (u32, u32), cmd: &str) -> Result<()> {
+    let columns = columns.clamp(1, cells.max(1));
+    let rows = cells.div_ceil(columns).max(1);
+    // a pixel to spare: a frame may decode a line taller than its nominal shape
+    let cell_h = cell_height(width, (size.0 as usize, size.1 as usize)).saturating_add(1);
+    let w = columns.saturating_mul(width as usize).saturating_add(BOARD_GAP.saturating_mul(columns + 1));
+    let h = rows.saturating_mul(cell_h).saturating_add(BOARD_GAP.saturating_mul(rows + 1));
+    if w.saturating_mul(h) > filmcraft_render::story::MAX_SHEET_PIXELS {
+        return Err(bad(cmd, format!("the board would be {w}×{h} pixels, more than one sheet holds; lower `width`, `max` or `count`")));
     }
     Ok(())
+}
+
+/// The first frame of the sequence's grid at or after `t`.
+fn frame_from(rate: FrameRate, t: Tick) -> Tick {
+    let f = rate.frame_at(t);
+    let on = rate.tick_of(f);
+    if on < t { rate.tick_of(f.saturating_add(1)) } else { on }
+}
+
+/// The frame of the sequence's grid on screen just before `t`.
+fn frame_before(rate: FrameRate, t: Tick) -> Tick {
+    rate.snap((t - Tick(1)).max(Tick::ZERO))
 }
 
 /// A time as every form a caller might want.
@@ -159,16 +191,28 @@ fn is_footage(p: &Project, it: &TrackItem) -> bool {
         && p.item(it.item).is_some_and(|i| matches!(i.kind, ItemKind::Media(_) | ItemKind::Subclip { .. } | ItemKind::Sequence(_)))
 }
 
+/// Whether a clip shows only part of its picture (an Opacity mask): a layer laid over a shot, or
+/// a shot with a piece taken out. Where a whole picture is on screen, that is the shot.
+fn is_partial(it: &TrackItem) -> bool {
+    it.effects.iter().any(|e| e.effect == "opacity" && e.enabled && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None))
+}
+
 /// The shots of a sequence, in order, without leading or trailing black.
+///
+/// The clip of a shot is the topmost one showing its whole picture. A clip masked down to a
+/// region (what `layers.extract`, `layers.lift` and `layers.retime` make) rides on the shot under
+/// it and neither starts nor ends one; with nothing whole on screen, the lowest masked clip is
+/// the shot.
 pub fn shots(p: &Project, q: &Sequence) -> Result<Vec<Shot>> {
     // top track first: the clip seen is the topmost one
-    let layers: Vec<Vec<(Tick, Tick, ClipId)>> = q
+    let layers: Vec<Vec<(Tick, Tick, ClipId, bool)>> = q
         .video_tracks
         .iter()
         .rev()
         .filter(|t| t.enabled)
         .map(|t| {
-            let mut v: Vec<(Tick, Tick, ClipId)> = t.items.iter().filter(|it| is_footage(p, it)).map(|it| (it.start, it.end(), it.id)).collect();
+            let mut v: Vec<(Tick, Tick, ClipId, bool)> =
+                t.items.iter().filter(|it| is_footage(p, it)).map(|it| (it.start, it.end(), it.id, is_partial(it))).collect();
             v.sort_by_key(|c| c.0);
             v
         })
@@ -182,16 +226,21 @@ pub fn shots(p: &Project, q: &Sequence) -> Result<Vec<Shot>> {
     let mut out: Vec<Shot> = Vec::new();
     for w in bounds.windows(2) {
         let (Some(&a), Some(&b)) = (w.first(), w.get(1)) else { continue };
-        let mut top = None;
+        let (mut top, mut part) = (None, None);
         for (layer, i) in layers.iter().zip(at.iter_mut()) {
             while layer.get(*i).is_some_and(|c| c.1 <= a) {
                 *i += 1;
             }
-            if let Some(c) = layer.get(*i).filter(|c| c.0 <= a) {
-                top = Some(c.2);
-                break;
+            match layer.get(*i).filter(|c| c.0 <= a) {
+                Some(c) if c.3 => part = Some(c.2),
+                Some(c) => {
+                    top = Some(c.2);
+                    break;
+                }
+                None => {}
             }
         }
+        let top = top.or(part);
         match out.last_mut() {
             Some(last) if last.clip == top && last.end == a => last.end = b,
             _ => out.push(Shot { start: a, end: b, clip: top }),
@@ -259,7 +308,11 @@ fn rhythm_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let total = (t1 - t0).seconds();
     // at most 600 windows: a longer film gets wider ones, and the result says how wide
     let window = window.max(total / 600.0);
-    let n_windows = ((total / window).ceil() as usize).clamp(1, 600);
+    // A tail shorter than half a window is counted with the window before it: on its own, one
+    // cut in its second and a half would read as forty a minute.
+    let whole = (total / window).floor();
+    let tail = total - whole * window;
+    let n_windows = (whole as usize + usize::from(tail >= window / 2.0 || whole < 1.0)).clamp(1, 600);
     let mut counts = vec![0u32; n_windows];
     for c in &cuts {
         let i = (((*c - t0).seconds() / window) as usize).min(n_windows - 1);
@@ -271,9 +324,9 @@ fn rhythm_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         .iter()
         .enumerate()
         .map(|(i, k)| {
-            let len = (total - i as f64 * window).min(window).max(1e-6);
+            let len = if i + 1 == n_windows { total - i as f64 * window } else { window }.max(1e-6);
             let cpm = f64::from(*k) * 60.0 / len;
-            json!({"startSeconds": round3(t0.seconds() + i as f64 * window), "cuts": k, "cutsPerMinute": round3(cpm), "pace": Pace::of(cpm).label()})
+            json!({"startSeconds": round3(t0.seconds() + i as f64 * window), "seconds": round3(len), "cuts": k, "cutsPerMinute": round3(cpm), "pace": Pace::of(cpm).label()})
         })
         .collect();
     let fd = rate.frame_duration().0.max(1);
@@ -291,7 +344,9 @@ fn rhythm_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let frantic = windows.iter().filter(|w| w["pace"] == "frantic").count();
     if frantic > 0 {
-        notes.push(format!("{frantic} window(s) cut faster than 40 a minute, beyond the range of blink rates: the audience cannot read each shot there"));
+        notes.push(format!(
+            "{frantic} window(s) cut faster than 40 a minute, beyond the range of blink rates: shots there are felt more than read. A montage, a trailer or a music video is cut that way on purpose; a scene meant to be followed is not"
+        ));
     }
     if !flashes.is_empty() {
         notes.push(format!("{} shot(s) are shorter than {flash_frames} frames: flashes, seen but barely read", flashes.len()));
@@ -320,12 +375,14 @@ fn rhythm_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 struct Look {
     glance: Glance,
     sig: Signature,
+    /// The frame drew the offline slate for some clip: it is not the footage.
+    offline: bool,
 }
 
 fn look(s: &Session, scale: f32, t: Tick) -> Result<Look> {
-    let img = s.try_render_program_at(scale, t)?;
+    let (img, offline) = s.try_render_program_with_offline_at(scale, t)?;
     let rgba = img.over_black_rgba8();
-    Ok(Look { glance: Glance::from_rgba(&rgba, img.w, img.h), sig: signature(&rgba, img.w, img.h) })
+    Ok(Look { glance: Glance::from_rgba(&rgba, img.w, img.h), sig: signature(&rgba, img.w, img.h), offline: !offline.is_empty() })
 }
 
 fn analysis_scale(q: &Sequence) -> f32 {
@@ -358,31 +415,96 @@ fn sound_at(s: &Session, q: &Sequence, t: Tick) -> Option<bool> {
     Some(here <= loud - 12.0)
 }
 
-/// The audio clip linked to a video clip, if any.
-fn linked_audio(q: &Sequence, clip: ClipId) -> Option<&TrackItem> {
-    let link = q.find_item(clip)?.1.link?;
-    q.audio_tracks.iter().flat_map(|t| t.items.iter()).find(|it| it.link == Some(link))
+/// The clip whose sound belongs to a shot: the shot's own clip when it has linked sound, else the
+/// linked picture clip it stands in for. A plate or a layer made from a clip covers exactly that
+/// clip and has no sound of its own; the sound is still the clip's underneath. (A cutaway laid
+/// over part of a clip is another matter: it is a shot of its own, with no sound.)
+fn sound_carrier(q: &Sequence, clip: Option<ClipId>) -> Option<ClipId> {
+    let c = clip?;
+    let Some((_, top)) = q.find_item(c) else { return Some(c) };
+    if top.link.is_some() {
+        return Some(c);
+    }
+    q.video_tracks
+        .iter()
+        .rev()
+        .filter(|t| t.enabled)
+        .flat_map(|t| t.items.iter())
+        .find(|it| it.enabled && it.link.is_some() && it.start == top.start && it.end() == top.end())
+        .map(|it| it.id)
+        .or(Some(c))
+}
+
+/// Whether `b` carries straight on from `a` on the same track: the next stretch of the same
+/// recording, cut but not moved (a through edit). Nothing changes there for eye or ear.
+fn carries_on(a: &TrackItem, b: &TrackItem) -> bool {
+    a.item == b.item
+        && a.end() == b.start
+        && a.speed == b.speed
+        && !a.reverse
+        && !b.reverse
+        && a.frame_hold.is_none()
+        && b.frame_hold.is_none()
+        && a.audio_stream == b.audio_stream
+        && a.source_out() == b.source_in
+}
+
+/// The stretches of unbroken sound linked to a picture clip, one for each audio track that holds
+/// some (a lavalier on one track and a boom on another are both its sound): on each, the linked
+/// clip extended through any through edits before and after it. (track index, start, end)
+fn sound_spans(q: &Sequence, clip: ClipId) -> Vec<(usize, Tick, Tick)> {
+    let Some(link) = q.find_item(clip).and_then(|(_, it)| it.link) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (ti, track) in q.audio_tracks.iter().enumerate() {
+        let mut items: Vec<&TrackItem> = track.items.iter().collect();
+        items.sort_by_key(|it| it.start);
+        let Some(at) = items.iter().position(|it| it.link == Some(link)) else { continue };
+        let (mut first, mut last) = (at, at);
+        while first > 0 && items.get(first - 1).zip(items.get(first)).is_some_and(|(a, b)| carries_on(a, b)) {
+            first -= 1;
+        }
+        while items.get(last).zip(items.get(last + 1)).is_some_and(|(a, b)| carries_on(a, b)) {
+            last += 1;
+        }
+        if let (Some(a), Some(b)) = (items.get(first), items.get(last)) {
+            out.push((ti, a.start, b.end()));
+        }
+    }
+    out
 }
 
 /// How sound and picture change at a cut from `out` to `inc` at `t`: together ("straight"), sound
-/// trailing the picture ("L"), sound leading it ("J"), both ("L+J"), or `None` without linked sound.
+/// trailing the picture ("L"), sound leading it ("J"), both ("L+J"), one unbroken recording
+/// running under the cut ("continuous"), or `None` without linked sound.
 fn split_state(q: &Sequence, out: Option<ClipId>, inc: Option<ClipId>, t: Tick, half_frame: Tick) -> Option<&'static str> {
-    let trailing = out.and_then(|c| linked_audio(q, c)).map(|a| a.end() > t + half_frame);
-    let leading = inc.and_then(|c| linked_audio(q, c)).map(|a| a.start < t - half_frame);
-    match (trailing, leading) {
-        (None, None) => None,
-        (l, j) => Some(match (l.unwrap_or(false), j.unwrap_or(false)) {
-            (false, false) => "straight",
-            (true, false) => "L",
-            (false, true) => "J",
-            (true, true) => "L+J",
-        }),
+    let (a, b) = (out.map(|c| sound_spans(q, c)).unwrap_or_default(), inc.map(|c| sound_spans(q, c)).unwrap_or_default());
+    if a.is_empty() && b.is_empty() {
+        return None;
     }
+    // a stretch both sides share is one recording running under the cut: nothing changes there for the ear
+    let under = |x: &(usize, Tick, Tick)| x.1 < t - half_frame && x.2 > t + half_frame;
+    if !a.is_empty() && a.len() == b.len() && a.iter().all(|x| under(x) && b.contains(x)) {
+        return Some("continuous");
+    }
+    let trailing = a.iter().any(|x| x.2 > t + half_frame && !b.contains(x));
+    let leading = b.iter().any(|x| x.1 < t - half_frame && !a.contains(x));
+    Some(match (trailing, leading) {
+        (false, false) => "straight",
+        (true, false) => "L",
+        (false, true) => "J",
+        (true, true) => "L+J",
+    })
 }
 
-/// The video transition a cut at `t` sits in, if any: (effect id, start, end).
-fn transition_at(q: &Sequence, t: Tick) -> Option<(String, Tick, Tick)> {
-    q.video_tracks.iter().flat_map(|tr| tr.transitions.iter()).find(|x| x.start <= t && t <= x.end()).map(|x| (x.effect.effect.clone(), x.start, x.end()))
+/// The video transition the cut from `out` to `inc` at `t` sits in, if any: (effect id, start,
+/// end). A transition on some other clip that merely spans the same time (a title fading in on a
+/// higher track) is not this cut's.
+fn transition_at(q: &Sequence, t: Tick, out: Option<ClipId>, inc: Option<ClipId>) -> Option<(String, Tick, Tick)> {
+    q.video_tracks
+        .iter()
+        .flat_map(|tr| tr.transitions.iter())
+        .find(|x| x.start <= t && t <= x.end() && ((x.from.is_some() && x.from == out) || (x.to.is_some() && x.to == inc)))
+        .map(|x| (x.effect.effect.clone(), x.start, x.end()))
 }
 
 /// A caller's 0…1 judgement under `key`, if given.
@@ -412,27 +534,44 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
     // two frames each side: the last two outgoing and the first two incoming
     // Inside a transition neighbouring frames are blends of both shots and look alike by design:
     // the shots are compared where the transition has not begun and where it has ended.
-    let transition = transition_at(q, t);
+    let transition = transition_at(q, t, before.clip, after.clip);
     let (leave, arrive) = transition.as_ref().map_or((t, t), |(_, a, b)| ((*a).max(before.start + fd).min(t), (*b).min(after.end - fd).max(t)));
-    let out1 = look(s, scale, (leave - fd).max(before.start))?;
-    let out0 = look(s, scale, (leave - fd - fd).max(before.start))?;
-    let in0 = look(s, scale, arrive)?;
-    let in1 = look(s, scale, (arrive + fd).min((after.end - fd).max(arrive)))?;
+    // The programme is seen frame by frame on the sequence's grid, and a cut need not sit on it (a
+    // clip re-timed to 66.67 frames, a trim by ticks): the last frame of the outgoing shot is the
+    // one on screen just before the cut, the first of the incoming shot the first at or after it.
+    let last_out = frame_before(rate, leave);
+    let first_in = Some(frame_from(rate, arrive)).filter(|g| *g < after.end).unwrap_or(arrive);
+    let out1 = look(s, scale, last_out)?;
+    let out0 = look(s, scale, Some(last_out - fd).filter(|g| *g >= before.start).unwrap_or(last_out))?;
+    let in0 = look(s, scale, first_in)?;
+    let in1 = look(s, scale, Some(first_in + fd).filter(|g| *g < after.end).unwrap_or(first_in))?;
+    let offline = out1.offline || in0.offline;
     let diff = difference(&out1.sig, &in0.sig);
+    let likeness = filmcraft_render::scene::likeness(&out1.sig, &in0.sig);
     let change = Change::of(diff);
     let (eye_out, eye_in): (Attention, Attention) = (attention(&out1.glance, Some(&out0.glance)), attention(&in0.glance, Some(&in1.glance)));
     let travel = (eye_out.strength > 0.0 && eye_in.strength > 0.0).then(|| eye_travel(eye_out, eye_in));
     let (dir_out, dir_in) = (screen_direction(drift(&out0.glance, &out1.glance)), screen_direction(drift(&in0.glance, &in1.glance)));
     let reverses = dir_out != 0 && dir_in != 0 && dir_out != dir_in;
     let pause = sound_at(s, q, t);
-    let split = split_state(q, before.clip, after.clip, t, half);
+    // a layer or a plate over a shot has no sound of its own: the sound is the clip's underneath
+    let split = split_state(q, sound_carrier(q, before.clip), sound_carrier(q, after.clip), t, half);
     let frames = |sh: &Shot| (sh.end - sh.start).0 / fd.0.max(1);
     let flash = frames(before).min(frames(after)) < 8;
 
     let mut issues: Vec<String> = Vec::new();
+    if offline {
+        issues.push("media is offline at this cut: what was compared is the offline slate, not the footage. Relink the media and ask again".into());
+    }
     match change {
-        Change::Jump => issues.push(
+        // the same picture, shifted: a jump cut for certain
+        Change::Jump if likeness.is_none_or(|l| l >= Change::SAME_PICTURE_FROM) => issues.push(
             "jump cut: the picture changes too little to read as a new shot and too much to pass as the same one; cut to a clearly different framing, or do not cut".into(),
+        ),
+        // Little differs in sum, yet what is where has changed. Two frames cannot tell a subject
+        // that hopped on a plain backdrop from a new shot in the same tones (two night exteriors).
+        Change::Jump => issues.push(
+            "the picture changes little in sum, but what is where in it has changed: a jump cut on a plain background, or simply a new shot in the same tones. Look at the two frames".into(),
         ),
         Change::Match if before.clip.is_some() && after.clip.is_some() => {
             issues.push("the picture barely changes: either a deliberate match cut or a cut that is not needed".into());
@@ -487,7 +626,7 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
         "at": time_json(t, rate),
         "from": {"clip": before.clip.map(|c| c.0), "name": clip_name(q, before.clip), "seconds": round3(before.seconds())},
         "to": {"clip": after.clip.map(|c| c.0), "name": clip_name(q, after.clip), "seconds": round3(after.seconds())},
-        "change": {"difference": round3(f64::from(diff)), "kind": change.label()},
+        "change": {"difference": round3(f64::from(diff)), "likeness": likeness.map(|l| round3(f64::from(l))), "kind": change.label()},
         "eye": {
             "out": [round3(f64::from(eye_out.x)), round3(f64::from(eye_out.y))],
             "in": [round3(f64::from(eye_in.x)), round3(f64::from(eye_in.y))],
@@ -497,6 +636,7 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
         "light": {"out": round3(f64::from(out1.glance.mean())), "in": round3(f64::from(in0.glance.mean()))},
         "sound": {"pause": pause, "edit": split},
         "transition": transition.map(|x| x.0),
+        "offline": offline,
         "six": six,
         "issues": issues,
     }))
@@ -554,7 +694,9 @@ fn cuts_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             "most cuts change picture and sound together on the pause after a line: the audience sees only who is speaking, never who is listening. Split some edits (`story.splitEdit`) so a cut can land on a reaction".into(),
         );
     }
-    let next = (matched > pairs.len()).then(|| pairs.last().map(|(_, b)| round3(b.start.seconds() + rate.frame_duration().seconds()))).flatten();
+    // Just past the last cut analysed, rounded up: the cut after a one-frame shot is one frame
+    // on, and a value rounded to the millisecond can land beyond it.
+    let next = (matched > pairs.len()).then(|| pairs.last().map(|(_, b)| ((b.start + Tick(1)).seconds() * 1e6).ceil() / 1e6)).flatten();
     Ok(json!({
         "cutsInSequence": total,
         "analysed": cuts.len(),
@@ -565,7 +707,9 @@ fn cuts_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             "match": count(&|c| c["change"]["kind"] == "match"),
             "clean": count(&|c| c["change"]["kind"] == "clean"),
             "directionReversals": count(&|c| c["direction"]["reverses"] == true),
+            "offline": count(&|c| c["offline"] == true),
             "straightCutsOnAPause": straight_on_pause,
+            "continuousSound": count(&|c| c["sound"]["edit"] == "continuous"),
             "splitEdits": count(&|c| matches!(c["sound"]["edit"].as_str(), Some("L" | "J" | "L+J"))),
         },
         "weights": SIX.iter().map(|(n, w)| json!({"criterion": n, "weight": w})).collect::<Vec<_>>(),
@@ -585,6 +729,10 @@ struct Probe {
     rate: FrameRate,
     /// Mono samples of `[start, start + frames)` at `sample_rate`, in the caller's time.
     sound: Option<Box<dyn Fn(i64, usize) -> Option<Vec<f32>>>>,
+    /// Where there is sound to read, in the caller's time. A clip's sound can be shorter than its
+    /// picture or cut at another time (a split edit); outside this there is nothing, and nothing
+    /// is not a pause.
+    sound_span: (Tick, Tick),
     sample_rate: u32,
     /// RGBA8 frame (pixels, width, height) at a caller's time.
     picture: Option<Box<dyn Fn(Tick) -> Option<(Vec<u8>, usize, usize)>>>,
@@ -600,15 +748,18 @@ struct BlinkPoint {
     pause: Option<(Tick, Tick)>,
 }
 
-fn phrase_points(pr: &Probe, min_pause: f64) -> Vec<BlinkPoint> {
-    let Some(sound) = &pr.sound else { return Vec::new() };
+/// The cut points the sound gives, and whether any of it could be read.
+fn phrase_points(pr: &Probe, min_pause: f64) -> (Vec<BlinkPoint>, bool) {
+    let Some(sound) = &pr.sound else { return (Vec::new(), false) };
     let sr = pr.sample_rate;
     let step = filmcraft_render::story::level_step(sr);
-    let origin = pr.from - pr.lead;
-    let (a, b) = (origin.to_units_floor(i64::from(sr)), pr.to.to_units_floor(i64::from(sr)));
+    let origin = (pr.from - pr.lead).max(pr.sound_span.0);
+    let (a, b) = (origin.to_units_floor(i64::from(sr)), pr.to.min(pr.sound_span.1).to_units_floor(i64::from(sr)));
+    let mut heard = false;
     // five seconds at a time, in whole level steps, so a long clip never sits in memory at once
     let chunk = (sr as usize * 5 / step).max(1) * step;
-    let mut levels: Vec<f32> = Vec::new();
+    let mut voice_band = filmcraft_render::story::VoiceBand::new(sr);
+    let (mut whole, mut voice): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let mut at = a;
     while at < b {
         let n = usize::try_from(b - at).unwrap_or(0).min(chunk);
@@ -616,15 +767,22 @@ fn phrase_points(pr: &Probe, min_pause: f64) -> Vec<BlinkPoint> {
         if n == 0 {
             break;
         }
-        match sound(at, n) {
-            Some(mono) => levels.extend(filmcraft_render::story::levels_db(&mono, sr)),
-            None => levels.extend(std::iter::repeat_n(-100.0, n / step)),
-        }
+        let read = sound(at, n);
+        heard |= read.is_some();
+        let mono = read.unwrap_or_else(|| vec![0.0; n]);
+        whole.extend(filmcraft_render::story::levels_db(&mono, sr));
+        voice.extend(voice_band.levels_db(&mono));
         at += n as i64;
     }
     let step_s = step as f64 / f64::from(sr);
     let fd = pr.rate.frame_duration();
-    filmcraft_render::story::pauses_in_levels(&levels, step_s, min_pause, 0.4)
+    // Speech over an engine, wind or surf shows its pauses only in the band a voice lives in;
+    // sound with nothing there (a drum, a door) is read whole.
+    let mut found = filmcraft_render::story::pauses_in_levels(&voice, step_s, min_pause, 0.4);
+    if found.is_empty() {
+        found = filmcraft_render::story::pauses_in_levels(&whole, step_s, min_pause, 0.4);
+    }
+    let points = found
         .into_iter()
         .map(|pz| {
             let (ps, pe) = (origin + Tick::from_seconds_f64(pz.start), origin + Tick::from_seconds_f64(pz.end));
@@ -633,11 +791,13 @@ fn phrase_points(pr: &Probe, min_pause: f64) -> Vec<BlinkPoint> {
             let strength = 0.6 * ((pz.end - pz.start) / 1.0).clamp(0.0, 1.0) + 0.4 * (f64::from(pz.drop_db) / 30.0).clamp(0.0, 1.0);
             BlinkPoint { t, kind: "phrase", strength, pause: Some((ps, pe)) }
         })
-        .collect()
+        .collect();
+    (points, heard)
 }
 
-fn movement_points(pr: &Probe) -> Vec<BlinkPoint> {
-    let Some(picture) = &pr.picture else { return Vec::new() };
+/// The cut points the picture gives, and whether any frame could be read.
+fn movement_points(pr: &Probe) -> (Vec<BlinkPoint>, bool) {
+    let Some(picture) = &pr.picture else { return (Vec::new(), false) };
     let fd = pr.rate.frame_duration();
     // about eight looks a second are enough to see a movement start and stop
     let stride = ((pr.rate.as_f64() / 8.0).round() as i64).clamp(1, 60);
@@ -655,16 +815,25 @@ fn movement_points(pr: &Probe) -> Vec<BlinkPoint> {
             prev = sig;
         }
     }
-    settles(&activity)
+    let points = settles(&activity, (2.5 * pr.rate.as_f64() / stride as f64).round().max(2.0) as usize)
         .into_iter()
         .map(|(i, strength)| BlinkPoint { t: pr.from + Tick(step.0.saturating_mul(i as i64)), kind: "movement", strength: f64::from(strength), pause: None })
-        .collect()
+        .collect();
+    (points, prev.is_some())
 }
 
-fn find_blink_points(pr: &Probe, min_pause: f64) -> Vec<BlinkPoint> {
-    let mut points = phrase_points(pr, min_pause);
+/// What a probe found: the points, and whether its sound and its picture could be read at all.
+struct Found {
+    points: Vec<BlinkPoint>,
+    heard: bool,
+    seen: bool,
+}
+
+fn find_blink_points(pr: &Probe, min_pause: f64) -> Found {
+    let (mut points, heard) = phrase_points(pr, min_pause);
     let near = Tick(pr.rate.frame_duration().0.saturating_mul(4));
-    for m in movement_points(pr) {
+    let (moves, seen) = movement_points(pr);
+    for m in moves {
         // a movement that completes as a phrase ends is one point, and a stronger one
         match points.iter_mut().find(|x| x.kind != "movement" && (x.t - m.t).abs() <= near) {
             Some(x) => {
@@ -676,7 +845,7 @@ fn find_blink_points(pr: &Probe, min_pause: f64) -> Vec<BlinkPoint> {
     }
     points.sort_by_key(|x| x.t);
     points.retain(|x| x.t > pr.from && x.t < pr.to);
-    points
+    Found { points, heard, seen }
 }
 
 fn mono(channels: &[Vec<f32>], n: usize) -> Vec<f32> {
@@ -725,18 +894,31 @@ fn clip_probe(s: &Session, p: &Value, clip: ClipId, picture: bool) -> Result<Pro
     let (_, q) = active(s, CMD)?;
     let (track, it) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence", clip.0)))?;
     let is_video = q.track(track).is_some_and(|t| t.kind == TrackKind::Video);
-    let partner = |kind: TrackKind| -> Option<&TrackItem> {
-        let link = it.link?;
-        q.tracks(kind).iter().flat_map(|t| t.items.iter()).find(|x| x.link == Some(link) && x.id != it.id)
+    let partners = |kind: TrackKind| -> Vec<&TrackItem> {
+        let Some(link) = it.link else { return Vec::new() };
+        q.tracks(kind).iter().flat_map(|t| t.items.iter()).filter(|x| x.link == Some(link) && x.id != it.id).collect()
     };
-    let (video, audio) = if is_video { (Some(it), partner(TrackKind::Audio)) } else { (partner(TrackKind::Video), Some(it)) };
+    // a picture clip is heard through every sound clip linked to it (a lavalier and a boom are both its sound)
+    let (video, audio) = if is_video { (Some(it), partners(TrackKind::Audio)) } else { (partners(TrackKind::Video).first().copied(), vec![it]) };
     let (from, to) = blink_span(p, it.start, it.end(), CMD)?;
     let sr = q.settings.sample_rate.clamp(8_000, 192_000);
     let provider = s.media.provider(s.project.clone(), s.services.clone());
-    let sound = audio.filter(|a| s.source(a.item).is_some_and(|src| src.info().has_audio())).map(|a| {
-        let a = a.clone();
-        Box::new(move |start: i64, frames: usize| filmcraft_render::audio::clip_signal(&a, start, frames, sr, &provider).map(|ch| mono(&ch, frames)))
-            as Box<dyn Fn(i64, usize) -> Option<Vec<f32>>>
+    let audible: Vec<TrackItem> = audio.into_iter().filter(|a| s.source(a.item).is_some_and(|src| src.info().has_audio())).cloned().collect();
+    // only where all of them have sound: beyond a clip's own edge its signal is nothing at all
+    let sound_span = (audible.iter().map(|a| a.start).max().unwrap_or(from), audible.iter().map(TrackItem::end).min().unwrap_or(to));
+    let sound = (!audible.is_empty() && sound_span.0.max(from) < sound_span.1.min(to)).then(|| {
+        Box::new(move |start: i64, frames: usize| {
+            let mut sum: Option<Vec<f32>> = None;
+            for a in &audible {
+                let Some(ch) = filmcraft_render::audio::clip_signal(a, start, frames, sr, &provider) else { continue };
+                let one = mono(&ch, frames);
+                match &mut sum {
+                    Some(acc) => acc.iter_mut().zip(one).for_each(|(x, y)| *x += y),
+                    None => sum = Some(one),
+                }
+            }
+            sum
+        }) as Box<dyn Fn(i64, usize) -> Option<Vec<f32>>>
     });
     let picture = video.filter(|_| picture).and_then(|v| {
         let src = s.source(v.item)?;
@@ -754,6 +936,7 @@ fn clip_probe(s: &Session, p: &Value, clip: ClipId, picture: bool) -> Result<Pro
         lead: (from - it.start).clamp(Tick::ZERO, Tick::from_seconds_f64(2.0)),
         rate: q.frame_rate(),
         sound,
+        sound_span,
         sample_rate: sr,
         picture,
         media_time: Some(Box::new(move |t| media.source_time_at(t))),
@@ -766,8 +949,8 @@ fn item_probe(s: &Session, p: &Value, item: ItemId, picture: bool) -> Result<Pro
     let pi = s.project.item(item).ok_or_else(|| bad(CMD, format!("no project item {}", item.0)))?;
     let src = s.source(item).ok_or_else(|| bad(CMD, format!("`{}` has no media to analyse", pi.name)))?;
     let info = src.info().clone();
-    let duration = crate::commands::full_duration(s, pi);
-    let (from, to) = blink_span(p, Tick::ZERO, duration, CMD)?;
+    let (lo, hi) = item_span(s, item, pi);
+    let (from, to) = blink_span(p, lo, hi, CMD)?;
     let rate = info.video.as_ref().map_or(FrameRate::FPS_24, |v| v.frame_rate).sane();
     let sr = info.audio().map_or(48_000, |a| a.sample_rate).clamp(8_000, 192_000);
     let sound = info.has_audio().then(|| {
@@ -782,7 +965,25 @@ fn item_probe(s: &Session, p: &Value, item: ItemId, picture: bool) -> Result<Pro
             Some((f.to_rgba8(), f.width as usize, f.height as usize))
         }) as Box<dyn Fn(Tick) -> Option<(Vec<u8>, usize, usize)>>
     });
-    Ok(Probe { from, to, lead: from.clamp(Tick::ZERO, Tick::from_seconds_f64(2.0)), rate, sound, sample_rate: sr, picture, media_time: None })
+    // The media is there before a subclip's In point too: it is read as context, so that a phrase
+    // already under way where the span begins is known to be a phrase.
+    let lead = from.clamp(Tick::ZERO, Tick::from_seconds_f64(2.0));
+    Ok(Probe { from, to, lead, rate, sound, sound_span: (Tick::ZERO, Tick(i64::MAX)), sample_rate: sr, picture, media_time: None })
+}
+
+/// The stretch of media time a project item covers. A subclip is a stretch of its parent's media
+/// and is read from the parent's source, so its times are the parent's: it runs from its In point
+/// to its Out point, not from 0.
+fn item_span(s: &Session, item: ItemId, pi: &filmcraft_project::ProjectItem) -> (Tick, Tick) {
+    match s.project.resolve_media(item) {
+        Some((_, _, Some(range))) => (range.start, range.end()),
+        _ => (Tick::ZERO, crate::commands::full_duration(s, pi)),
+    }
+}
+
+/// The frame rate of a project item's media (a subclip's is its parent's).
+fn item_rate(s: &Session, item: ItemId, pi: &filmcraft_project::ProjectItem) -> FrameRate {
+    s.project.resolve_media(item).and_then(|(parent, _, _)| s.project.item(parent)).unwrap_or(pi).frame_rate().sane()
 }
 
 fn blink_points(s: &mut Session, p: &Value) -> Result<Value> {
@@ -803,8 +1004,22 @@ fn blink_points(s: &mut Session, p: &Value) -> Result<Value> {
     if probe.sound.is_none() && probe.picture.is_none() {
         return Err(bad(CMD, "there is neither sound nor picture to analyse"));
     }
-    let points = find_blink_points(&probe, min_pause);
+    let Found { points, heard, seen } = find_blink_points(&probe, min_pause);
     let rate = probe.rate;
+    let mut notes: Vec<&str> = Vec::new();
+    if probe.sound.is_some() && !heard {
+        notes.push("the sound could not be read (media offline, or a stream that does not decode): no phrase was looked for");
+    } else if probe.sound.is_some() && !points.iter().any(|x| x.kind != "movement") {
+        notes.push("the sound has no pause after a phrase here: a steady background, music, or speech that never stops for `minPause`");
+    }
+    if probe.picture.is_some() && !seen {
+        notes.push("no frame of the picture could be read (media offline, or a stream that does not decode): no movement was looked for");
+    } else if probe.picture.is_some() && !points.iter().any(|x| x.kind != "phrase") {
+        notes.push("nothing in the picture starts and then stops here: it holds still, or it moves evenly all the way through");
+    }
+    if clip.is_some() && probe.sound.is_some() && (probe.sound_span.0 > probe.from || probe.sound_span.1 < probe.to) {
+        notes.push("the clip's linked sound does not run the whole length of the clip (a split edit, or a shorter sound clip): phrases were looked for only where there is sound");
+    }
     let listed: Vec<Value> = points
         .iter()
         .take(MAX_LISTED)
@@ -851,10 +1066,11 @@ fn blink_points(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({
         "span": {"from": time_json(probe.from, rate), "to": time_json(probe.to, rate)},
         "timeBase": if clip.is_some() { "sequence" } else { "media" },
-        "analysed": {"sound": probe.sound.is_some(), "picture": probe.picture.is_some()},
+        "analysed": {"sound": probe.sound.is_some() && heard, "picture": probe.picture.is_some() && seen},
         "truncated": points.len() > MAX_LISTED,
         "points": listed,
         "markers": added,
+        "notes": notes,
         "note": "each point is a place a cut could go: where a thought or a movement completes. Cutting before a phrase ends keeps the audience on the words; holding past it lets them read the face. Which branch to take is the editor's choice",
     }))
 }
@@ -872,7 +1088,7 @@ fn clock(t: Tick) -> String {
 }
 
 /// One cell per shot of the active sequence: the frame most like the others sampled in the shot.
-fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize) -> Result<(Vec<Cell>, bool)> {
+fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize) -> Result<(Vec<Cell>, bool)> {
     const CMD: &str = "story.board";
     let (_, q) = active(s, CMD)?;
     let rate = q.frame_rate();
@@ -881,15 +1097,19 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize) -> Result<(Vec
     let wanted: Vec<(usize, &Shot)> =
         all.iter().enumerate().filter(|(_, sh)| sh.clip.is_some() && from.is_none_or(|f| sh.end > f) && to.is_none_or(|x| sh.start < x)).collect();
     let truncated = wanted.len() > max;
-    board_budget(wanted.len().min(max), width, (q.settings.width, q.settings.height), CMD)?;
+    board_budget(wanted.len().min(max), columns, width, (q.settings.width, q.settings.height), CMD)?;
     let scale = (width / f64::from(q.settings.width.max(1))).clamp(0.01, 1.0) as f32;
     let mut cells = Vec::new();
     for (i, sh) in wanted.into_iter().take(max) {
         // five looks across the shot (never its very first or last frame: those sit in transitions)
         let len = (sh.end - sh.start).0;
+        // the frames the shot is on screen for: a shot need not start on the grid, and the frame
+        // its start falls in still shows the shot before
+        let (first, last) = (frame_from(rate, sh.start), frame_before(rate, sh.end));
         let mut frames: Vec<(Tick, filmcraft_render::Image, Signature)> = Vec::new();
         for k in 1..=5 {
             let t = rate.snap(sh.start + Tick(len / 6 * k));
+            let t = if first <= last { t.clamp(first, last) } else { t };
             if frames.iter().any(|f| f.0 == t) {
                 continue;
             }
@@ -909,20 +1129,18 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize) -> Result<(Vec
 }
 
 /// `count` frames spread evenly across a project item's media.
-fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize) -> Result<Vec<Cell>> {
+fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, columns: usize) -> Result<Vec<Cell>> {
     const CMD: &str = "story.board";
     let pi = s.project.item(item).ok_or_else(|| bad(CMD, format!("no project item {}", item.0)))?;
-    let duration = crate::commands::full_duration(s, pi);
-    let (from, to) = (
-        seconds_bound(p, "fromSeconds", CMD)?.map_or(Tick::ZERO, |t| t.min(duration)),
-        seconds_bound(p, "toSeconds", CMD)?.map_or(duration, |t| t.min(duration)),
-    );
+    let (lo, hi) = item_span(s, item, pi);
+    let (from, to) =
+        (seconds_bound(p, "fromSeconds", CMD)?.map_or(lo, |t| t.max(lo).min(hi)), seconds_bound(p, "toSeconds", CMD)?.map_or(hi, |t| t.max(lo).min(hi)));
     if to <= from {
         return Err(bad(CMD, "nothing to show between `fromSeconds` and `toSeconds`"));
     }
-    let rate = pi.frame_rate().sane();
+    let rate = item_rate(s, item, pi);
     let (w, h) = filmcraft_render::source_size(&s.project, item).ok_or_else(|| bad(CMD, format!("`{}` has no picture", pi.name)))?;
-    board_budget(count, width, (w, h), CMD)?;
+    board_budget(count, columns, width, (w, h), CMD)?;
     let scale = (width / f64::from(w.max(1))).clamp(0.01, 1.0) as f32;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let mut cells = Vec::new();
@@ -958,17 +1176,17 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
     let width = count_p(p, "width", 320, 64..=1280, CMD)? as f64;
     let labels = flag_p(p, "labels", true, CMD)?;
     let (cells, truncated, of) = match item_p(p, "item") {
-        Some(item) => (item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?)?, false, "item"),
+        Some(item) => (item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?, columns)?, false, "item"),
         None => {
-            let (c, t) = sequence_cells(s, p, width, count_p(p, "max", 48, 1..=96, CMD)?)?;
+            let (c, t) = sequence_cells(s, p, width, count_p(p, "max", 48, 1..=96, CMD)?, columns)?;
             (c, t, "sequence")
         }
     };
     let Some(first) = cells.first() else { return Err(bad(CMD, "there is no picture to lay out")) };
     // a source may decode a little smaller or larger than asked: the cell is the asked width, shaped like the frame
     let cell_w = width as usize;
-    let cell_h = ((width * first.image.h as f64 / first.image.w.max(1) as f64).round() as usize).clamp(8, 4 * cell_w);
-    let sheet = Sheet { columns: columns.min(cells.len()), cell_w, cell_h, gap: 6 };
+    let cell_h = cell_height(width, (first.image.w, first.image.h));
+    let sheet = Sheet { columns: columns.min(cells.len()), cell_w, cell_h, gap: BOARD_GAP };
     let info: Vec<Value> = cells.iter().map(|c| c.info.clone()).collect();
     let laid: Vec<(filmcraft_render::Image, String)> = cells.into_iter().map(|c| (c.image, if labels { c.label } else { String::new() })).collect();
     let img = contact_sheet(&laid, sheet).ok_or_else(|| bad(CMD, "the board would be too large; lower `width`, `max` or `count`"))?;
@@ -1020,41 +1238,85 @@ fn split_edit(s: &mut Session, p: &Value) -> Result<Value> {
     let (Some(out), Some(inc)) = (before.clip, after.clip) else {
         return Err(bad(CMD, "the nearest cut goes to or from black; a split edit needs a clip on both sides"));
     };
-    let (a_out, a_in) = (
-        linked_audio(q, out).ok_or_else(|| bad(CMD, "the outgoing clip has no linked sound to split from its picture"))?,
-        linked_audio(q, inc).ok_or_else(|| bad(CMD, "the incoming clip has no linked sound to split from its picture"))?,
+    // A plate or a layer over a shot has no sound of its own: the sound is the clip's underneath.
+    let (out_c, inc_c) = (sound_carrier(q, Some(out)).unwrap_or(out), sound_carrier(q, Some(inc)).unwrap_or(inc));
+    let link_of = |c: ClipId| q.find_item(c).and_then(|(_, it)| it.link);
+    let (link_out, link_in) = (
+        link_of(out_c).ok_or_else(|| bad(CMD, "the outgoing clip has no linked sound to split from its picture"))?,
+        link_of(inc_c).ok_or_else(|| bad(CMD, "the incoming clip has no linked sound to split from its picture"))?,
     );
-    // L: sound trails (the sound cut moves later, or the picture cut earlier). J: the reverse.
-    let (left, right, delta) = match (roll_video, kind) {
-        (false, "L") => (a_out.id, a_in.id, frames),
-        (false, _) => (a_out.id, a_in.id, -frames),
-        (true, "L") => (out, inc, -frames),
-        (true, _) => (out, inc, frames),
-    };
-    if !roll_video && a_out.end() != a_in.start {
+    // Every audio track on which the two clips' sounds meet at one cut: a clip recorded on two
+    // microphones has its sound on two tracks, and a split edit moves both cuts.
+    let mut pairs: Vec<(ClipId, ClipId)> = Vec::new();
+    let mut apart: Vec<String> = Vec::new();
+    for track in &q.audio_tracks {
+        let (a, b) = (track.items.iter().find(|x| x.link == Some(link_out)), track.items.iter().find(|x| x.link == Some(link_in)));
+        match (a, b) {
+            (Some(a), Some(b)) if a.end() == b.start => {
+                if track.locked && !roll_video {
+                    return Err(bad(CMD, format!("track {} is locked", track.name)));
+                }
+                pairs.push((a.id, b.id));
+            }
+            (None, None) => {}
+            _ => apart.push(track.name.clone()),
+        }
+    }
+    if roll_video {
+        if out_c != out || inc_c != inc {
+            return Err(bad(
+                CMD,
+                "a layer or a plate lies over one of the shots at this cut: rolling the picture would move it away from the clip it was made from. Roll the sound instead (`roll: \"audio\"`)",
+            ));
+        }
+        pairs = vec![(out, inc)];
+    } else if pairs.is_empty() {
         return Err(bad(
             CMD,
             "the two clips' sounds do not meet at one cut on one track (already split, or on different tracks); roll them with `timeline.roll`",
         ));
     }
-    let roll = crate::commands::find("timeline.roll").ok_or_else(|| EngineError::UnknownCommand("timeline.roll".into()))?.run;
-    let r = s.edit_group("Split Edit", |s| {
-        let r = roll(s, &json!({"left": left.0, "right": right.0, "deltaFrames": delta, "followLinks": false}))?;
-        if r["delta"].as_i64().unwrap_or(0) == 0 {
+    let continuous = |(l, r): &(ClipId, ClipId)| q.find_item(*l).zip(q.find_item(*r)).is_some_and(|((_, l), (_, r))| carries_on(l, r));
+    if pairs.iter().all(continuous) {
+        return Err(bad(
+            CMD,
+            "the two clips are one continuous recording cut in two: moving the cut between them changes nothing anyone can see or hear. A split edit needs two separately recorded clips (with their own sound) on either side of the cut",
+        ));
+    }
+    // L: sound trails (the sound cut moves later, or the picture cut earlier). J: the reverse.
+    let delta = match (roll_video, kind) {
+        (false, "L") | (true, "J") => frames,
+        _ => -frames,
+    };
+    let fd = rate.frame_duration().0.max(1);
+    let want = Tick(fd.saturating_mul(delta));
+    let rolled = pairs.clone();
+    // one cut on every track, by one amount: what the shortest handle among them allows
+    let moved = s.edit_sequence("Split Edit", |q, ctx, _| {
+        let d = crate::commands::clamp_roll_linked(q, &rolled, want, ctx)?;
+        if d == Tick::ZERO {
             return Err(bad(CMD, "the clips have no spare media beyond the cut to extend into (no handles)"));
         }
-        Ok(r)
+        for &(l, r) in &rolled {
+            filmcraft_edit::roll(q, l, r, d, ctx)?;
+        }
+        Ok(d)
     })?;
-    let moved = Tick(r["delta"].as_i64().unwrap_or(0));
+    let mut warnings: Vec<String> = Vec::new();
+    if !roll_video && !apart.is_empty() {
+        warnings.push(format!("the clips also have sound on {} that does not meet at this cut; it was left as it is", apart.join(", ")));
+    }
     Ok(json!({
         "kind": kind,
         "cut": time_json(cut, rate),
         "rolled": if roll_video { "video" } else { "audio" },
-        "left": left.0,
-        "right": right.0,
-        "frames": moved.0 / rate.frame_duration().0.max(1),
+        "left": pairs.first().map(|x| x.0.0),
+        "right": pairs.first().map(|x| x.1.0),
+        "pairs": pairs.iter().map(|(l, r)| json!([l.0, r.0])).collect::<Vec<_>>(),
+        "frames": moved.0 / fd,
         "asked": delta,
-        "clamped": moved.0 / rate.frame_duration().0.max(1) != delta,
+        "clamped": moved != want,
+        "warnings": warnings,
     }))
 }
 
@@ -1064,9 +1326,12 @@ fn shadow_cut(s: &mut Session, p: &Value) -> Result<Value> {
     let item = s.project.item(id).ok_or_else(|| bad(CMD, "no active sequence"))?.clone();
     let name = match p.get("name") {
         None | Some(Value::Null) => {
-            let prefix = format!("{} (shadow cut ", item.name);
-            let n = s.project.items.values().filter(|i| i.name.starts_with(&prefix)).count() + 1;
-            format!("{prefix}{n})")
+            // the first number no shadow cut of this sequence carries (a count would repeat one after a deletion)
+            let taken: BTreeSet<&str> = s.project.items.values().map(|i| i.name.as_str()).collect();
+            (1..=taken.len() + 1)
+                .map(|n| format!("{} (shadow cut {n})", item.name))
+                .find(|name| !taken.contains(name.as_str()))
+                .unwrap_or_else(|| format!("{} (shadow cut)", item.name))
         }
         Some(v) => v
             .as_str()
@@ -1086,6 +1351,258 @@ fn shadow_cut(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(
         json!({"sequence": copy.0, "name": name, "of": id.0, "note": "the copy is set aside as it is now; the active sequence stays open for the next attempt. `story.compare` shows what changed"}),
     )
+}
+
+/// The clips of the active sequence, track by track, in a form short enough to read: what an
+/// agent needs to pick a clip id without wading through every effect parameter.
+fn list_clips(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "sequence.clips";
+    let (id, q) = active(s, CMD)?;
+    let rate = q.frame_rate();
+    let (from, to) = (seconds_bound(p, "fromSeconds", CMD)?, seconds_bound(p, "toSeconds", CMD)?);
+    let only = match p.get("track") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(crate::commands::track_p(s, p, "track", CMD)?.ok_or_else(|| bad(CMD, "`track` must be a track name such as \"V1\" or a track id"))?),
+    };
+    let mut total = 0usize;
+    let mut tracks = Vec::new();
+    for t in q.video_tracks.iter().rev().chain(q.audio_tracks.iter()) {
+        if only.is_some_and(|o| o != t.id) {
+            continue;
+        }
+        let mut items: Vec<&TrackItem> = t.items.iter().filter(|it| from.is_none_or(|f| it.end() > f) && to.is_none_or(|x| it.start < x)).collect();
+        items.sort_by_key(|it| it.start);
+        let clips: Vec<Value> = items
+            .iter()
+            .take(MAX_LISTED.saturating_sub(total))
+            .map(|it| {
+                // what was added to the clip: the effects every clip carries are left out
+                let added: Vec<&str> =
+                    it.effects.iter().filter(|e| e.def().is_none_or(|d| !d.intrinsic) || !e.masks.is_empty()).map(|e| e.effect.as_str()).collect();
+                let mut c = json!({
+                    "clip": it.id.0,
+                    "name": it.name,
+                    "item": it.item.0,
+                    "start": round3(it.start.seconds()),
+                    "end": round3(it.end().seconds()),
+                    "startFrame": rate.frame_at(it.start),
+                    "endFrame": rate.frame_at(it.end()),
+                    "sourceIn": round3(it.source_in.seconds()),
+                });
+                let extra: [(&str, Option<Value>); 6] = [
+                    ("link", it.link.map(Value::from)),
+                    ("speed", (it.speed != 1.0).then(|| json!(it.speed))),
+                    ("reverse", it.reverse.then_some(Value::Bool(true))),
+                    ("disabled", (!it.enabled).then_some(Value::Bool(true))),
+                    ("held", it.frame_hold.map(|h| json!(round3(h.seconds())))),
+                    ("effects", (!added.is_empty()).then(|| json!(added))),
+                ];
+                for (key, value) in extra {
+                    if let Some(value) = value {
+                        c[key] = value;
+                    }
+                }
+                c
+            })
+            .collect();
+        total += clips.len();
+        let transitions: Vec<Value> = t
+            .transitions
+            .iter()
+            .filter(|x| from.is_none_or(|f| x.end() > f) && to.is_none_or(|e| x.start < e))
+            .take(MAX_LISTED)
+            .map(|x| {
+                json!({"transition": x.id.0, "effect": x.effect.effect, "start": round3(x.start.seconds()), "end": round3(x.end().seconds()), "from": x.from.map(|c| c.0), "to": x.to.map(|c| c.0)})
+            })
+            .collect();
+        let mut tr = json!({"track": t.name, "id": t.id.0, "kind": if t.kind == TrackKind::Video { "video" } else { "audio" }, "clips": clips});
+        if !transitions.is_empty() {
+            tr["transitions"] = json!(transitions);
+        }
+        for (key, on) in
+            [("hidden", t.kind == TrackKind::Video && !t.enabled), ("muted", t.kind == TrackKind::Audio && (!t.enabled || t.muted)), ("locked", t.locked)]
+        {
+            if on {
+                tr[key] = Value::Bool(true);
+            }
+        }
+        tracks.push(tr);
+    }
+    Ok(json!({
+        "sequence": id.0,
+        "fps": round3(rate.as_f64()),
+        "seconds": round3(q.duration().seconds()),
+        "tracks": tracks,
+        "truncated": total >= MAX_LISTED,
+        "note": "video tracks from the top down, then audio. Times are seconds; a clip plays its item from `sourceIn`",
+    }))
+}
+
+/// The active sequence's frame at `t`, reduced, as RGBA8 (pixels, width, height).
+pub(crate) fn program_rgba(s: &Session, t: Tick) -> Option<(Vec<u8>, usize, usize)> {
+    let q = s.active_sequence()?;
+    let img = s.try_render_program_at(analysis_scale(q), t).ok()?;
+    Some((img.over_black_rgba8(), img.w, img.h))
+}
+
+/// A reduced frame of the programme: RGBA8 pixels, width, height.
+pub(crate) type Frame = (Vec<u8>, usize, usize);
+
+/// Three looks at the programme across `[start, end)`: just inside each end and in the middle.
+pub(crate) fn looks_across(s: &Session, start: Tick, end: Tick) -> Vec<Option<Frame>> {
+    // frames the stretch is on screen for: its ends need not fall on the sequence's frames
+    let rate = s.sequence_rate();
+    let first = Some(frame_from(rate, start)).filter(|g| *g < end).unwrap_or(start);
+    let last = frame_before(rate, end).max(first);
+    [first, first + Tick((last - first).0 / 2), last].into_iter().map(|t| program_rgba(s, t)).collect()
+}
+
+/// How much the picture changed between two sets of looks ([`looks_across`], before and after an
+/// edit), as a result field: the look that changed most, and what a viewer would make of it.
+/// `null` when nothing could be compared.
+pub(crate) fn change_json(before: &[Option<Frame>], after: &[Option<Frame>]) -> Value {
+    let worst = before
+        .iter()
+        .zip(after)
+        .filter_map(|(a, b)| {
+            let (a, b) = (a.as_ref()?, b.as_ref()?);
+            if (a.1, a.2) != (b.1, b.2) {
+                return None;
+            }
+            filmcraft_render::story::picture_change(&a.0, &b.0, a.1, a.2)
+        })
+        .max_by(|x, y| x.strongest.total_cmp(&y.strongest));
+    match worst {
+        Some(c) => {
+            let hint = match c.reads() {
+                "none" => "nothing a viewer can see changed",
+                "subtle" => "visible only side by side with the original; raise the amount if it is meant to be noticed",
+                "visible" => "a viewer will notice it",
+                _ => "a strong change",
+            };
+            json!({"mean": round3(f64::from(c.mean)), "strongest": round3(f64::from(c.strongest)), "reads": c.reads(), "hint": hint})
+        }
+        None => Value::Null,
+    }
+}
+
+/// What a shot shows: which item, and which stretch of it. `None` for black, or for a clip that
+/// does not play its source evenly forward (reversed or held), which cannot be lined up by time.
+struct Shown {
+    item: ItemId,
+    from: Tick,
+    to: Tick,
+    speed: f64,
+}
+
+fn shown(q: &Sequence, sh: &Shot) -> Option<Shown> {
+    let it = q.find_item(sh.clip?)?.1;
+    if it.reverse || it.frame_hold.is_some() || !it.speed.is_finite() || it.speed <= 0.0 {
+        return None;
+    }
+    let at = |t: Tick| it.source_in + Tick(((t - it.start).0 as f64 * it.speed).round() as i64);
+    Some(Shown { item: it.item, from: at(sh.start), to: at(sh.end), speed: it.speed })
+}
+
+/// One sequence's frame at `t`, reduced, as RGBA8.
+fn sequence_rgba(s: &Session, id: ItemId, q: &Sequence, t: Tick) -> (Vec<u8>, usize, usize) {
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: analysis_scale(q), captions: true, ..Default::default() };
+    let img = filmcraft_render::render_sequence(&s.project, id, q.frame_rate().snap(t.max(Tick::ZERO)), opts, &provider);
+    (img.over_black_rgba8(), img.w, img.h)
+}
+
+/// Line the shots of `mine` up with the shots of `theirs` by what they show, and say for each
+/// what is different: where it sits, how long it runs, what it looks like.
+fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId, &Sequence, &[Shot]), pictures: usize) -> (Vec<Value>, Vec<Value>) {
+    let ((id, q, mine), (other_id, other, theirs)) = (here, there);
+    let rate = q.frame_rate();
+    let half = Tick(rate.frame_duration().0 / 2);
+    let theirs_shown: Vec<Option<Shown>> = theirs.iter().map(|sh| shown(other, sh)).collect();
+    let mut matched = vec![false; theirs.len()];
+    let mut out = Vec::new();
+    let mut compared = 0usize;
+    for (i, sh) in mine.iter().enumerate().take(MAX_LISTED) {
+        if sh.clip.is_none() {
+            continue;
+        }
+        let mut row = json!({"shot": i + 1, "start": time_json(sh.start, rate), "end": time_json(sh.end, rate), "clip": sh.clip.map(|c| c.0), "name": clip_name(q, sh.clip)});
+        let me = shown(q, sh);
+        // the shot of the other version that shows the most of the same footage
+        let best = me.as_ref().and_then(|m| {
+            theirs_shown
+                .iter()
+                .enumerate()
+                .filter_map(|(j, t)| {
+                    let t = t.as_ref()?;
+                    let overlap = (m.to.min(t.to) - m.from.max(t.from)).0;
+                    (t.item == m.item && (t.speed - m.speed).abs() < 1e-9 && overlap > 0).then_some((j, overlap))
+                })
+                .max_by_key(|(_, overlap)| *overlap)
+        });
+        let (Some(m), Some((j, _))) = (me.as_ref(), best) else {
+            row["status"] = json!("new");
+            row["what"] =
+                json!(if me.is_none() { "plays reversed or held: not lined up with the other version" } else { "footage the other version does not show" });
+            out.push(row);
+            continue;
+        };
+        let (Some(t), Some(th)) = (theirs_shown.get(j).and_then(Option::as_ref), theirs.get(j)) else { continue };
+        if let Some(slot) = matched.get_mut(j) {
+            *slot = true;
+        }
+        // the same moment of the footage, on each timeline
+        let (lo, hi) = (m.from.max(t.from), m.to.min(t.to));
+        let here_at = |x: Tick| sh.start + Tick(((x - m.from).0 as f64 / m.speed).round() as i64);
+        let there_at = |x: Tick| th.start + Tick(((x - t.from).0 as f64 / t.speed).round() as i64);
+        let shift = here_at(lo) - there_at(lo);
+        let (len_here, len_there) = (sh.end - sh.start, th.end - th.start);
+        let mut what: Vec<&str> = Vec::new();
+        if shift.abs() > half {
+            what.push("moved");
+        }
+        if (len_here - len_there).abs() > half {
+            what.push(if len_here < len_there { "shorter" } else { "longer" });
+        }
+        if compared < pictures {
+            compared += 1;
+            let mut worst: Option<filmcraft_render::story::PictureChange> = None;
+            for k in 1..=3 {
+                // a quarter, a half and three quarters of the way through what both show
+                let x = lo + Tick((hi - lo).0 / 4 * k);
+                let (a, b) = (sequence_rgba(s, id, q, here_at(x)), sequence_rgba(s, other_id, other, there_at(x)));
+                if (a.1, a.2) != (b.1, b.2) {
+                    continue;
+                }
+                if let Some(c) = filmcraft_render::story::picture_change(&a.0, &b.0, a.1, a.2)
+                    && worst.is_none_or(|w| c.strongest > w.strongest)
+                {
+                    worst = Some(c);
+                }
+            }
+            if let Some(c) = worst {
+                row["picture"] = json!({"mean": round3(f64::from(c.mean)), "strongest": round3(f64::from(c.strongest)), "reads": c.reads()});
+                if c.reads() != "none" {
+                    what.push("looks different");
+                }
+            }
+        }
+        row["status"] = json!(if what.is_empty() { "same" } else { "changed" });
+        row["what"] = json!(what);
+        row["there"] = json!({"shot": j + 1, "start": time_json(th.start, rate), "end": time_json(th.end, rate)});
+        row["shiftSeconds"] = json!(round3(shift.seconds()));
+        row["secondsHere"] = json!(round3(len_here.seconds()));
+        row["secondsThere"] = json!(round3(len_there.seconds()));
+        out.push(row);
+    }
+    let removed: Vec<Value> = theirs
+        .iter()
+        .enumerate()
+        .filter(|(j, sh)| sh.clip.is_some() && matched.get(*j) == Some(&false))
+        .take(MAX_LISTED)
+        .map(|(j, sh)| json!({"shot": j + 1, "start": time_json(sh.start, rate), "end": time_json(sh.end, rate), "name": clip_name(other, sh.clip)}))
+        .collect();
+    (out, removed)
 }
 
 fn compare(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1117,7 +1634,19 @@ fn compare(s: &mut Session, p: &Value) -> Result<Value> {
     only_there.extend(b.iter().skip(j));
     let end = |v: &[Shot]| v.last().map_or(Tick::ZERO, |sh| sh.end) - v.first().map_or(Tick::ZERO, |sh| sh.start);
     let list = |v: &[Tick]| v.iter().take(MAX_LISTED).map(|t| time_json(*t, rate)).collect::<Vec<_>>();
+    let pictures = if flag_p(p, "picture", true, CMD)? { count_p(p, "limit", 60, 1..=MAX_LISTED as u64, CMD)? } else { 0 };
+    let (rows, removed) = compare_shots(s, (id, q, &mine), (other_id, other, &theirs), pictures);
+    let tally = |status: &str| rows.iter().filter(|r| r["status"] == status).count();
+    // what a shot shows: which footage, from where, how, and with what done to it
+    let content = |q: &Sequence, sh: &Shot| {
+        sh.clip.and_then(|c| q.find_item(c)).map(|(_, it)| (it.item, it.source_time_at(sh.start), it.speed, it.reverse, it.frame_hold, it.effects.clone()))
+    };
+    let same_shots = mine.len() == theirs.len()
+        && mine.iter().zip(&theirs).all(|(a, b)| (a.start - b.start).abs() <= half && (a.end - b.end).abs() <= half && content(q, a) == content(other, b));
     Ok(json!({
+        "shots": rows,
+        "shotsOnlyThere": removed,
+        "summary": {"same": tally("same"), "changed": tally("changed"), "new": tally("new"), "onlyThere": removed.len()},
         "this": {"sequence": id.0, "rhythm": rhythm_json(&mine)},
         "other": {"sequence": other_id.0, "rhythm": rhythm_json(&theirs)},
         "secondsDifference": round3((end(&mine) - end(&theirs)).seconds()),
@@ -1125,6 +1654,8 @@ fn compare(s: &mut Session, p: &Value) -> Result<Value> {
         "cutsOnlyHere": list(&only_here),
         "cutsOnlyThere": list(&only_there),
         "truncated": only_here.len() > MAX_LISTED || only_there.len() > MAX_LISTED,
-        "identical": only_here.is_empty() && only_there.is_empty() && mine.len() == theirs.len(),
+        "sameShots": same_shots,
+        "identical": q.video_tracks == other.video_tracks && q.audio_tracks == other.audio_tracks && q.caption_tracks == other.caption_tracks,
+        "note": "`sameShots`: the same stretches of the same footage at the same times, with the same effects on them. `identical`: nothing on any track differs at all, sound and titles included",
     }))
 }

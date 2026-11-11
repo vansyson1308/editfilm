@@ -511,9 +511,10 @@ async fn story_board_returns_the_board_and_its_cells() {
     let mut c = Client::start(demo());
     let init = c.init().await;
     let guide = init["result"]["instructions"].as_str().unwrap();
-    for id in ["story_board", "story.cuts", "story.blinkPoints", "layers.lift", "color.relight"] {
+    for id in ["story_board", "story.cuts", "story.blinkPoints", "layers.lift", "color.relight", "sequence.clips", "pictureChange", "\"space\":\"frame\"", "warnings"] {
         assert!(guide.contains(id), "the instructions do not mention {id}");
     }
+    assert!(!guide.contains("fractions of the frame;"), "a region is in fractions of the clip's own picture unless it says otherwise");
     let before = c.call(1, "doc_inspect", json!({})).await["result"]["content"][0]["text"].clone();
     let r = c.call(2, "story_board", json!({"width": 96, "columns": 3})).await;
     assert_eq!(r["result"]["isError"], false, "{r}");
@@ -524,6 +525,13 @@ async fn story_board_returns_the_board_and_its_cells() {
     assert_eq!((u64::from(img.width()), u64::from(img.height())), (v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()));
     assert_eq!((v["of"].as_str(), v["cells"].as_array().map(Vec::len), v["columns"].as_u64()), (Some("sequence"), Some(7), Some(3)), "{v}");
     assert!(v.get("path").is_none(), "the temporary file is not the caller's business: {v}");
+    // the same board without its labels: the same sheet, other pixels
+    let bare = c.call(20, "story_board", json!({"width": 96, "columns": 3, "labels": false})).await;
+    assert_eq!(bare["result"]["isError"], false, "{bare}");
+    let bare_png = base64::engine::general_purpose::STANDARD.decode(bare["result"]["content"][0]["data"].as_str().unwrap()).unwrap();
+    let bare_img = image::load_from_memory(&bare_png).unwrap();
+    assert_eq!((bare_img.width(), bare_img.height()), (img.width(), img.height()));
+    assert_ne!(bare_img.to_rgba8().into_raw(), img.to_rgba8().into_raw(), "labels were drawn on one and not the other");
     // a clip's rushes, by project item
     let item = v["cells"][0]["clip"].as_u64().unwrap();
     let seq: Value = serde_json::from_str(c.call(3, "sequence_inspect", json!({})).await["result"]["content"][0]["text"].as_str().unwrap()).unwrap();

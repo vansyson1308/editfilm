@@ -108,17 +108,52 @@ pub struct Attention {
     /// 0 when the frame gives the eye nothing to hold (flat or black), growing with how strongly
     /// one area stands out.
     pub strength: f32,
+    /// How much movement counted, 0 (not at all: nothing moved, or everything did) … 1 (one area
+    /// moved and leads the eye).
+    pub motion: f32,
 }
 
 /// How much more a change between frames counts than the same difference standing still.
 const MOTION_PULL: f32 = 10.0;
+/// Movement spread wider than this (as [`Attention::spread`]) is the whole picture moving: water,
+/// foliage, a pan, a hand-held frame. It leads the eye nowhere and is left out.
+const MOTION_EVERYWHERE: f32 = 0.30;
+/// Movement gathered this tightly is one subject moving, and counts in full.
+const MOTION_ONE_PLACE: f32 = 0.20;
+
+/// Weighted centroid of `w` over the grid: (total weight, x, y, spread), positions in 0…1.
+fn centroid(w: &[f64]) -> Option<(f64, f64, f64, f64)> {
+    let at = |i: usize| (((i % GW) as f64 + 0.5) / GW as f64, ((i / GW) as f64 + 0.5) / GH as f64);
+    let (mut sw, mut sx, mut sy) = (0f64, 0f64, 0f64);
+    for (i, v) in w.iter().enumerate() {
+        let (x, y) = at(i);
+        sw += v;
+        sx += v * x;
+        sy += v * y;
+    }
+    if sw <= 1e-9 || !sw.is_finite() {
+        return None;
+    }
+    let (cx, cy) = (sx / sw, sy / sw);
+    let var: f64 = w.iter().enumerate().map(|(i, v)| v * ((at(i).0 - cx).powi(2) + (at(i).1 - cy).powi(2))).sum();
+    Some((sw, cx, cy, (var / sw).sqrt()))
+}
+
+/// What stands out of a map above its own average, squared so that peaks lead.
+fn standing_out(map: &[f32]) -> Vec<f64> {
+    let mean = map.iter().sum::<f32>() / map.len().max(1) as f32;
+    map.iter().map(|v| f64::from((v - mean).max(0.0)).powi(2)).collect()
+}
 
 /// The saliency centroid of `cur`: cells that stand out from their surroundings (centre–surround
 /// luma difference and local gradient) and, when the previous frame is given, cells that move.
-/// Motion counts most: the eye follows what moves. A frame with nothing salient reports its
-/// centre with strength 0.
+/// Movement gathered in one place counts most: the eye follows what moves. Movement all over the
+/// frame (waves, leaves, a pan, a hand-held camera) says nothing about where to look and is left
+/// out, so a shot of open water is read by its shapes, not by its ripples. A frame with nothing
+/// salient reports its centre with strength 0.
 pub fn attention(cur: &Glance, prev: Option<&Glance>) -> Attention {
-    let mut sal = vec![0f32; GW * GH];
+    let mut still = vec![0f32; GW * GH];
+    let mut moved = vec![0f32; GW * GH];
     for y in 0..GH as isize {
         for x in 0..GW as isize {
             let c = cur.at(x, y);
@@ -127,35 +162,24 @@ pub fn attention(cur: &Glance, prev: Option<&Glance>) -> Attention {
             let surround = ring.iter().map(|(dx, dy)| cur.at(x + dx, y + dy)).sum::<f32>() / ring.len() as f32;
             let gx = cur.at(x + 1, y) - cur.at(x - 1, y);
             let gy = cur.at(x, y + 1) - cur.at(x, y - 1);
-            let mut s = (c - surround).abs() + 0.5 * (gx * gx + gy * gy).sqrt();
+            let i = y as usize * GW + x as usize;
+            still[i] = (c - surround).abs() + 0.5 * (gx * gx + gy * gy).sqrt();
             if let Some(p) = prev {
-                s += MOTION_PULL * (c - p.at(x, y)).abs();
+                moved[i] = (c - p.at(x, y)).abs();
             }
-            sal[y as usize * GW + x as usize] = s;
         }
     }
-    let mean = sal.iter().sum::<f32>() / (GW * GH) as f32;
-    // only what stands out above the frame's own average holds the eye; squared, so peaks lead
-    let (mut sw, mut sx, mut sy) = (0f64, 0f64, 0f64);
-    for (i, s) in sal.iter().enumerate() {
-        let w = f64::from((s - mean).max(0.0));
-        let w = w * w;
-        sw += w;
-        sx += w * ((i % GW) as f64 + 0.5) / GW as f64;
-        sy += w * ((i / GW) as f64 + 0.5) / GH as f64;
+    // how much the movement counts: in full when it is gathered in one place, not at all when it is everywhere
+    let motion = match centroid(&standing_out(&moved)) {
+        Some((_, _, _, spread)) => ((MOTION_EVERYWHERE - spread as f32) / (MOTION_EVERYWHERE - MOTION_ONE_PLACE)).clamp(0.0, 1.0),
+        None => 0.0,
+    };
+    let sal: Vec<f32> = still.iter().zip(&moved).map(|(s, m)| s + motion * MOTION_PULL * m).collect();
+    let weights = standing_out(&sal);
+    match centroid(&weights) {
+        Some((sw, cx, cy, spread)) => Attention { x: cx as f32, y: cy as f32, spread: spread as f32, strength: (sw / (GW * GH) as f64).sqrt() as f32, motion },
+        None => Attention { x: 0.5, y: 0.5, spread: 0.5, strength: 0.0, motion: 0.0 },
     }
-    if sw <= 1e-9 || !sw.is_finite() {
-        return Attention { x: 0.5, y: 0.5, spread: 0.5, strength: 0.0 };
-    }
-    let (cx, cy) = (sx / sw, sy / sw);
-    let mut var = 0f64;
-    for (i, s) in sal.iter().enumerate() {
-        let w = f64::from((s - mean).max(0.0));
-        let (dx, dy) = (((i % GW) as f64 + 0.5) / GW as f64 - cx, ((i / GW) as f64 + 0.5) / GH as f64 - cy);
-        var += w * w * (dx * dx + dy * dy);
-    }
-    let strength = (sw / (GW * GH) as f64).sqrt();
-    Attention { x: cx as f32, y: cy as f32, spread: (var / sw).sqrt() as f32, strength: strength as f32 }
 }
 
 /// How far the eye travels between two attention points, 0 … 1 (1 = corner to corner).
@@ -261,6 +285,12 @@ impl Change {
             Change::Clean
         }
     }
+
+    /// From this [`crate::scene::likeness`] up, two frames that differ by a jump cut's amount are
+    /// the same picture, shifted: a jump cut for certain. Below it the same amount can also be a
+    /// new shot in the same tones (two night exteriors), which two frames alone cannot tell from
+    /// a subject that hopped on a plain backdrop.
+    pub const SAME_PICTURE_FROM: f32 = 0.6;
 
     pub fn label(self) -> &'static str {
         match self {
@@ -400,6 +430,41 @@ pub fn levels_db(mono: &[f32], rate: u32) -> Vec<f32> {
         .collect()
 }
 
+/// The band a voice lives in (about 300 Hz to 3 kHz), cut out of a sound track so that an engine,
+/// wind or surf underneath does not hide where the speaking stops. Feed it the track piece by
+/// piece; it carries its state from one piece to the next.
+#[derive(Clone, Debug)]
+pub struct VoiceBand {
+    rate: u32,
+    high_pass: filmcraft_audio_dsp::biquad::Coeffs,
+    low_pass: filmcraft_audio_dsp::biquad::Coeffs,
+    state: [filmcraft_audio_dsp::biquad::Biquad; 2],
+}
+
+impl VoiceBand {
+    pub fn new(rate: u32) -> VoiceBand {
+        use filmcraft_audio_dsp::biquad::{Biquad, Coeffs, FilterType};
+        let sr = f64::from(rate);
+        // below 8 kHz the band does not fit under half the sample rate: the sound is passed as it is
+        let fits = rate >= 8_000;
+        let design = |kind, freq| if fits { Coeffs::design(kind, sr, freq, std::f64::consts::FRAC_1_SQRT_2, 0.0) } else { Coeffs::IDENTITY };
+        VoiceBand { rate, high_pass: design(FilterType::HighPass, 300.0), low_pass: design(FilterType::LowPass, 3000.0), state: [Biquad::new(), Biquad::new()] }
+    }
+
+    /// [`levels_db`] of the voice band of `mono`.
+    pub fn levels_db(&mut self, mono: &[f32]) -> Vec<f32> {
+        let band: Vec<f32> = mono
+            .iter()
+            .map(|s| {
+                let x = if s.is_finite() { f64::from(*s) } else { 0.0 };
+                let y = self.state[0].tick(&self.high_pass, x);
+                self.state[1].tick(&self.low_pass, y) as f32
+            })
+            .collect();
+        levels_db(&band, self.rate)
+    }
+}
+
 /// The pauses that follow phrases in mono samples at `rate` Hz: [`pauses_in_levels`] of
 /// [`levels_db`].
 pub fn pauses(mono: &[f32], rate: u32, min_pause: f64, min_phrase: f64) -> Vec<Pause> {
@@ -468,48 +533,115 @@ pub fn pauses_in_levels(levels: &[f32], step_s: f64, min_pause: f64, min_phrase:
 }
 
 /// Where movement completes in a series of frame-to-frame activity values (e.g.
-/// [`crate::scene::difference`] of consecutive frames): after each burst of activity, the first
-/// sample where it has died down to about a third of the burst and stopped falling. Returns
-/// (index, strength 0…1), the strength relative to the strongest burst in the series.
-pub fn settles(activity: &[f32]) -> Vec<(usize, f32)> {
+/// [`crate::scene::difference`] of consecutive frames).
+///
+/// A movement is a burst of activity that stands out from what goes on around it: at least 1.45
+/// times the median of the `window` samples on either side (so a turn of the head stands out of a
+/// hand-held shot that never holds still), or 2.5 times the median of the whole series (so a long
+/// move, longer than the window, still counts). It completes at the first sample after the burst
+/// where activity is back near that local median, or down to about a third of the burst, and has
+/// stopped falling. Returns (index, strength 0…1), the strength being how far the burst rose above
+/// its surroundings, relative to the strongest in the series.
+pub fn settles(activity: &[f32], window: usize) -> Vec<(usize, f32)> {
     let n = activity.len();
     if n < 5 {
         return Vec::new();
     }
     let clean = |i: usize| activity.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0).max(0.0);
     let a: Vec<f32> = (0..n).map(|i| (clean(i.saturating_sub(1)) + 2.0 * clean(i) + clean((i + 1).min(n - 1))) / 4.0).collect();
-    let mut sorted = a.clone();
-    sorted.sort_by(f32::total_cmp);
-    let median = sorted[n / 2];
-    let top = sorted[n - 1];
-    let floor = (2.5 * median).max(0.004);
-    if top < floor {
-        return Vec::new();
-    }
-    let mut out: Vec<(usize, f32)> = Vec::new();
+    let median = |v: &[f32]| -> f32 {
+        let mut v = v.to_vec();
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    let whole = median(&a);
+    let w = window.clamp(2, 400);
+    let around: Vec<f32> = (0..n).map(|i| median(a.get(i.saturating_sub(w)..(i + w + 1).min(n)).unwrap_or(&[]))).collect();
+    // (where it settles, how far it rose above its surroundings)
+    let mut found: Vec<(usize, f32)> = Vec::new();
     let mut i = 1;
     while i + 1 < n {
-        let peak = a[i] >= floor && a[i] >= a[i - 1] && a[i] > a[i + 1];
-        if !peak {
+        let (p, base) = (a[i], around[i]);
+        let stands_out = p >= (1.45 * base).max(base + 0.006) || p >= (2.5 * whole).max(0.006);
+        if !(stands_out && p >= a[i - 1] && p > a[i + 1]) {
             i += 1;
             continue;
         }
-        let p = a[i];
-        let rest = (i + 1..n).find(|j| a[*j] <= 0.35 * p && a.get(j + 1).is_none_or(|next| *next >= a[*j] - 1e-6));
-        match rest {
-            Some(j) => {
-                // a later, larger burst before the movement settled belongs to the same movement
-                if !out.last().is_some_and(|l| l.0 == j) {
-                    out.push((j, (p / top).clamp(0.0, 1.0)));
-                } else if let Some(l) = out.last_mut() {
-                    l.1 = l.1.max((p / top).clamp(0.0, 1.0));
-                }
-                i = j.max(i + 1);
-            }
-            None => break,
+        let rest = (i + 1..n).find(|j| a[*j] <= (1.15 * around[*j]).max(0.35 * p) && a.get(j + 1).is_none_or(|next| *next >= a[*j] - 1e-6));
+        let Some(j) = rest else { break };
+        // A later burst before the movement settles is part of the same movement: the search goes
+        // on from where it came to rest, and the strength is that of its highest point.
+        let rise = a.get(i..j).unwrap_or(&[]).iter().fold(p, |m, v| m.max(*v)) - base.min(whole);
+        found.push((j, rise.max(0.0)));
+        i = j.max(i + 1);
+    }
+    let top = found.iter().map(|f| f.1).fold(0f32, f32::max);
+    found.into_iter().map(|(j, rise)| (j, if top > 0.0 { (rise / top).clamp(0.0, 1.0) } else { 0.0 })).collect()
+}
+
+/// How much two pictures of the same size differ, as an eye would notice it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PictureChange {
+    /// Mean difference over the frame, 0 (identical) … 1 (black against white).
+    pub mean: f32,
+    /// The difference where it is largest (one cell of a 32×18 grid): a change confined to a small
+    /// region barely moves the mean and shows here.
+    pub strongest: f32,
+}
+
+impl PictureChange {
+    /// What a viewer would make of it: `none` (nothing to see), `subtle` (visible only side by
+    /// side), `visible`, `strong`.
+    pub fn reads(self) -> &'static str {
+        let v = self.strongest;
+        if !v.is_finite() || v < 0.008 {
+            "none"
+        } else if v < 0.045 {
+            "subtle"
+        } else if v < 0.14 {
+            "visible"
+        } else {
+            "strong"
         }
     }
-    out
+}
+
+/// Compare two RGBA8 pictures of `w`×`h` pixels. `None` when a buffer is not `w * h * 4` bytes or
+/// the size is empty.
+pub fn picture_change(a: &[u8], b: &[u8], w: usize, h: usize) -> Option<PictureChange> {
+    const CW: usize = 32;
+    const CH: usize = 18;
+    let len = w.checked_mul(h)?.checked_mul(4)?;
+    if len == 0 || a.len() != len || b.len() != len {
+        return None;
+    }
+    let mut sum = vec![[0i64; 3]; CW * CH];
+    let mut count = vec![0u32; CW * CH];
+    let (step_x, step_y) = ((w / 256).max(1), (h / 144).max(1));
+    for y in (0..h).step_by(step_y) {
+        for x in (0..w).step_by(step_x) {
+            let i = (y * w + x) * 4;
+            let (Some(pa), Some(pb)) = (a.get(i..i + 3), b.get(i..i + 3)) else { continue };
+            let cell = (y * CH / h) * CW + x * CW / w;
+            if let (Some(s), Some(c)) = (sum.get_mut(cell), count.get_mut(cell)) {
+                for k in 0..3 {
+                    s[k] += i64::from(pa[k]) - i64::from(pb[k]);
+                }
+                *c += 1;
+            }
+        }
+    }
+    // per cell: the difference of the cells' mean colours (noise and grain average out; a grade does not)
+    let cells: Vec<f32> = sum
+        .iter()
+        .zip(&count)
+        .filter(|(_, c)| **c > 0)
+        .map(|(s, c)| s.iter().map(|v| v.unsigned_abs() as f32).sum::<f32>() / (3.0 * *c as f32 * 255.0))
+        .collect();
+    if cells.is_empty() {
+        return None;
+    }
+    Some(PictureChange { mean: cells.iter().sum::<f32>() / cells.len() as f32, strongest: cells.iter().copied().fold(0.0, f32::max) })
 }
 
 /// The most representative of a set of frames: the one with the smallest total difference to all
@@ -548,8 +680,8 @@ pub fn contact_sheet(cells: &[(Image, String)], s: Sheet) -> Option<Image> {
         return None;
     }
     let rows = cells.len().div_ceil(s.columns);
-    let w = s.columns.checked_mul(s.cell_w)?.checked_add(s.gap.checked_mul(s.columns + 1)?)?;
-    let h = rows.checked_mul(s.cell_h)?.checked_add(s.gap.checked_mul(rows + 1)?)?;
+    let w = s.columns.checked_mul(s.cell_w)?.checked_add(s.gap.checked_mul(s.columns.checked_add(1)?)?)?;
+    let h = rows.checked_mul(s.cell_h)?.checked_add(s.gap.checked_mul(rows.checked_add(1)?)?)?;
     if w.checked_mul(h)? > MAX_SHEET_PIXELS {
         return None;
     }

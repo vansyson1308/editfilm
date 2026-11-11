@@ -1,10 +1,13 @@
 //! Clip ▸ Scene Edit Detection… (M3.11).
 //!
-//! `clip.sceneEditDetection {clips?, sensitivity=50, minShotFrames=6, applyCuts=true,
-//! createSubclips=false, generateMarkers=false, wait=false}` analyses the selected timeline video
-//! clips in a background job (`jobs.list` shows the progress, `jobs.cancel` stops it without
-//! changing anything). Every sequence frame of each clip is decoded at reduced size and compared
-//! with the previous one ([`filmcraft_render::scene`]). When the job finishes, the results are
+//! `clip.sceneEditDetection {clips?, sensitivity=50, lookAlike=true, minShotFrames=6,
+//! applyCuts=true, createSubclips=false, generateMarkers=false, wait=false}` analyses the selected
+//! timeline video clips in a background job (`jobs.list` shows the progress, `jobs.cancel` stops
+//! it without changing anything). Every sequence frame of each clip is decoded at reduced size and
+//! compared with the previous one ([`filmcraft_render::scene`]). A cut is a change above the
+//! sensitivity's threshold, or (`lookAlike`) one sharp step in a quiet stretch between two shots
+//! that look alike; with `lookAlike` off the latter are reported as near misses instead. When the
+//! job finishes, the results are
 //! applied in one undo step ("Scene Edit Detection"):
 //!
 //! - **Apply a cut at each detected cut point**: the clip (and its linked audio) is cut at the
@@ -50,7 +53,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Scene Edit Detection…",
         menu: &["Clip"],
         shortcut: None,
-        params: r#"{"clips":[id]?,"sensitivity":0..100=50,"minShotFrames":n=6,"applyCuts":bool=true,"createSubclips":bool=false,"generateMarkers":bool=false,"wait":bool=false}"#,
+        params: r#"{"clips":[id]?,"sensitivity":0..100=50,"lookAlike":bool=true (also cut where the picture changes sharply between two shots that look alike),"minShotFrames":n=6,"applyCuts":bool=true,"createSubclips":bool=false,"generateMarkers":bool=false,"wait":bool=false}"#,
         enabled: has_video_selection,
         run: detect,
         journal: true,
@@ -87,6 +90,11 @@ pub struct ClipScenes {
     pub unanalysed: bool,
     /// (timeline time, media time) of the first frame of each new shot.
     pub cuts: Vec<(Tick, Tick)>,
+    /// Cuts between shots that look alike, below the sensitivity's threshold but sharp against
+    /// the frames around them: (timeline time, difference, sensitivity that finds it).
+    pub near: Vec<(Tick, f32, f32)>,
+    /// Whether `near` is counted among `cuts` (`lookAlike`), or only reported.
+    pub near_taken: bool,
 }
 
 /// A running Scene Edit Detection job; applied by [`poll`] when it finishes.
@@ -145,6 +153,10 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
     let opts = SceneOptions {
         sensitivity: f64_p(p, "sensitivity").unwrap_or(50.0).clamp(0.0, 100.0) as f32,
         min_shot_frames: u64_p(p, "minShotFrames").unwrap_or(6).clamp(1, 10_000) as usize,
+    };
+    let look_alike = match p.get("lookAlike") {
+        None | Some(Value::Null) => true,
+        Some(v) => v.as_bool().ok_or_else(|| bad("clip.sceneEditDetection", "`lookAlike` must be true or false"))?,
     };
     let apply = SceneApply {
         cuts: bool_p(p, "applyCuts").unwrap_or(true),
@@ -217,7 +229,10 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                 prog.done.store(done, Ordering::Relaxed);
                 *lock(&prog.status) = format!("{}: frame {} of {}", w.name, k + 1, w.frames.len());
             }
-            let cuts: Vec<(Tick, Tick)> = det.cuts(&opts).into_iter().map(|i| w.frames[i]).collect();
+            let alike = det.near_misses(&opts);
+            let at: Vec<usize> = if look_alike { det.cuts_with_look_alikes(&opts) } else { det.cuts(&opts) };
+            let cuts: Vec<(Tick, Tick)> = at.into_iter().filter_map(|i| w.frames.get(i).copied()).collect();
+            let near: Vec<(Tick, f32, f32)> = alike.into_iter().filter_map(|m| w.frames.get(m.frame).map(|f| (f.0, m.difference, m.sensitivity))).collect();
             let (a, b) = (w.frames.first().map(|f| f.1).unwrap_or_default(), w.frames.last().map(|f| f.1).unwrap_or_default());
             let fdm = w.frames.get(1).map(|f| (f.1 - w.frames[0].1).abs()).unwrap_or(Tick(1)).max(Tick(1));
             found.push(ClipScenes {
@@ -227,6 +242,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                 media_range: analysed_range(a, b, fdm, w.tail),
                 unanalysed: w.tail.is_some(),
                 cuts,
+                near,
+                near_taken: look_alike,
             });
         }
         let secs = t0.elapsed().as_secs_f64();
@@ -263,12 +280,28 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(r) = lock(&results).as_ref() {
             out["clips"] = json!(
                 r.iter()
-                    .map(|c| json!({"clip": c.clip.0, "cuts": c.cuts.iter().map(|x| x.0.0).collect::<Vec<_>>(), "mediaCuts": c.cuts.iter().map(|x| x.1.0).collect::<Vec<_>>()}))
+                    .map(|c| {
+                        json!({
+                            "clip": c.clip.0,
+                            "cuts": c.cuts.iter().map(|x| x.0.0).collect::<Vec<_>>(),
+                            "mediaCuts": c.cuts.iter().map(|x| x.1.0).collect::<Vec<_>>(),
+                            // cuts between shots that look alike: among `cuts` with `lookAlike`, else left out and listed
+                            if c.near_taken { "lookAlikeCuts" } else { "nearMisses" }: c.near.iter().map(|(t, d, sens)| json!({"time": t.0, "seconds": t.seconds(), "difference": d, "sensitivity": sens})).collect::<Vec<_>>(),
+                        })
+                    })
                     .collect::<Vec<_>>()
             );
             // poll applies the results and drops them, so its own warning list never reaches this reply
-            if let Some(w) = unanalysed_warning(r) {
-                out["warnings"] = json!([w]);
+            let mut warnings: Vec<String> = unanalysed_warning(r).into_iter().collect();
+            let left_out = || r.iter().filter(|c| !c.near_taken).flat_map(|c| c.near.iter());
+            let missed = left_out().count();
+            if let Some(need) = left_out().map(|n| n.2).fold(None, |a: Option<f32>, b| Some(a.map_or(b, |x| x.max(b)))) {
+                warnings.push(format!(
+                    "{missed} likely cut(s) between shots that look alike were left out at this sensitivity (see nearMisses); sensitivity {need:.0} finds them"
+                ));
+            }
+            if !warnings.is_empty() {
+                out["warnings"] = json!(warnings);
             }
         }
         poll(s);

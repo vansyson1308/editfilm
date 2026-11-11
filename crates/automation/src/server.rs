@@ -205,12 +205,15 @@ pub struct BoardParams {
     /// Width of one frame in pixels (default 320).
     #[serde(default)]
     pub width: Option<u32>,
+    /// Whether each frame carries its number and time (default true).
+    #[serde(default)]
+    pub labels: Option<bool>,
 }
 
 /// `story.board` params for a `story_board` call writing to `path`.
 fn board_params(p: BoardParams, path: &str) -> Value {
     let mut v = json!({"path": path});
-    let fields: [(&str, Option<Value>); 7] = [
+    let fields: [(&str, Option<Value>); 8] = [
         ("item", p.item.map(Value::from)),
         ("count", p.count.map(Value::from)),
         ("max", p.max.map(Value::from)),
@@ -218,6 +221,7 @@ fn board_params(p: BoardParams, path: &str) -> Value {
         ("toSeconds", p.to_seconds.map(Value::from)),
         ("columns", p.columns.map(Value::from)),
         ("width", p.width.map(Value::from)),
+        ("labels", p.labels.map(Value::from)),
     ];
     for (key, value) in fields {
         if let Some(value) = value {
@@ -698,7 +702,7 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep and compare versions. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the frame; `color.relight` grades a shot toward a time of day. These work from the frames that exist: none of them generates new picture content.";
+const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmcraft://document";

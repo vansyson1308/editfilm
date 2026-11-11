@@ -84,7 +84,7 @@ claude mcp add filmcraft -- filmcraft-cli mcp
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
 | `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
 | `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were. Parallel bridge calls take turns, so each returns its own frame |
-| `story_board` | both | PNG of one representative frame per shot of the active sequence, or of `count` frames across a project `item`'s rushes, with what each frame is as JSON (`item`, `count`, `max`, `from_seconds`, `to_seconds`, `columns`, `width`). Read-only |
+| `story_board` | both | PNG of one representative frame per shot of the active sequence, or of `count` frames across a project `item`'s rushes, with what each frame is as JSON (`item`, `count`, `max`, `from_seconds`, `to_seconds`, `columns`, `width`, `labels`). Read-only |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
@@ -101,8 +101,14 @@ To judge an edit and not only make one, and to work on part of a picture, see
 [story-and-layers.md](story-and-layers.md): `story.rhythm`, `story.cuts`, `story.blinkPoints`,
 `story.board`, `story.splitEdit`, `story.shadowCut`, `story.compare`, the `layers.*` commands and
 `color.relight`. A loop that uses them: `story_board` on the rushes → `story.blinkPoints` for
-where each clip could be cut → build the sequence → `story.rhythm` and `story.cuts` → look at the
-cuts they call out → `story.shadowCut` before trying another version.
+where each clip could be cut → build the sequence (`sequence.clips` lists its clips in brief) →
+`story.rhythm` and `story.cuts` → look at the cuts they call out → `story.shadowCut` before trying
+another version, and `story.compare` to see shot by shot what the new one changed.
+
+Two habits make these reliable. Read `warnings` and `notes` in every result: they say what a
+command could not do. And read `pictureChange` after a command that alters the picture: `subtle`
+means a viewer will not notice it. A region read off a rendered frame takes `"space":"frame"`
+when the clip is moved, zoomed or turned.
 
 ### Conventions
 

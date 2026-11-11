@@ -232,7 +232,7 @@ fn a_movement_settles_after_its_burst() {
     for (i, v) in [0.03, 0.08, 0.09, 0.05].into_iter().enumerate() {
         a[10 + i] = v;
     }
-    let s = settles(&a);
+    let s = settles(&a, 20);
     assert_eq!(s.len(), 1, "{s:?}");
     assert!((14..=17).contains(&s[0].0), "settles just after the burst: {s:?}");
     assert!((s[0].1 - 1.0).abs() < 1e-6);
@@ -240,20 +240,20 @@ fn a_movement_settles_after_its_burst() {
     for (i, v) in [0.02, 0.04, 0.02].into_iter().enumerate() {
         a[25 + i] = v;
     }
-    let s = settles(&a);
+    let s = settles(&a, 20);
     assert_eq!(s.len(), 2, "{s:?}");
     assert!(s[1].1 < s[0].1 && s[1].0 > 27, "{s:?}");
 }
 
 #[test]
 fn stillness_and_junk_settle_nowhere() {
-    assert!(settles(&[]).is_empty());
-    assert!(settles(&[0.5, 0.5]).is_empty());
-    assert!(settles(&[0.001; 50]).is_empty(), "nothing moved");
-    assert!(settles(&[f32::NAN; 50]).is_empty());
+    assert!(settles(&[], 20).is_empty());
+    assert!(settles(&[0.5, 0.5], 20).is_empty());
+    assert!(settles(&[0.001; 50], 20).is_empty(), "nothing moved");
+    assert!(settles(&[f32::NAN; 50], 20).is_empty());
     // movement that never dies down has no settle point
     let rising: Vec<f32> = (0..50).map(|i| 0.01 + i as f32 * 0.01).collect();
-    assert!(settles(&rising).is_empty());
+    assert!(settles(&rising, 20).is_empty());
 }
 
 #[test]
@@ -320,4 +320,142 @@ fn oversized_and_empty_sheets_are_refused() {
     assert!(contact_sheet(&[(cell(0.1), String::new())], Sheet { gap: usize::MAX, ..s }).is_none());
     let many: Vec<(Image, String)> = (0..MAX_SHEET_CELLS + 1).map(|_| (Image::new(0, 0), String::new())).collect();
     assert!(contact_sheet(&many, s).is_none());
+}
+
+#[test]
+fn movement_all_over_the_frame_leads_the_eye_nowhere() {
+    let (w, h) = (256, 144);
+    // one bright post in the middle of rippling water: every cell of the water flickers a little
+    let water = |seed: u32| {
+        let mut px = frame(w, h, 90, &[(120, 40, 14, 70, 235)]);
+        let mut state = seed;
+        for (i, p) in px.chunks_mut(4).enumerate() {
+            let (x, y) = (i % w, i / w);
+            if (120..134).contains(&x) && (40..110).contains(&y) {
+                continue;
+            }
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            // ripples are coarse: the same nudge for each 4×4 block
+            let block = ((x / 4) as u32).wrapping_mul(73_856_093) ^ ((y / 4) as u32).wrapping_mul(19_349_663) ^ seed;
+            let nudge = (block.wrapping_mul(2_654_435_761) >> 27) as u8;
+            p[..3].fill(74 + nudge);
+        }
+        px
+    };
+    let (a, b) = (glance(&water(1), w, h), glance(&water(2), w, h));
+    let still = attention(&b, None);
+    let moving = attention(&b, Some(&a));
+    assert_eq!(moving.motion, 0.0, "ripples everywhere are not a subject: {moving:?}");
+    assert!((moving.x - still.x).abs() < 0.02 && (moving.y - still.y).abs() < 0.02, "the eye stays on the post: {moving:?} vs {still:?}");
+    assert!((moving.x - 0.5).abs() < 0.1 && (moving.y - 0.52).abs() < 0.12, "{moving:?}");
+    // a small thing that moves in a still frame counts in full
+    let prev = glance(&frame(w, h, 40, &[(30, 70, 12, 12, 110)]), w, h);
+    let cur = glance(&frame(w, h, 40, &[(48, 70, 12, 12, 110)]), w, h);
+    assert_eq!(attention(&cur, Some(&prev)).motion, 1.0);
+    // nothing moved at all
+    assert_eq!(attention(&cur, Some(&cur)).motion, 0.0);
+    assert_eq!(attention(&cur, None).motion, 0.0);
+}
+
+/// Frame-to-frame activity of a hand-held close shot, measured eight times a second on real
+/// footage: the camera never holds still, a head turns up at sample 34 and back down around 47.
+const HAND_HELD: [f32; 94] = [
+    0.065, 0.050, 0.046, 0.041, 0.051, 0.050, 0.046, 0.039, 0.047, 0.019, 0.024, 0.025, 0.027, 0.045, 0.024, 0.031, 0.021, 0.021, 0.023, 0.036, 0.032, 0.036,
+    0.020, 0.025, 0.033, 0.033, 0.031, 0.025, 0.022, 0.024, 0.033, 0.035, 0.031, 0.024, 0.048, 0.057, 0.041, 0.033, 0.041, 0.040, 0.040, 0.040, 0.033, 0.025,
+    0.032, 0.045, 0.054, 0.055, 0.072, 0.060, 0.046, 0.048, 0.035, 0.036, 0.034, 0.022, 0.023, 0.020, 0.021, 0.018, 0.034, 0.023, 0.027, 0.025, 0.030, 0.035,
+    0.044, 0.039, 0.028, 0.027, 0.027, 0.027, 0.023, 0.016, 0.029, 0.031, 0.023, 0.020, 0.032, 0.041, 0.045, 0.052, 0.048, 0.044, 0.044, 0.052, 0.043, 0.027,
+    0.025, 0.022, 0.019, 0.024, 0.027, 0.030,
+];
+
+#[test]
+fn a_turn_of_the_head_stands_out_of_a_hand_held_shot() {
+    let found = settles(&HAND_HELD, 21);
+    let at: Vec<usize> = found.iter().map(|f| f.0).collect();
+    // the head has turned (the burst at 34–35 is over by 37), and has come back down (48 is over by 55–58)
+    assert!(at.iter().any(|i| (36..=39).contains(i)), "the look up: {found:?}");
+    assert!(at.iter().any(|i| (53..=58).contains(i)), "the look back down: {found:?}");
+    // a handful of movements in twelve seconds, not one at every wobble of the camera
+    assert!((3..=6).contains(&found.len()), "{found:?}");
+    assert!(found.iter().all(|f| f.1 > 0.0 && f.1 <= 1.0));
+    // against the median of the whole series alone, the look up would not have counted
+    let whole = {
+        let mut v = HAND_HELD.to_vec();
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    assert!(0.057 < 2.5 * whole, "the burst is under 2.5 times the series' median of {whole}");
+}
+
+#[test]
+fn a_move_longer_than_the_window_still_settles() {
+    // a slow three-second tilt in a shot that is otherwise calm: the local median sits inside the move
+    let mut a = vec![0.004f32; 120];
+    for v in a.iter_mut().take(60).skip(20) {
+        *v = 0.05;
+    }
+    let found = settles(&a, 8);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!((60..=63).contains(&found[0].0), "{found:?}");
+    // absurd windows are clamped, not indexed
+    assert_eq!(settles(&a, 0).len(), settles(&a, 2).len());
+    assert!(!settles(&a, usize::MAX).is_empty());
+}
+
+#[test]
+fn a_voice_is_heard_over_an_engine() {
+    let rate = 16_000u32;
+    // three phrases of a voice (400 and 1200 Hz) with half-second pauses, under a loud 70 Hz engine
+    let mut track = Vec::new();
+    let voiced = [(0.0, 1.0), (1.5, 2.4), (2.9, 4.0)];
+    for i in 0..(4.5 * f64::from(rate)) as usize {
+        let t = i as f64 / f64::from(rate);
+        let engine = 0.5 * (t * 70.0 * std::f64::consts::TAU).sin();
+        let speaking = voiced.iter().any(|(a, b)| t >= *a && t < *b);
+        let voice = if speaking { 0.06 * (t * 400.0 * std::f64::consts::TAU).sin() + 0.04 * (t * 1200.0 * std::f64::consts::TAU).sin() } else { 0.0 };
+        track.push((engine + voice) as f32);
+    }
+    assert!(pauses(&track, rate, 0.25, 0.4).is_empty(), "the engine hides the pauses in the whole sound");
+    // fed in pieces, as a long clip is
+    let mut band = VoiceBand::new(rate);
+    let levels: Vec<f32> = track.chunks(level_step(rate) * 37).flat_map(|piece| band.levels_db(piece)).collect();
+    let found = pauses_in_levels(&levels, 0.01, 0.25, 0.4);
+    assert_eq!(found.len(), 3, "{found:?}");
+    for (p, end) in found.iter().zip([1.0, 2.4, 4.0]) {
+        assert!((p.start - end).abs() < 0.06, "{p:?} vs {end}");
+    }
+    // hostile samples and rates do not disturb it
+    let mut junk = VoiceBand::new(0);
+    assert!(junk.levels_db(&[f32::NAN, f32::INFINITY, 0.5]).is_empty());
+    let mut band = VoiceBand::new(rate);
+    assert!(band.levels_db(&vec![f32::NAN; 1600]).iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn a_change_is_measured_where_it_is_strongest() {
+    let (w, h) = (256, 144);
+    let base = frame(w, h, 100, &[]);
+    assert_eq!(picture_change(&base, &base, w, h).map(|c| (c.mean, c.strongest, c.reads())), Some((0.0, 0.0, "none")));
+    // a small region lifted by 30 levels: the mean barely moves, the region says it
+    let lifted = frame(w, h, 100, &[(100, 60, 40, 30, 130)]);
+    let c = picture_change(&base, &lifted, w, h).unwrap();
+    assert!(c.mean < 0.01 && (c.strongest - 30.0 / 255.0).abs() < 0.01, "{c:?}");
+    assert_eq!(c.reads(), "visible");
+    // the whole frame lifted by 4 levels: there, but only side by side
+    assert_eq!(picture_change(&base, &frame(w, h, 104, &[]), w, h).unwrap().reads(), "subtle");
+    assert_eq!(picture_change(&base, &frame(w, h, 101, &[]), w, h).unwrap().reads(), "none");
+    assert_eq!(picture_change(&base, &frame(w, h, 200, &[]), w, h).unwrap().reads(), "strong");
+    // grain averages out: every pixel off by ±3 at random is no change of the picture
+    let mut grain = base.clone();
+    let mut seed = 5u32;
+    for p in grain.chunks_mut(4) {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let d = (seed >> 29) as i16 - 3;
+        p[..3].iter_mut().for_each(|v| *v = (i16::from(*v) + d).clamp(0, 255) as u8);
+    }
+    assert_eq!(picture_change(&base, &grain, w, h).unwrap().reads(), "none");
+    // sizes that do not match their buffers are refused
+    assert!(picture_change(&base, &lifted, w, h + 1).is_none());
+    assert!(picture_change(&base, &base[..8], w, h).is_none());
+    assert!(picture_change(&[], &[], 0, 0).is_none());
+    assert!(picture_change(&base, &base, usize::MAX, usize::MAX).is_none());
 }

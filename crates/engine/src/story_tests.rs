@@ -271,6 +271,75 @@ fn a_cut_inside_one_setup_is_a_match_and_is_called_out() {
     assert_eq!(c["change"]["kind"], "match", "{c}");
     assert!(c["issues"].as_array().unwrap().iter().any(|i| i.as_str().unwrap().contains("barely changes")), "{c}");
     assert_eq!(c["direction"]["reverses"], false);
+    // the sound was cut there too, but it is one recording running on: not a straight cut
+    assert_eq!(c["sound"]["edit"], "continuous", "{c}");
+    assert_eq!(r["summary"]["continuousSound"], 1);
+    // and a split edit of it would change nothing: refused, with the reason
+    let e = s.execute("story.splitEdit", json!({"kind": "L", "seconds": 2.5})).unwrap_err().to_string();
+    assert!(e.contains("one continuous recording"), "{e}");
+    let e = s.execute("story.splitEdit", json!({"kind": "J", "seconds": 2.5, "roll": "video"})).unwrap_err().to_string();
+    assert!(e.contains("one continuous recording"), "{e}");
+}
+
+#[test]
+fn a_cutaway_over_running_sound_reads_as_a_split_edit() {
+    let mut s = demo();
+    // the third V1 clip's picture, copied over the middle of the first clip: sound stays with the first
+    let q = s.active_sequence().unwrap();
+    let (first, third) = (q.video_tracks[0].items[0].clone(), q.video_tracks[0].items[2].clone());
+    let at = s.sequence_rate().tick_of(48);
+    s.execute("timeline.razor", json!({"clip": third.id.0, "time": (third.start + s.sequence_rate().tick_of(24)).0})).unwrap();
+    s.execute("timeline.move", json!({"moves": [{"clip": third.id.0, "track": "V3", "time": at.0}], "copy": true, "linked": false})).unwrap();
+    let cuts = s.execute("story.cuts", json!({"fromSeconds": 1.0, "toSeconds": 4.0})).unwrap();
+    let cuts = cuts["cuts"].as_array().unwrap().clone();
+    assert_eq!(cuts.len(), 2, "into the cutaway and back: {cuts:?}");
+    assert_eq!(cuts[0]["from"]["clip"].as_u64(), Some(first.id.0));
+    assert_eq!((cuts[0]["sound"]["edit"].as_str(), cuts[1]["sound"]["edit"].as_str()), (Some("L"), Some("J")), "{cuts:?}");
+    // the same with the sound under it cut in two where the cutaway begins: still one recording
+    s.execute("timeline.razor", json!({"clip": first.id.0, "time": at.0})).unwrap();
+    let again = s.execute("story.cuts", json!({"fromSeconds": 1.0, "toSeconds": 4.0})).unwrap();
+    assert_eq!(again["cuts"][0]["sound"]["edit"], "L", "{again}");
+    assert_eq!(again["cuts"][1]["sound"]["edit"], "J", "{again}");
+}
+
+#[test]
+fn the_clips_of_a_sequence_are_listed_in_brief() {
+    let mut s = demo();
+    let r = s.execute("sequence.clips", json!({})).unwrap();
+    let tracks = r["tracks"].as_array().unwrap();
+    // video from the top down, then audio
+    let names: Vec<&str> = tracks.iter().map(|t| t["track"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Video 3", "Video 2", "Video 1", "Audio 1", "Audio 2", "Audio 3"]);
+    let v1 = tracks[2]["clips"].as_array().unwrap();
+    let q = s.active_sequence().unwrap().clone();
+    assert_eq!(v1.len(), 6);
+    for (c, it) in v1.iter().zip(&q.video_tracks[0].items) {
+        assert_eq!((c["clip"].as_u64(), c["item"].as_u64(), c["link"].as_u64()), (Some(it.id.0), Some(it.item.0), it.link));
+        assert!((c["start"].as_f64().unwrap() - it.start.seconds()).abs() < 1e-3 && (c["sourceIn"].as_f64().unwrap() - it.source_in.seconds()).abs() < 1e-3);
+        assert!(c.get("speed").is_none() && c.get("disabled").is_none() && c.get("reverse").is_none(), "only what is unusual is listed: {c}");
+        // the fixed effects every clip has are not news; one that was added is
+        let added: Vec<&str> = it.effects.iter().filter(|e| e.def().is_none_or(|d| !d.intrinsic)).map(|e| e.effect.as_str()).collect();
+        let listed: Vec<&str> = c.get("effects").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        assert_eq!(listed, added, "{c}");
+    }
+    assert_eq!(tracks[2]["transitions"].as_array().unwrap().len(), q.video_tracks[0].transitions.len());
+    assert!(tracks[0].get("transitions").is_none());
+    // far shorter than the full inspection
+    let full = s.execute("sequence.inspect", json!({})).unwrap().to_string().len();
+    assert!(r.to_string().len() * 4 < full, "{} vs {full}", r.to_string().len());
+    // what is unusual about a clip is said
+    let c = q.video_tracks[0].items[1].id.0;
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    s.execute("clip.speedDuration", json!({"clips": [c], "speed": 50})).unwrap();
+    s.execute("effects.apply", json!({"clips": [c], "effect": "Gaussian Blur"})).unwrap();
+    let r = s.execute("sequence.clips", json!({"track": "V1", "fromSeconds": 5.0, "toSeconds": 6.0})).unwrap();
+    assert_eq!(r["tracks"].as_array().unwrap().len(), 1);
+    let listed = r["tracks"][0]["clips"].as_array().unwrap();
+    let it = listed.iter().find(|x| x["clip"].as_u64() == Some(c)).unwrap();
+    assert_eq!((it["speed"].as_f64(), it["disabled"].as_bool(), it["effects"].clone()), (Some(0.5), Some(true), json!(["gaussian_blur"])), "{it}");
+    assert!(listed.len() <= 2, "only what lies in the span: {listed:?}");
+    assert!(s.journal.iter().all(|(id, _)| id != "sequence.clips"));
+    refuses(&mut s, "sequence.clips", &[json!({"track": "V9"}), json!({"track": 5.5}), json!({"fromSeconds": "x"}), json!({"toSeconds": -1})]);
 }
 
 /// A WAV of 220 Hz phrases (sound seconds, silence seconds) over a faint hiss.
@@ -376,6 +445,17 @@ fn blink_points_read_a_picture_clip_through_its_linked_sound() {
     // the picture alone can be left out
     let r = s.execute("story.blinkPoints", json!({"clip": v.id.0, "picture": false})).unwrap();
     assert_eq!(r["analysed"]["picture"], false);
+    // when nothing is found, the result says what was looked for and not found
+    let mut still = Session::default();
+    still.execute("file.newColorMatte", json!({"color": "#336699", "name": "matte"})).unwrap();
+    let item = still.project.items.keys().next().unwrap().0;
+    still.execute("file.newSequence", json!({"name": "still", "fps": 24.0})).unwrap();
+    let c = still.execute("timeline.place", json!({"item": item, "track": "V1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
+    let r = still.execute("story.blinkPoints", json!({"clip": c})).unwrap();
+    assert!(r["points"].as_array().unwrap().is_empty());
+    let notes = r["notes"].as_array().unwrap();
+    assert!(notes.iter().any(|n| n.as_str().unwrap().contains("holds still")), "{r}");
+    assert!(!notes.iter().any(|n| n.as_str().unwrap().contains("sound")), "there was no sound to speak of: {r}");
 }
 
 #[test]
@@ -624,6 +704,46 @@ fn a_shadow_cut_is_kept_aside_and_compared() {
     // the shadow cut did not move
     assert_eq!(crate::story::shots(&s.project, s.project.sequence(filmcraft_project::ItemId(shadow)).unwrap()).unwrap().len(), 7);
 
+    // shot by shot: the first shot is cut in two, the last is shorter, nothing looks different
+    let shots = diff["shots"].as_array().unwrap();
+    assert_eq!(shots.len(), 8);
+    assert_eq!((shots[0]["status"].as_str(), shots[0]["what"].clone()), (Some("changed"), json!(["shorter"])), "{}", shots[0]);
+    assert_eq!(
+        (shots[1]["status"].as_str(), shots[1]["there"]["shot"].as_u64(), shots[1]["shiftSeconds"].as_f64()),
+        (Some("changed"), Some(1), Some(0.0)),
+        "{}",
+        shots[1]
+    );
+    assert_eq!(shots[2]["status"], "same", "{}", shots[2]);
+    assert_eq!(shots[7]["what"], json!(["shorter"]));
+    assert!(shots.iter().all(|x| x["picture"]["reads"] == "none"), "{shots:?}");
+    assert_eq!(diff["summary"], json!({"same": 5, "changed": 3, "new": 0, "onlyThere": 0}));
+    // a grade on one shot is found, and said to be what changed
+    let graded = s.active_sequence().unwrap().video_tracks[0].items[3].id;
+    s.execute("effects.apply", json!({"clips": [graded.0], "effect": "tint"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": graded.0, "effect": "tint", "param": "amount", "value": 100})).unwrap();
+    let diff = s.execute("story.compare", json!({"with": shadow})).unwrap();
+    let row = diff["shots"].as_array().unwrap().iter().find(|x| x["clip"].as_u64() == Some(graded.0)).unwrap().clone();
+    assert_eq!(row["what"], json!(["looks different"]), "{row}");
+    assert!(["visible", "strong"].contains(&row["picture"]["reads"].as_str().unwrap()), "{row}");
+    // a shot the other version does not have, and one only it has
+    s.execute("file.newColorMatte", json!({"color": "#ff0000", "name": "red"})).unwrap();
+    let red = s.project.items.values().find(|i| i.name == "red").unwrap().id.0;
+    s.execute("timeline.place", json!({"item": red, "track": "V3", "seconds": 23.0, "duration": {"seconds": 1.0}})).unwrap();
+    let fifth = s.active_sequence().unwrap().video_tracks[0].items[5].id;
+    s.execute("timeline.select", json!({"clips": [fifth.0]})).unwrap();
+    s.execute("edit.clear", json!({})).unwrap();
+    let diff = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    assert!(diff["shots"].as_array().unwrap().iter().any(|x| x["status"] == "new" && x["name"] == "red"), "{diff}");
+    assert_eq!(diff["shotsOnlyThere"].as_array().unwrap().len(), 1, "{diff}");
+    assert!(diff["shots"].as_array().unwrap().iter().all(|x| x.get("picture").is_none()), "pictures were not asked for");
+    refuses(&mut s, "story.compare", &[json!({"with": shadow, "picture": "yes"}), json!({"with": shadow, "limit": 0}), json!({"with": shadow, "limit": 1e9})]);
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+
     // keeping a shadow cut is one undoable step
     let items = s.project.items.len();
     s.execute("story.shadowCut", json!({})).unwrap();
@@ -653,4 +773,374 @@ fn the_story_commands_are_registered_and_documented() {
     // queries leave no journal entry; edits do
     assert!(!crate::commands::find("story.cuts").unwrap().journal);
     assert!(crate::commands::find("story.splitEdit").unwrap().journal);
+}
+
+/// The demo with its first clip sped up, so that every later cut falls between frames.
+fn off_grid() -> Session {
+    let mut s = demo();
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("clip.speedDuration", json!({"clips": [first], "speed": 150, "ripple": true})).unwrap();
+    let fd = s.sequence_rate().frame_duration().0;
+    let cut = s.active_sequence().unwrap().video_tracks[0].items[4].start;
+    assert_ne!(cut.0 % fd, 0, "the test needs a cut between frames");
+    s
+}
+
+#[test]
+fn a_cut_between_frames_is_read_from_the_frames_either_side_of_it() {
+    let mut s = off_grid();
+    // Desert Dunes to Misty Forest: a hard cut between two different pictures, with no transition
+    let cut = s.active_sequence().unwrap().video_tracks[0].items[4].start;
+    let r = s.execute("story.cuts", json!({"time": cut.0})).unwrap();
+    let c = &r["cuts"][0];
+    assert_eq!(c["at"]["time"].as_i64(), Some(cut.0));
+    assert!(c["transition"].is_null(), "{c}");
+    // the frame the cut falls in still shows the outgoing shot: compared with itself it would be a "match"
+    assert_eq!(c["change"]["kind"], "clean", "{c}");
+    assert!(!c["issues"].as_array().unwrap().iter().any(|i| i.as_str().unwrap().contains("barely changes")), "{c}");
+}
+
+#[test]
+fn the_board_shows_each_shot_from_a_frame_of_its_own() {
+    let mut s = off_grid();
+    // A shot that starts between frames and is on screen for one frame only: the frame its start
+    // falls in still shows the shot before it.
+    let q = s.active_sequence().unwrap();
+    let rate = q.frame_rate();
+    let start = q.video_tracks[0].items[4].start;
+    let end = rate.tick_of(rate.frame_at(start) + 2);
+    s.execute("sequence.addEdit", json!({"time": end.0})).unwrap();
+    let dir = tmp_dir("story-board-grid");
+    let r = s.execute("story.board", json!({"path": dir.join("b.png").to_string_lossy(), "width": 64})).unwrap();
+    let cells = r["cells"].as_array().unwrap();
+    assert!(cells.iter().any(|c| c["start"]["time"].as_i64() == Some(start.0)), "{r}");
+    for c in cells {
+        let (from, to, at) = (c["start"]["time"].as_i64().unwrap(), c["end"]["time"].as_i64().unwrap(), c["frame"]["time"].as_i64().unwrap());
+        assert!(from <= at && at < to, "shot {} is shown by a frame of another shot: {c}", c["shot"]);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_layer_over_a_shot_neither_starts_nor_ends_one() {
+    let mut s = demo();
+    let before = s.execute("story.rhythm", json!({})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let (clip, cut) = (q.video_tracks[0].items[3].id.0, q.video_tracks[0].items[3].start);
+    let sound = s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["sound"]["edit"].clone();
+    assert_eq!(sound, "straight");
+    let region = json!({"x": 0.1, "y": 0.1, "w": 0.4, "h": 0.4});
+    // twice as fast, the layer ends halfway through the shot: that is not a cut
+    s.execute("layers.retime", json!({"clip": clip, "region": region, "speed": 200})).unwrap();
+    s.execute("layers.extract", json!({"clip": clip, "region": region, "cutOut": true})).unwrap();
+    let after = s.execute("story.rhythm", json!({})).unwrap();
+    assert_eq!((after["shots"].clone(), after["cuts"].clone()), (before["shots"].clone(), before["cuts"].clone()), "{after}");
+    let shots = crate::story::shots(&s.project, s.active_sequence().unwrap()).unwrap();
+    assert!(shots.iter().any(|sh| sh.clip == Some(ClipId(clip))), "the shot is still the clip, not a layer over it");
+    // and the cut into it is still read with the clip's sound, and can still be split
+    let c = s.execute("story.cuts", json!({"time": cut.0})).unwrap();
+    assert_eq!(c["cuts"][0]["sound"]["edit"], "straight", "{c}");
+    assert_eq!(c["cuts"][0]["to"]["clip"].as_u64(), Some(clip));
+    let r = s.execute("story.splitEdit", json!({"kind": "L", "frames": 6, "time": cut.0})).unwrap();
+    assert_eq!(r["frames"], 6);
+    assert_eq!(s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["sound"]["edit"], "L");
+}
+
+#[test]
+fn a_plate_over_a_shot_keeps_the_shots_sound() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (clip, cut) = (q.video_tracks[0].items[3].id.0, q.video_tracks[0].items[3].start);
+    let dir = tmp_dir("story-plate-sound");
+    // a whole-frame plate stands in for the shot's picture; the sound is still the clip's underneath
+    let plate =
+        s.execute("layers.cleanPlate", json!({"clip": clip, "samples": 3, "path": dir.join("p.png").to_string_lossy()})).unwrap()["clip"].as_u64().unwrap();
+    let c = s.execute("story.cuts", json!({"time": cut.0})).unwrap();
+    assert_eq!((c["cuts"][0]["to"]["clip"].as_u64(), c["cuts"][0]["sound"]["edit"].as_str()), (Some(plate), Some("straight")), "{c}");
+    // rolling the picture would pull the plate away from its clip: refused, with the way to go on
+    let e = s.execute("story.splitEdit", json!({"kind": "L", "roll": "video", "time": cut.0})).unwrap_err().to_string();
+    assert!(e.contains("plate") && e.contains("audio"), "{e}");
+    assert_eq!(s.execute("story.splitEdit", json!({"kind": "J", "frames": 5, "time": cut.0})).unwrap()["frames"], -5);
+    assert_eq!(s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["sound"]["edit"], "J");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The demo with a second microphone: the sound of V1's third and fourth clips also on A3.
+fn two_microphones() -> Session {
+    let mut s = demo();
+    s.edit_sequence("second microphone", |q, ctx, _| {
+        let copies: Vec<filmcraft_project::TrackItem> = q.audio_tracks[0].items.iter().skip(2).take(2).cloned().collect();
+        for mut c in copies {
+            c.id = ClipId(ctx.alloc());
+            q.audio_tracks[2].items.push(c);
+        }
+        Ok(())
+    })
+    .unwrap();
+    s
+}
+
+#[test]
+fn a_split_edit_moves_the_cut_on_every_track_of_the_clips_sound() {
+    let mut s = two_microphones();
+    let rate = s.sequence_rate();
+    let (_, _, cut) = fourth_cut(&s);
+    assert_eq!(s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["sound"]["edit"], "straight");
+    let r = s.execute("story.splitEdit", json!({"kind": "L", "frames": 10, "time": cut.0})).unwrap();
+    assert_eq!((r["pairs"].as_array().unwrap().len(), r["frames"].as_i64()), (2, Some(10)), "{r}");
+    assert!(r["warnings"].as_array().unwrap().is_empty());
+    let q = s.active_sequence().unwrap();
+    for track in [0, 2] {
+        let items = &q.audio_tracks[track].items;
+        let (a, b) = (items.iter().find(|i| i.link == Some(34)).unwrap(), items.iter().find(|i| i.link == Some(37)).unwrap());
+        assert_eq!((a.end(), b.start), (cut + rate.tick_of(10), cut + rate.tick_of(10)), "A{}: both microphones cut together", track + 1);
+    }
+    assert_eq!(s.history.undo.last().unwrap().0, "Split Edit");
+    assert_eq!(s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["sound"]["edit"], "L");
+    s.execute("edit.undo", json!({})).unwrap();
+    // one microphone already split: the other still meets at the cut and is rolled; the result says what was left
+    let lone = s.active_sequence().unwrap().audio_tracks[2].items.iter().find(|i| i.link == Some(34)).unwrap().id.0;
+    s.execute("timeline.trim", json!({"clip": lone, "edge": "out", "mode": "regular", "deltaFrames": -4, "linked": false})).unwrap();
+    let r = s.execute("story.splitEdit", json!({"kind": "L", "frames": 3, "time": cut.0})).unwrap();
+    assert_eq!(r["pairs"].as_array().unwrap().len(), 1);
+    assert!(r["warnings"][0].as_str().unwrap().contains("Audio 3"), "{r}");
+    // a locked sound track is not rolled behind its lock
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "locked": true})).unwrap();
+    assert!(s.active_sequence().unwrap().audio_tracks[0].locked);
+    refuses(&mut s, "story.splitEdit", &[json!({"kind": "L", "frames": 3, "time": cut.0})]);
+}
+
+#[test]
+fn a_transition_on_another_track_is_not_the_cuts() {
+    let mut s = demo();
+    let cut = s.active_sequence().unwrap().video_tracks[0].items[4].start;
+    assert!(s.execute("story.cuts", json!({"time": cut.0})).unwrap()["cuts"][0]["transition"].is_null());
+    // a title that fades in across the cut, on the track above
+    s.execute("playhead.set", json!({"time": (cut - Tick::from_seconds_f64(0.5)).0})).unwrap();
+    s.execute("graphics.newText", json!({"text": "Title"})).unwrap();
+    s.edit_sequence("fade the title in", |q, ctx, _| {
+        let mut fade = q.video_tracks[0].transitions[1].clone();
+        let (ti, title) = q
+            .video_tracks
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(i, t)| t.items.iter().find(|it| it.name.contains("Title") || it.start == cut - Tick::from_seconds_f64(0.5)).map(|it| (i, it.clone())))
+            .expect("the title");
+        fade.id = filmcraft_project::TransitionId(ctx.alloc());
+        (fade.start, fade.duration, fade.from, fade.to) = (title.start, Tick::from_seconds_f64(1.0), None, Some(title.id));
+        q.video_tracks[ti].transitions.push(fade);
+        Ok(())
+    })
+    .unwrap();
+    let c = s.execute("story.cuts", json!({"time": cut.0})).unwrap();
+    assert!(c["cuts"][0]["transition"].is_null(), "the title's fade is not this cut's transition: {c}");
+    assert_eq!(c["cuts"][0]["change"]["kind"], "clean");
+    // the cuts that do sit in a transition still say so
+    let first = s.active_sequence().unwrap().video_tracks[0].items[1].start;
+    assert_eq!(s.execute("story.cuts", json!({"time": first.0})).unwrap()["cuts"][0]["transition"], "cross_dissolve");
+}
+
+#[test]
+fn a_short_tail_is_counted_with_the_window_before_it() {
+    let mut s = demo();
+    // 26.8 s in windows of 5: five and a tail of 1.8 s with nothing of its own to say
+    let r = s.execute("story.rhythm", json!({"window": 5})).unwrap();
+    let windows = r["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 5, "{r}");
+    assert!((windows[4]["seconds"].as_f64().unwrap() - 6.777).abs() < 0.01 && windows[0]["seconds"] == 5.0, "{r}");
+    assert_eq!(windows.iter().map(|w| w["cuts"].as_u64().unwrap()).sum::<u64>(), r["cuts"].as_u64().unwrap());
+    // a cut in what would have been the tail: one cut in 1.8 s is not thirty-four a minute
+    s.execute("sequence.addEdit", json!({"seconds": 26.0})).unwrap();
+    let r = s.execute("story.rhythm", json!({"window": 5})).unwrap();
+    let last = r["windows"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(last["cuts"], 2, "{last}");
+    assert!(last["cutsPerMinute"].as_f64().unwrap() < 18.0, "{last}");
+    assert!(!r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("faster than 40")), "{r}");
+    // a tail of more than half a window stands on its own
+    assert_eq!(s.execute("story.rhythm", json!({"window": 4})).unwrap()["windows"].as_array().unwrap().len(), 7);
+}
+
+#[test]
+fn paging_through_cuts_misses_none_even_after_a_one_frame_shot() {
+    let mut s = demo();
+    let rate = s.sequence_rate();
+    for frame in [24, 25, 26, 40] {
+        s.execute("sequence.addEdit", json!({"time": rate.tick_of(frame).0})).unwrap();
+    }
+    let all = s.execute("story.cuts", json!({"limit": 500})).unwrap();
+    let total = all["cutsInSequence"].as_u64().unwrap() as usize;
+    let mut seen: Vec<i64> = Vec::new();
+    let mut from: Option<f64> = None;
+    for _ in 0..total + 2 {
+        let mut p = json!({"limit": 1});
+        if let Some(f) = from {
+            p["fromSeconds"] = json!(f);
+        }
+        let r = s.execute("story.cuts", p).unwrap();
+        seen.extend(r["cuts"].as_array().unwrap().iter().map(|c| c["at"]["time"].as_i64().unwrap()));
+        match r["nextFromSeconds"].as_f64() {
+            Some(next) => from = Some(next),
+            None => break,
+        }
+    }
+    let want: Vec<i64> = all["cuts"].as_array().unwrap().iter().map(|c| c["at"]["time"].as_i64().unwrap()).collect();
+    assert_eq!(seen, want, "every cut once, in order");
+    assert!(want.contains(&rate.tick_of(25).0) && want.contains(&rate.tick_of(26).0));
+}
+
+/// A grey picture clip eight seconds long with the spoken lines (4.9 s) as its linked sound.
+fn spoken_picture() -> (Session, u64, u64, std::path::PathBuf) {
+    let (mut s, sound, item, dir) = spoken(0.0);
+    let matte = s.execute("file.newColorMatte", json!({"color": "#808080", "seconds": 8.0})).unwrap()["item"].as_u64().unwrap();
+    let picture =
+        s.execute("timeline.place", json!({"item": matte, "track": "V1", "seconds": 0.0, "duration": {"seconds": 8.0}})).unwrap()["clips"][0].as_u64().unwrap();
+    s.edit_sequence("link", |q, _, _| {
+        for id in [picture, sound] {
+            if let Some((_, it)) = q.find_item_mut(ClipId(id)) {
+                it.link = Some(9_000_001);
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    (s, picture, item, dir)
+}
+
+#[test]
+fn where_a_clip_has_no_sound_is_not_a_pause() {
+    let (mut s, picture, _, dir) = spoken_picture();
+    assert!(clip_of(&s, picture).duration.seconds() > 7.9);
+    let r = s.execute("story.blinkPoints", json!({"clip": picture, "picture": false})).unwrap();
+    // the three phrase ends, as when the sound is read on its own; not one "pause" where the sound clip ends
+    let ends: Vec<f64> = r["points"].as_array().unwrap().iter().map(|pt| secs(&pt["pause"]["start"])).collect();
+    assert_eq!(ends.len(), 3, "{r}");
+    for (got, want) in ends.iter().zip([1.0, 2.3, 3.9]) {
+        assert!((got - want).abs() < 0.05, "{ends:?}");
+    }
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("does not run the whole length")), "{r}");
+    // a span with no sound in it at all has no sound to analyse, and says so rather than finding a pause
+    let r = s.execute("story.blinkPoints", json!({"clip": picture, "fromSeconds": 6.0, "toSeconds": 7.5})).unwrap();
+    assert_eq!(r["analysed"]["sound"], false, "{r}");
+    assert!(r["points"].as_array().unwrap().iter().all(|pt| pt["kind"] == "movement"), "{r}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn clip_of(s: &Session, id: u64) -> filmcraft_project::TrackItem {
+    s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.clone()
+}
+
+#[test]
+fn a_subclip_is_read_where_it_lies_in_its_media() {
+    let (mut s, _, item, dir) = spoken(0.0);
+    // the last 2.9 s of the lines: the phrase ends at 2.3 and 3.9 s of the recording
+    let (from, to) = (Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(4.9));
+    let sub = s.execute("clip.makeSubclip", json!({"item": item, "start": from.0, "end": to.0})).unwrap()["item"].as_u64().unwrap();
+    let r = s.execute("story.blinkPoints", json!({"item": sub})).unwrap();
+    assert_eq!(r["span"]["from"]["time"].as_i64(), Some(from.0), "{r}");
+    let ends: Vec<f64> = r["points"].as_array().unwrap().iter().map(|pt| secs(&pt["pause"]["start"])).collect();
+    assert_eq!(ends.len(), 2, "{r}");
+    assert!((ends[0] - 2.3).abs() < 0.05 && (ends[1] - 3.9).abs() < 0.05, "{ends:?}");
+    // a span is in the media's own time too, and is kept inside the subclip
+    let r = s.execute("story.blinkPoints", json!({"item": sub, "fromSeconds": 0.0, "toSeconds": 3.0})).unwrap();
+    assert_eq!((r["span"]["from"]["time"].as_i64(), r["points"].as_array().unwrap().len()), (Some(from.0), 1), "{r}");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // the board of a subclip shows the subclip's frames, at its media's frame rate
+    let mut s = demo();
+    let forest = s.project.items.values().find(|i| i.name == "Misty_Forest.mp4").unwrap().id.0;
+    let rate = s.project.item(filmcraft_project::ItemId(forest)).unwrap().frame_rate();
+    let (from, to) = (rate.tick_of(48), rate.tick_of(96));
+    let sub = s.execute("clip.makeSubclip", json!({"item": forest, "start": from.0, "end": to.0})).unwrap()["item"].as_u64().unwrap();
+    let dir = tmp_dir("story-subclip");
+    let r = s.execute("story.board", json!({"item": sub, "count": 4, "width": 64, "path": dir.join("b.png").to_string_lossy()})).unwrap();
+    let cells = r["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 4);
+    for c in cells {
+        let at = c["at"]["time"].as_i64().unwrap();
+        assert!(from.0 <= at && at < to.0, "outside the subclip: {c}");
+        assert_eq!(at % rate.frame_duration().0, 0, "on the media's own frames: {c}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn two_versions_are_identical_only_when_nothing_differs() {
+    let mut s = demo();
+    let shadow = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
+    let both = |s: &mut Session| {
+        let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+        (r["sameShots"].as_bool().unwrap(), r["identical"].as_bool().unwrap())
+    };
+    assert_eq!(both(&mut s), (true, true));
+    let q = s.active_sequence().unwrap();
+    let (third, sound) = (q.video_tracks[0].items[3].id.0, q.audio_tracks[1].items[0].id.0);
+    // another stretch of the same take in the same place: every cut where it was, and not the same film
+    s.execute("timeline.slip", json!({"clip": third, "deltaFrames": 6})).unwrap();
+    let r = s.execute("story.compare", json!({"with": shadow, "picture": false})).unwrap();
+    assert!(r["cutsOnlyHere"].as_array().unwrap().is_empty() && r["cutsOnlyThere"].as_array().unwrap().is_empty());
+    assert_eq!((r["sameShots"].as_bool(), r["identical"].as_bool()), (Some(false), Some(false)), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(both(&mut s), (true, true));
+    // a grade on a shot
+    s.execute("effects.apply", json!({"clips": [third], "effect": "tint"})).unwrap();
+    assert_eq!(both(&mut s), (false, false));
+    s.execute("edit.undo", json!({})).unwrap();
+    // the music cut short: the shots are the same, the film is not
+    s.execute("timeline.trim", json!({"clip": sound, "edge": "out", "mode": "regular", "deltaFrames": -24, "linked": false})).unwrap();
+    assert_eq!(both(&mut s), (true, false));
+    s.execute("edit.undo", json!({})).unwrap();
+    // the tail of the last shot trimmed
+    let last = s.active_sequence().unwrap().video_tracks[0].items.last().unwrap().id.0;
+    s.execute("timeline.trim", json!({"clip": last, "edge": "out", "mode": "regular", "deltaFrames": -12})).unwrap();
+    assert_eq!(both(&mut s), (false, false));
+}
+
+#[test]
+fn finding_points_is_journaled_only_when_it_leaves_markers() {
+    let (mut s, clip, _, dir) = spoken(0.0);
+    let journaled = |s: &Session| s.journal.iter().filter(|(id, _)| id == "story.blinkPoints").count();
+    s.execute("story.blinkPoints", json!({"clip": clip})).unwrap();
+    s.execute("story.blinkPoints", json!({"clip": clip, "markers": false})).unwrap();
+    assert_eq!(journaled(&s), 0, "a question is not an edit");
+    s.execute("story.blinkPoints", json!({"clip": clip, "markers": true})).unwrap();
+    assert_eq!(journaled(&s), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_shadow_cut_takes_a_number_none_has() {
+    let mut s = demo();
+    let first = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
+    assert_eq!(s.execute("story.shadowCut", json!({})).unwrap()["name"], "Main Edit (shadow cut 2)");
+    // the first one renamed (or deleted): the next does not become a second "shadow cut 2"
+    s.edit("rename", |pr, _| {
+        if let Some(i) = pr.item_mut(filmcraft_project::ItemId(first)) {
+            i.name = "first assembly".into();
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.execute("story.shadowCut", json!({})).unwrap()["name"], "Main Edit (shadow cut 1)");
+    assert_eq!(s.execute("story.shadowCut", json!({})).unwrap()["name"], "Main Edit (shadow cut 3)");
+    let names: Vec<&str> = s.project.items.values().map(|i| i.name.as_str()).filter(|n| n.contains("shadow cut")).collect();
+    let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(names.len(), unique.len(), "{names:?}");
+}
+
+#[test]
+fn a_board_too_large_is_refused_for_what_it_would_measure() {
+    let mut s = demo();
+    let item = s.project.items.values().find(|i| i.name == "Misty_Forest.mp4").unwrap().id.0;
+    let dir = tmp_dir("story-board-budget");
+    let path = dir.join("b.png").to_string_lossy().into_owned();
+    // 17 frames 1280 wide are under sixteen million pixels; the sheet that holds them, five rows of four with gaps, is not
+    let e = s.execute("story.board", json!({"item": item, "count": 17, "width": 1280, "columns": 4, "path": path})).unwrap_err().to_string();
+    assert!(e.contains("5150"), "the sheet's own size, known before a frame is rendered: {e}");
+    assert!(!std::path::Path::new(&path).exists());
+    // three rows fit
+    let r = s.execute("story.board", json!({"item": item, "count": 12, "width": 1280, "columns": 4, "path": path})).unwrap();
+    assert_eq!(r["width"], 5150);
+    let _ = std::fs::remove_dir_all(dir);
 }
