@@ -553,6 +553,25 @@ pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &
     }
 }
 
+/// A copy of `trn` pointed at the copies of its clips in `ids` (original id → copy), or `None`
+/// when one of its clips was not copied. A fade at a clip's free end names one clip only.
+///
+/// Make Subsequence and a sequence edited in as its clips both carry transitions this way. Each
+/// used to do it inline, comparing `Option<Option<ClipId>>` values and pushing onto a list in the
+/// same loop; rustc 1.97.0 compiled that loop wrongly at the dev profile's `opt-level = 1` (the
+/// list reported its length and held nothing, so no transition was carried), while release builds
+/// were right. `nest_editing_tests` fails in a dev build if that comes back.
+fn carried_transition(trn: &filmcraft_project::Transition, ids: &std::collections::HashMap<ClipId, ClipId>) -> Option<filmcraft_project::Transition> {
+    let copy_of = |clip: Option<ClipId>| match clip {
+        None => Some(None),
+        Some(c) => ids.get(&c).map(|n| Some(*n)),
+    };
+    let mut t = trn.clone();
+    t.from = copy_of(trn.from)?;
+    t.to = copy_of(trn.to)?;
+    Some(t)
+}
+
 /// Make Subsequence: copy the selected clips (with linked partners), or everything between In
 /// and Out on the targeted tracks, into a new sequence named `name` or `<seq>_Sub_NN`. Copies
 /// get fresh ids, links and groups and start from zero; the new sequence opens in the Source
@@ -614,18 +633,12 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             }
             placed.push((kind, ti, it));
         }
-        let mut transitions = Vec::new();
+        let mut transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)> = Vec::new();
         for (kind, tracks) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
             for (ti, tr) in tracks.iter().enumerate() {
-                for trn in &tr.transitions {
-                    let from = trn.from.map(|c| ids.get(&c).copied());
-                    let to = trn.to.map(|c| ids.get(&c).copied());
-                    let inside = range.is_none_or(|r| trn.start >= r.start && trn.end() <= r.end());
-                    if inside && from != Some(None) && to != Some(None) {
-                        let mut t = trn.clone();
+                for trn in tr.transitions.iter().filter(|t| range.is_none_or(|r| t.start >= r.start && t.end() <= r.end())) {
+                    if let Some(mut t) = carried_transition(trn, &ids) {
                         t.id = filmcraft_project::TransitionId(pr.alloc_id());
-                        t.from = from.flatten();
-                        t.to = to.flatten();
                         t.start -= offset;
                         transitions.push((kind, ti, t));
                     }
@@ -711,17 +724,13 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
             }
             placed.push((kind, lane, it));
         }
-        let mut transitions = Vec::new();
+        let mut transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)> = Vec::new();
         for (kind, tracks) in [(TrackKind::Video, &src.video_tracks), (TrackKind::Audio, &src.audio_tracks)] {
             for (ti, tr) in tracks.iter().enumerate() {
                 let Some(lane) = lanes.get(&(audio(kind), ti)).copied() else { continue };
-                for trn in &tr.transitions {
-                    let from = trn.from.map(|c| ids.get(&c).copied());
-                    let to = trn.to.map(|c| ids.get(&c).copied());
-                    if trn.start >= range.start && trn.end() <= range.end() && from != Some(None) && to != Some(None) {
-                        let mut t = trn.clone();
+                for trn in tr.transitions.iter().filter(|t| t.start >= range.start && t.end() <= range.end()) {
+                    if let Some(mut t) = carried_transition(trn, &ids) {
                         t.id = filmcraft_project::TransitionId(p.alloc_id());
-                        (t.from, t.to) = (from.flatten(), to.flatten());
                         t.start = at + (t.start - range.start);
                         transitions.push((kind, lane, t));
                     }

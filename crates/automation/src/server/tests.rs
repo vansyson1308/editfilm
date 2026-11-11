@@ -110,11 +110,12 @@ async fn tools_are_titled_and_annotated() {
         }
     }
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "ui_click"] {
+    for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "story_board", "ui_click"]
+    {
         assert!(names.contains(&want), "{want} not listed");
     }
     let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
-    assert_eq!((ro("command_list"), ro("command_run")), (Some(json!(true)), Some(json!(false))));
+    assert_eq!((ro("command_list"), ro("command_run"), ro("story_board")), (Some(json!(true)), Some(json!(false)), Some(json!(true))));
 }
 
 /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line
@@ -501,4 +502,75 @@ async fn failed_output_stops_the_reader() {
     tx.write_all(b"x\n").await.unwrap(); // `tx` stays open: only a failed output can end the server
     let ended = tokio::time::timeout(std::time::Duration::from_secs(30), server).await;
     assert!(ended.is_ok(), "the server kept reading after its output failed");
+}
+
+/// `story_board` hands back the board as an image and says what each frame is; it changes nothing
+/// and leaves no file behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn story_board_returns_the_board_and_its_cells() {
+    let mut c = Client::start(demo());
+    let init = c.init().await;
+    let guide = init["result"]["instructions"].as_str().unwrap();
+    for id in ["story_board", "story.cuts", "story.blinkPoints", "layers.lift", "color.relight"] {
+        assert!(guide.contains(id), "the instructions do not mention {id}");
+    }
+    let before = c.call(1, "doc_inspect", json!({})).await["result"]["content"][0]["text"].clone();
+    let r = c.call(2, "story_board", json!({"width": 96, "columns": 3})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!((r["result"]["content"][0]["type"].as_str(), r["result"]["content"][0]["mimeType"].as_str()), (Some("image"), Some("image/png")), "{r}");
+    let png = base64::engine::general_purpose::STANDARD.decode(r["result"]["content"][0]["data"].as_str().unwrap()).unwrap();
+    let img = image::load_from_memory(&png).unwrap();
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((u64::from(img.width()), u64::from(img.height())), (v["width"].as_u64().unwrap(), v["height"].as_u64().unwrap()));
+    assert_eq!((v["of"].as_str(), v["cells"].as_array().map(Vec::len), v["columns"].as_u64()), (Some("sequence"), Some(7), Some(3)), "{v}");
+    assert!(v.get("path").is_none(), "the temporary file is not the caller's business: {v}");
+    // a clip's rushes, by project item
+    let item = v["cells"][0]["clip"].as_u64().unwrap();
+    let seq: Value = serde_json::from_str(c.call(3, "sequence_inspect", json!({})).await["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let media = seq["video"][0]["items"].as_array().unwrap().iter().find(|i| i["clip"].as_u64() == Some(item)).unwrap()["item"].as_u64().unwrap();
+    let r = c.call(4, "story_board", json!({"item": media, "count": 4, "width": 64, "from_seconds": 1.0, "to_seconds": 3.0})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((v["of"].as_str(), v["cells"].as_array().map(Vec::len)), (Some("item"), Some(4)), "{v}");
+    assert!(v["cells"].as_array().unwrap().iter().all(|cell| (1.0..=3.0).contains(&cell["at"]["seconds"].as_f64().unwrap())), "{v}");
+    // refusals are tool errors with the engine's message, and unknown arguments are named
+    let r = c.call(5, "story_board", json!({"item": 999_999})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("no project item"), "{r}");
+    let r = c.call(6, "story_board", json!({"colums": 3})).await;
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    let r = c.call(7, "story_board", json!({"columns": 0})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    // read-only: the document is as it was
+    assert_eq!(c.call(8, "doc_inspect", json!({})).await["result"]["content"][0]["text"], before);
+}
+
+/// The story and layer commands run through `command_run` like any other, and their edits undo.
+#[tokio::test(flavor = "multi_thread")]
+async fn story_and_layer_commands_run_over_the_wire() {
+    let mut c = Client::start(demo());
+    c.init().await;
+    let text = |r: &Value| -> Value { serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
+    let r = c.call(1, "command_list", json!({"filter": "story."})).await;
+    let ids: Vec<String> = text(&r).as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap().to_string()).collect();
+    for id in ["story.rhythm", "story.cuts", "story.blinkPoints", "story.board", "story.splitEdit", "story.shadowCut", "story.compare"] {
+        assert!(ids.iter().any(|x| x == id), "{id} is not in the catalog: {ids:?}");
+    }
+    let r = c.call(2, "command_run", json!({"id": "story.rhythm"})).await;
+    assert_eq!(text(&r)["cuts"], 6, "{r}");
+    let r = c.call(3, "command_run", json!({"id": "story.cuts", "params": {"limit": 1}})).await;
+    assert_eq!(text(&r)["analysed"], 1, "{r}");
+    let clip = text(&r)["cuts"][0]["from"]["clip"].as_u64().unwrap();
+    let r = c.call(4, "command_run", json!({"id": "layers.extract", "params": {"clip": clip, "region": {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}}})).await;
+    assert!(text(&r)["layer"].is_u64(), "{r}");
+    let r = c.call(5, "command_run", json!({"id": "color.relight", "params": {"clip": clip, "time": "18:30"}})).await;
+    assert_eq!(text(&r)["time"], "18:30", "{r}");
+    // a refused edit is a tool error, and nothing is left half-done
+    let r = c.call(6, "command_run", json!({"id": "layers.extract", "params": {"clip": clip, "region": {"x": 0.2}}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    for i in 0..2 {
+        let r = c.call(7 + i, "command_run", json!({"id": "edit.undo"})).await;
+        assert_eq!(r["result"]["isError"], false, "{r}");
+    }
+    let seq = text(&c.call(9, "sequence_inspect", json!({})).await);
+    assert_eq!(seq["video"].as_array().map(Vec::len), Some(3), "the layer's track is gone again");
 }

@@ -25,6 +25,7 @@ pub mod graphics;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
+pub mod layers;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
@@ -47,6 +48,7 @@ pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
 pub mod proxies;
+pub mod relight;
 pub mod relink;
 pub mod remix;
 pub mod scene_detect;
@@ -57,6 +59,7 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod source_monitor;
+pub mod story;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
@@ -1377,6 +1380,8 @@ mod interchange_bin_tests;
 #[cfg(test)]
 mod keyboard_tests;
 #[cfg(test)]
+mod layers_tests;
+#[cfg(test)]
 mod linked_speed_tests;
 #[cfg(test)]
 mod linked_trim_tests;
@@ -1448,6 +1453,8 @@ mod shortcuts_tests;
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]
 mod stored_paths_tests;
+#[cfg(test)]
+mod story_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
