@@ -36,7 +36,7 @@ use crate::image::Image;
 use crate::{RenderOptions, SourceProvider};
 
 pub use temporal::{StabilizerPath, clear_stabilizer_cache, stabilizer_path};
-pub(crate) use text::film_time_format;
+pub(crate) use text::{TextLook, draw_text, film_time_format};
 
 /// What an effect may know about the clip beyond its own pixels.
 pub trait FxEnv: Sync {
