@@ -37,7 +37,7 @@ pub fn menu_hint(command: &str) -> Option<String> {
         match command {
             "help.revealLogFiles" => tl!("Saves this session's log and shows it in your file manager."),
             "help.systemCompatibilityReport" => tl!("Shows a report on this computer."),
-            "app.about" => tl!("Shows the version, community links and credits in a Filmagic window."),
+            "app.about" => tl!("Shows the version, project links and credits in a Filmagic window."),
             "app.checkForUpdates" => tl!("Looks for a newer Filmagic release and offers to update."),
             _ => return None,
         }

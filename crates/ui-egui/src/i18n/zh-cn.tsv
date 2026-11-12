@@ -457,7 +457,7 @@
 	A cut sequence with transitions, effects and music	一段包含过渡、效果与音乐的剪辑序列
 	Bars and Tone	彩条与音调
 	SMPTE HD bars with 1 kHz reference tone	带 1 kHz 参考音调的 SMPTE HD 彩条
-	Community	社区
+	Links	链接
 	OMF Export Settings	OMF 导出设置
 	AAF Export Settings	AAF 导出设置
 	OMF Title:	OMF 标题：
@@ -3597,7 +3597,7 @@
 	Delete this preset	删除此预设
 	Saves this session's log and shows it in your file manager.	保存本次会话的日志并在文件管理器中显示。
 	Shows a report on this computer.	显示本机的报告。
-	Shows the version, community links and credits in a Filmagic window.	在 Filmagic 窗口中显示版本、社区链接和致谢。
+	Shows the version, project links and credits in a Filmagic window.	在 Filmagic 窗口中显示版本、项目链接和致谢。
 	Couldn't open your web browser	无法打开网页浏览器
 	Open this address in your browser yourself:	请自行在浏览器中打开此地址：
 # View > Reset Interface Zoom (#2253).

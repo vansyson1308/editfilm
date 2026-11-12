@@ -3,7 +3,7 @@
 # Original clean-room translations from the meaning of Filmagic's English labels, using standard
 # Bosnian video-editing vocabulary (sekvenca, glava za reprodukciju, radno područje). No proprietary
 # localization resources were used. AI-assisted (Claude Code), not yet reviewed by a native speaker;
-# the wording is shared with storytold/craft-i18n (locales/bs/filmagic.tsv and common.tsv).
+# the wording is shared with storytold/craft-i18n (locales/bs/filmcraft.tsv and common.tsv).
 
 	About Filmagic	O Filmagicu
 	Add Audio Submix Track	Dodaj audio podmiks traku
@@ -474,7 +474,7 @@
 	A cut sequence with transitions, effects and music	Montirana sekvenca s prijelazima, efektima i muzikom
 	Bars and Tone	Trake i ton
 	SMPTE HD bars with 1 kHz reference tone	SMPTE HD trake s referentnim tonom 1 kHz
-	Community	Zajednica
+	Links	Veze
 	OMF Export Settings	Postavke izvoza OMF
 	AAF Export Settings	Postavke izvoza AAF
 	OMF Title:	OMF naslov:
@@ -3590,7 +3590,7 @@
 	Opens in your web browser: {url}	Otvara se u vašem web pregledniku: {url}
 	Saves this session's log and shows it in your file manager.	Čuva zapisnik ove sesije i prikazuje ga u upravitelju datoteka.
 	Shows a report on this computer.	Prikazuje izvještaj o ovom računaru.
-	Shows the version, community links and credits in a Filmagic window.	Prikazuje verziju, veze zajednice i zasluge u Filmagic prozoru.
+	Shows the version, project links and credits in a Filmagic window.	Prikazuje verziju, veze projekta i zasluge u Filmagic prozoru.
 	Couldn't open your web browser	Nije moguće otvoriti vaš web preglednik
 	Open this address in your browser yourself:	Sami otvorite ovu adresu u svom pregledniku:
 	The control server is disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Kontrolni server je onemogućen: FILMAGIC_CONTROL_TOKEN mora sadržavati 64 nasumična heksadecimalna znaka (pogledajte docs/control-protocol.md)

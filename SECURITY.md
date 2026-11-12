@@ -34,4 +34,4 @@ for clean-room implementation, asset attribution and the no-crash rules. Large m
 fixtures belong in the project's approved corpus workflow rather than ordinary PRs.
 
 Ordinary feature requests, editing problems and usage questions should use the
-normal issue forms or community help channel.
+normal issue forms; the project has no community help channel.
