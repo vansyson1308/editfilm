@@ -50,7 +50,8 @@ impl Coeffs {
     /// RBJ cookbook design. `freq` in Hz (clamped below Nyquist), `q` > 0, `gain_db` used by
     /// peaking and shelving types (shelves use `q` as the shelf "Q", S=1 ≙ Q=1/√2).
     pub fn design(kind: FilterType, sample_rate: f64, freq: f64, q: f64, gain_db: f64) -> Coeffs {
-        let f = freq.clamp(1.0, sample_rate * 0.49);
+        // max/min rather than `clamp`, which panics when the bounds cross (a sample rate under ~2 Hz)
+        let f = freq.max(1.0).min((sample_rate * 0.49).max(1.0));
         let q = q.max(1e-3);
         let w0 = 2.0 * PI * f / sample_rate;
         let (sn, cs) = w0.sin_cos();
@@ -148,6 +149,20 @@ impl Biquad {
 mod tests {
     use super::*;
     use crate::testutil::*;
+
+    #[test]
+    fn a_design_at_an_absurd_sample_rate_does_not_panic() {
+        // `freq.clamp(1.0, sample_rate * 0.49)` panicked here: the bounds cross under ~2.04 Hz
+        for sr in [0.0, 1.0, 2.0, -48_000.0, f64::NAN, f64::INFINITY] {
+            for kind in FilterType::ALL {
+                let c = Coeffs::design(kind, sr, 1000.0, 0.707, 0.0);
+                let _ = Biquad::new().tick(&c, 1.0);
+            }
+        }
+        // ordinary rates are designed as before
+        let c = Coeffs::design(FilterType::LowPass, 48_000.0, 1000.0, 0.707, 0.0);
+        assert!((c.magnitude_db(100.0, 48_000.0)).abs() < 0.1 && c.magnitude_db(10_000.0, 48_000.0) < -30.0);
+    }
 
     const SR: f64 = 48000.0;
 

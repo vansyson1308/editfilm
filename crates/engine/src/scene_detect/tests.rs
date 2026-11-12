@@ -18,15 +18,22 @@ use crate::scene_detect::{ClipScenes, MAX_ANALYSED_FRAMES, MAX_TOTAL_ANALYSED_FR
 /// Write a 24 fps ProRes movie of demo scenes played one after the other: `shots` = (scene,
 /// frames). The cuts are at the running sums of the frame counts.
 fn make_cut_movie(path: &Path, shots: &[(DemoScene, i64)], w: u32, h: u32) {
+    // each shot starts at a different point of its scene
+    let from: Vec<(DemoScene, i64, i64)> = shots.iter().enumerate().map(|(k, (scene, frames))| (*scene, 10 * k as i64, *frames)).collect();
+    make_movie(path, &from, w, h);
+}
+
+/// [`make_cut_movie`] with the frame of its scene each shot starts at: `shots` = (scene, first
+/// frame, frames).
+fn make_movie(path: &Path, shots: &[(DemoScene, i64, i64)], w: u32, h: u32) {
     let rate = FrameRate::FPS_24;
     let mut p = Project::new("fixture");
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let mut sources: Vec<(ItemId, filmcraft_media::SharedSource)> = Vec::new();
     let mut at = Tick::ZERO;
-    for (k, (scene, frames)) in shots.iter().enumerate() {
+    for (k, (scene, first, frames)) in shots.iter().enumerate() {
         let dur = rate.tick_of(*frames);
-        // each shot starts at a different point of its scene
-        let src = GeneratorSource::new(Generator::Demo(*scene), w, h, rate, rate.tick_of(200));
+        let src = GeneratorSource::new(Generator::Demo(*scene), w, h, rate, rate.tick_of(400));
         let clip = MediaClip {
             media: MediaRef::Generator(Generator::Demo(*scene)),
             info: src.info().clone(),
@@ -39,7 +46,7 @@ fn make_cut_movie(path: &Path, shots: &[(DemoScene, i64)], w: u32, h: u32) {
             identity: None,
         };
         let item = p.add_item(&format!("shot{k}"), Label::Iris, ItemKind::Media(Box::new(clip)), None);
-        let mut v = p.make_track_item(item, TrackKind::Video, at, TimeRange::new(rate.tick_of(10 * k as i64), dur), rate).unwrap();
+        let mut v = p.make_track_item(item, TrackKind::Video, at, TimeRange::new(rate.tick_of(*first), dur), rate).unwrap();
         for e in &mut v.effects {
             filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
         }
@@ -237,7 +244,55 @@ fn a_capped_analysis_extends_the_last_subclip_to_the_clip_end_and_warns() {
         media_range: TimeRange::from_bounds(Tick(0), Tick(10)),
         unanalysed,
         cuts: vec![],
+        near: vec![],
+        near_taken: false,
     };
     assert!(unanalysed_warning(&[scenes("a", false)]).is_none());
     assert!(unanalysed_warning(&[scenes("a", false), scenes("long.mov", true)]).is_some_and(|w| w.contains("long.mov") && !w.contains(", a")));
+}
+
+#[test]
+fn cuts_between_shots_that_look_alike_are_cut_unless_asked_not_to() {
+    let dir = tmp_dir("scene-alike");
+    let path = dir.join("alike.mov");
+    // the forest, and the same forest five seconds on: the same trees in the same light, and plainly a cut
+    make_movie(&path, &[(DemoScene::Forest, 0, 20), (DemoScene::Forest, 120, 20), (DemoScene::OceanSunset, 0, 16)], 160, 90);
+    let (mut s, _, _) = session_with(&[&path]);
+    let rate = s.sequence_rate();
+    select_v1(&mut s);
+    // the sensitivity alone finds the cut to the sea and leaves the one inside the forest out, saying so
+    let strict = s.execute("clip.sceneEditDetection", json!({"wait": true, "lookAlike": false, "generateMarkers": true, "applyCuts": false})).unwrap();
+    let c = &strict["clips"][0];
+    assert_eq!(c["cuts"], json!([rate.tick_of(40).0]), "{strict}");
+    let near: Vec<i64> = c["nearMisses"].as_array().unwrap().iter().map(|n| n["time"].as_i64().unwrap()).collect();
+    assert_eq!(near, vec![rate.tick_of(20).0], "{strict}");
+    assert!(strict["warnings"][0].as_str().unwrap().contains("left out"), "{strict}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // by default it is cut, and the result says which cuts were found that way
+    let r = s.execute("clip.sceneEditDetection", json!({"wait": true})).unwrap();
+    let c = &r["clips"][0];
+    assert_eq!(c["cuts"], json!([rate.tick_of(20).0, rate.tick_of(40).0]), "{r}");
+    assert_eq!(c["lookAlikeCuts"].as_array().unwrap().iter().map(|n| n["time"].as_i64().unwrap()).collect::<Vec<_>>(), vec![rate.tick_of(20).0], "{r}");
+    assert!(c.get("nearMisses").is_none() && r.get("warnings").is_none(), "{r}");
+    assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 3);
+    // a flag is a flag
+    let before = s.history.undo.len();
+    for bad in [json!({"wait": true, "lookAlike": "yes"}), json!({"wait": true, "lookAlike": 1})] {
+        assert!(s.execute("clip.sceneEditDetection", bad).is_err());
+    }
+    assert_eq!(s.history.undo.len(), before);
+
+    // The cuts as `story.cuts` reads them: the one inside the forest changes little in sum; with
+    // the media gone, what is measured is the offline slate, and every cut says so.
+    let r = s.execute("story.cuts", json!({})).unwrap();
+    assert_eq!((r["cuts"].as_array().unwrap().len(), r["summary"]["offline"].as_u64()), (2, Some(0)), "{r}");
+    let item = s.active_sequence().unwrap().video_tracks[0].items[0].item.0;
+    s.execute("media.makeOffline", json!({"items": [item]})).unwrap();
+    let r = s.execute("story.cuts", json!({})).unwrap();
+    assert_eq!(r["summary"]["offline"], 2, "{r}");
+    for c in r["cuts"].as_array().unwrap() {
+        assert_eq!(c["offline"], true);
+        assert!(c["issues"].as_array().unwrap().iter().any(|i| i.as_str().unwrap().contains("offline")), "{c}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }

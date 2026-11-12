@@ -76,11 +76,13 @@ fn a_region_becomes_a_layer_of_its_own() {
     // the left third of the frame, where the block starts
     let r = s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.0, "y": 0.25, "w": 0.3, "h": 0.5}, "feather": 0, "name": "block"})).unwrap();
     let layer = r["layer"].as_u64().unwrap();
-    assert_eq!((r["track"].as_str(), r["of"].as_u64()), (Some("Video 4"), Some(c)));
+    assert_eq!(r["of"].as_u64(), Some(c));
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
     assert_eq!(s.history.undo.last().unwrap().0, "Extract Layer");
     let q = s.active_sequence().unwrap();
-    assert_eq!(q.video_tracks.len(), 4, "a new track above the three");
+    assert_eq!(q.video_tracks.len(), 4, "a new track");
+    assert!(q.video_tracks[1].items.iter().any(|i| i.id.0 == layer), "directly above the clip's own track");
+    assert_eq!(r["track"].as_str(), Some(q.video_tracks[1].name.as_str()));
     let (l, o) = (clip(&s, layer), clip(&s, c));
     assert_eq!((l.start, l.duration, l.source_in, l.item, l.name.as_str()), (o.start, o.duration, o.source_in, o.item, "block"));
     assert_eq!(l.link, None, "the layer is not tied to the shot's sound");
@@ -125,7 +127,7 @@ fn a_cut_out_leaves_a_hole_in_the_original() {
     let layer = r["layer"].as_u64().unwrap();
     assert_eq!(r["cutOut"]["clip"].as_u64(), Some(c));
     let hole = &clip(&s, c).effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
-    assert!(hole.inverted);
+    assert_eq!((hole.mode, hole.inverted), (filmcraft_project::MaskMode::Subtract, false), "a hole takes away from what is there");
     // together they are the whole picture again
     assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 200, 90), GREY3));
     // the layer off: the original has a hole where the ellipse was
@@ -200,9 +202,12 @@ fn regions_take_points_and_refuse_nonsense() {
     }
     assert!(!std::env::temp_dir().join("filmcraft-never-written.png").exists());
     // a locked track is left alone
-    s.execute("sequence.toggleTrackLock", json!({"track": "V1"})).ok();
-    if s.active_sequence().unwrap().video_tracks[0].locked {
-        assert!(s.execute("layers.extract", json!({"clip": c, "region": region})).unwrap_err().to_string().contains("locked"));
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    assert!(s.active_sequence().unwrap().video_tracks[0].locked);
+    for (id, extra) in [("layers.extract", json!({})), ("layers.retime", json!({"speed": 50})), ("layers.adjust", json!({"effect": "tint"}))] {
+        let mut p = json!({"clip": c, "region": region});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert!(s.execute(id, p).unwrap_err().to_string().contains("locked"), "{id}");
     }
     let mut empty = Session::default();
     for id in ["layers.extract", "layers.retime", "layers.adjust", "layers.lift", "layers.cleanPlate", "color.relight"] {
@@ -269,6 +274,7 @@ fn a_clean_plate_takes_out_what_moved_through() {
     let disturbed = r["stillness"]["disturbed"].as_f64().unwrap();
     assert!(disturbed > 0.01 && disturbed < 0.2, "the block's path: {r}");
     assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(r["pictureChange"]["reads"], "strong", "the block is gone: {r}");
     assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG"));
     assert_eq!(s.project.items.len(), items + 1, "the plate is in the project");
     assert_eq!(s.history.undo.len(), undo + 1);
@@ -304,9 +310,15 @@ fn a_plate_over_a_region_removes_only_what_was_there() {
     assert!(is(px(&s, 47, 280, 90), RED), "seen on the right");
     // without placing: just the still in the project
     let before = s.active_sequence().unwrap().video_tracks.len();
-    let r = s.execute("layers.cleanPlate", json!({"clip": c, "path": path, "samples": 5, "place": false})).unwrap();
+    let second = dir.join("whole.png").to_string_lossy().into_owned();
+    let r = s.execute("layers.cleanPlate", json!({"clip": c, "path": second, "samples": 5, "place": false})).unwrap();
     assert!(r["clip"].is_null() && r["item"].is_u64());
     assert_eq!(s.active_sequence().unwrap().video_tracks.len(), before);
+    // a file the project already reads is not written over: the plate on the timeline would change under the edit
+    let on_disk = std::fs::read(&path).unwrap();
+    refuses(&mut s, "layers.cleanPlate", &[json!({"clip": c, "path": path, "samples": 5, "place": false}), json!({"clip": c, "path": second, "samples": 5})]);
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk);
+    let path = dir.join("third.png").to_string_lossy().into_owned();
     refuses(
         &mut s,
         "layers.cleanPlate",
@@ -427,6 +439,8 @@ fn an_effect_touches_only_its_region() {
         s.execute("layers.adjust", json!({"clip": c, "region": {"x": 0.0, "y": 0.0, "w": 0.33, "h": 1.0}, "effect": "Black & White", "feather": 0})).unwrap();
     assert_eq!(r["effect"], "black_white");
     assert_eq!(s.history.undo.len(), undo + 1);
+    // the result says what it did to the picture: red turned grey is a strong change
+    assert_eq!(r["pictureChange"]["reads"], "strong", "{r}");
     let e = &clip(&s, c).effects[r["index"].as_u64().unwrap() as usize];
     assert_eq!((e.effect.as_str(), e.masks.len()), ("black_white", 1));
     let grey = px(&s, 0, 40, 90);
@@ -444,6 +458,13 @@ fn an_effect_touches_only_its_region() {
         .unwrap();
     let e = &clip(&s, c).effects[r["index"].as_u64().unwrap() as usize];
     assert_eq!(e.params["amount"].value, ParamValue::Float(100.0));
+    // an adjustment too small to see says so, instead of leaving the caller to believe it worked
+    let r = s
+        .execute("layers.adjust", json!({"clip": c, "region": {"x": 0.6, "y": 0.0, "w": 0.3, "h": 1.0}, "effect": "lumetri", "params": {"exposure": 0.02}}))
+        .unwrap();
+    assert_eq!(r["pictureChange"]["reads"], "none", "{r}");
+    assert!(r["pictureChange"]["hint"].as_str().unwrap().contains("nothing a viewer can see"), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
     let region = json!({"x": 0.0, "y": 0.0, "w": 0.33, "h": 1.0});
     refuses(
         &mut s,
@@ -492,6 +513,7 @@ fn relight_grades_toward_the_hour() {
     let undo = s.history.undo.len();
     let r = s.execute("color.relight", json!({"clip": c, "time": "18:30", "lightStrength": 0})).unwrap();
     assert_eq!((r["time"].as_str(), r["keyframes"].as_u64()), (Some("18:30"), Some(0)));
+    assert!(["visible", "strong"].contains(&r["pictureChange"]["reads"].as_str().unwrap()), "{r}");
     assert!(r["toTime"].is_null());
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
     assert_eq!((grade(&s, c, "temperature"), grade(&s, c, "saturation")), (48.0, 115.0));
@@ -505,8 +527,12 @@ fn relight_grades_toward_the_hour() {
     // half strength is halfway to the hour; none is the shot as it was
     s.execute("color.relight", json!({"clip": c, "time": "18:30", "strength": 0.5, "lightStrength": 0})).unwrap();
     assert_eq!(grade(&s, c, "temperature"), 24.0);
-    s.execute("color.relight", json!({"clip": c, "time": "18:30", "strength": 0, "lightStrength": 0})).unwrap();
+    let r = s.execute("color.relight", json!({"clip": c, "time": "18:30", "strength": 0, "lightStrength": 0})).unwrap();
     assert_eq!((grade(&s, c, "temperature"), grade(&s, c, "exposure"), grade(&s, c, "saturation")), (0.0, 0.0, 100.0));
+    // the change it reports is against the picture as this call found it (the half-strength grade)
+    assert_ne!(r["pictureChange"]["reads"], "none", "{r}");
+    let r = s.execute("color.relight", json!({"clip": c, "time": "18:30", "strength": 0, "lightStrength": 0})).unwrap();
+    assert_eq!(r["pictureChange"]["reads"], "none", "the same again changes nothing: {r}");
     let back = mean_rgb(&s, 30);
     assert!(back.iter().zip(noon).all(|(a, b)| (a - b).abs() < 0.01), "{back:?} vs {noon:?}");
     // relighting again reuses the two effects instead of stacking more
@@ -553,15 +579,20 @@ fn a_day_passes_during_a_shot() {
     assert!(at(0) > 0.0 && at(0) < 20.0, "{}", at(0));
     assert!(at(38) > 30.0, "golden hour near the end: {}", at(38));
     assert!(at(47) < -20.0, "night at the end: {}", at(47));
-    // and backwards
+    // an end earlier in the day is the next morning: through the night, never back through noon
     let r = s.execute("color.relight", json!({"clip": c, "time": "21:00", "toTime": "09:00"})).unwrap();
-    assert_eq!(r["keyframes"], 9);
+    assert_eq!((r["keyframes"].as_u64(), r["hours"].as_f64()), (Some(7), Some(12.0)), "{r}");
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("through midnight")), "{r}");
+    let night = clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().params["exposure"].clone();
+    let dark = |frame: i64| night.f64_at(clip(&s, c).effect_time_at(rate.tick_of(frame)));
+    assert!(dark(4) < -1.0 && dark(12) < -1.5 && dark(24) < -1.0, "dark all night: {} {} {}", dark(4), dark(12), dark(24));
+    assert!(dark(47) > -0.2, "light by nine: {}", dark(47));
     // a static relight afterwards clears the animation
     s.execute("color.relight", json!({"clip": c, "time": "12:00"})).unwrap();
     let e = clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().clone();
     assert!(e.params["temperature"].keyframes.is_empty());
     s.execute("edit.undo", json!({})).unwrap();
-    assert_eq!(clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().params["temperature"].keyframes.len(), 9);
+    assert_eq!(clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().params["temperature"].keyframes.len(), 7);
 }
 
 #[test]
@@ -622,4 +653,441 @@ fn the_layer_commands_are_registered() {
         let spec = crate::commands::find(id).unwrap_or_else(|| panic!("{id} is not registered"));
         assert!(spec.journal && spec.params.contains("\"clip\":id"));
     }
+}
+
+/// A full-frame blue matte over the first second of the shot, on the track above it.
+fn cover(s: &mut Session) -> u64 {
+    let blue = s.execute("file.newColorMatte", json!({"color": "#0000ff", "width": 320, "height": 180, "seconds": 1.0})).unwrap()["item"].as_u64().unwrap();
+    s.execute("timeline.place", json!({"item": blue, "track": "V2", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap()
+}
+
+const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
+
+#[test]
+fn a_layer_stays_under_what_already_covers_its_clip() {
+    let (mut s, c, _) = shot();
+    cover(&mut s);
+    assert!(is(px(&s, 0, 40, 90), BLUE) && is(px(&s, 30, 190, 90), RED), "covered for a second, then seen");
+    let dir = tmp_dir("layers-under");
+    let region = json!({"x": 0.0, "y": 0.25, "w": 0.3, "h": 0.5});
+    let r = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap();
+    assert!(is(px(&s, 0, 40, 90), BLUE), "the layer does not jump over the cover: {:?}", px(&s, 0, 40, 90));
+    assert!(r["warnings"].as_array().unwrap().is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    for (cmd, p) in [
+        ("layers.lift", json!({"clip": c, "region": region, "feather": 0, "samples": 9, "path": dir.join("a.png").to_string_lossy()})),
+        ("layers.cleanPlate", json!({"clip": c, "samples": 9, "path": dir.join("b.png").to_string_lossy()})),
+        ("layers.retime", json!({"clip": c, "region": region, "feather": 0, "speed": 50})),
+    ] {
+        s.execute(cmd, p).unwrap();
+        assert!(is(px(&s, 0, 40, 90), BLUE), "{cmd} put its layer over the cover: {:?}", px(&s, 0, 40, 90));
+        // the stack is the clip, then what was made from it, then the cover
+        let q = s.active_sequence().unwrap();
+        let of = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+        assert_eq!(of(c), 0, "{cmd}");
+        assert!(
+            q.video_tracks.last().unwrap().items.is_empty() && q.video_tracks.iter().rev().nth(1).unwrap().items.len() == 1,
+            "{cmd}: the cover is still on top of all that has a picture"
+        );
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_second_cut_out_does_not_fill_the_first() {
+    let (mut s, c, _) = shot();
+    let (left, right) = (json!({"x": 0.0, "y": 0.0, "w": 0.25, "h": 1.0}), json!({"x": 0.75, "y": 0.0, "w": 0.25, "h": 1.0}));
+    let a = s.execute("layers.extract", json!({"clip": c, "region": left, "feather": 0, "cutOut": true})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layers.extract", json!({"clip": c, "region": right, "feather": 0, "cutOut": true})).unwrap()["layer"].as_u64().unwrap();
+    // The second layer is a copy of the clip as it was, hole and all: its region is kept out of what is left.
+    let masks = &clip(&s, b).effects.iter().find(|e| e.effect == "opacity").unwrap().masks;
+    assert_eq!(masks.iter().map(|m| m.mode).collect::<Vec<_>>(), [filmcraft_project::MaskMode::Subtract, filmcraft_project::MaskMode::Intersect]);
+    assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 300, 90), GREY3) && is(px(&s, 0, 160, 90), GREY3), "together they are the picture");
+    s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
+    assert_eq!(px(&s, 0, 40, 90)[3], 0.0, "the first hole is still a hole");
+    assert_eq!(px(&s, 0, 300, 90)[3], 0.0, "and so is the second");
+    assert!(is(px(&s, 0, 160, 90), GREY3), "between them the clip shows");
+    // the second layer alone is its own region and nothing of the first
+    s.execute("clip.enable", json!({"clips": [b, c]})).unwrap();
+    assert!(is(px(&s, 0, 300, 90), GREY3));
+    assert_eq!((px(&s, 0, 40, 90)[3], px(&s, 0, 160, 90)[3]), (0.0, 0.0));
+}
+
+#[test]
+fn an_adjustment_inside_a_masked_effect_narrows_it() {
+    let (mut s, c, _) = shot();
+    // two regions of one effect instance cannot be made by the command (each call adds its own
+    // effect), but a region kept on a clip that is already cut down must not bring the rest back
+    let top = json!({"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.5});
+    s.execute("layers.extract", json!({"clip": c, "region": top, "feather": 0, "cutOut": true})).unwrap();
+    let dir = tmp_dir("layers-narrow");
+    let r = s
+        .execute(
+            "layers.cleanPlate",
+            json!({"clip": c, "samples": 9, "feather": 0, "region": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0}, "path": dir.join("p.png").to_string_lossy()}),
+        )
+        .unwrap();
+    let plate = r["clip"].as_u64().unwrap();
+    // the plate stands in for the clip, hole included: only the lower left is its own
+    let layer = s.active_sequence().unwrap().video_tracks.iter().flat_map(|t| &t.items).find(|i| i.id.0 != c && i.id.0 != plate).unwrap().id.0;
+    s.execute("clip.enable", json!({"clips": [c, layer]})).unwrap();
+    assert!(is(px(&s, 0, 40, 140), GREY3), "{:?}", px(&s, 0, 40, 140));
+    assert_eq!(px(&s, 0, 40, 40)[3], 0.0, "the plate does not fill the hole the clip has");
+    assert_eq!(px(&s, 0, 280, 140)[3], 0.0, "nor reach outside its region");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_plate_keeps_step_with_a_trimmed_clip_that_moves() {
+    let (mut s, c, shot_seq) = shot();
+    s.execute("edit.clear", json!({"clips": [c]})).unwrap();
+    // the second half of the shot, sliding 80 px to the right while it plays
+    let c =
+        s.execute("timeline.place", json!({"item": shot_seq, "track": "V1", "seconds": 0.0, "audio": false, "sourceIn": {"seconds": 1.0}})).unwrap()["clips"]
+            [0]
+        .as_u64()
+        .unwrap();
+    let (first, last) = (clip(&s, c).start, s.sequence_rate().tick_of(23));
+    assert_eq!(clip(&s, c).source_in, Tick(254_016_000_000));
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [160.0, 90.0], "time": first.0, "keyframe": true}))
+        .unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [240.0, 90.0], "time": last.0, "keyframe": true}))
+        .unwrap();
+    assert_eq!(px(&s, 23, 40, 20)[3], 0.0, "the clip has slid away from the left edge");
+    let dir = tmp_dir("layers-step");
+    let r = s.execute("layers.cleanPlate", json!({"clip": c, "samples": 9, "path": dir.join("p.png").to_string_lossy()})).unwrap();
+    let plate = clip(&s, r["clip"].as_u64().unwrap());
+    assert_eq!((plate.source_in, plate.speed, plate.reverse), (Tick(254_016_000_000), 1.0, false));
+    // the plate slides with the clip it stands in for: it never shows where the clip is not
+    assert!(is(px(&s, 0, 40, 20), GREY3));
+    assert_eq!(px(&s, 23, 40, 20)[3], 0.0, "the plate stayed behind: {:?}", px(&s, 23, 40, 20));
+    assert!(is(px(&s, 23, 120, 20), GREY3));
+    // and it took the block out wherever the clip now shows it
+    for f in [0, 12, 23] {
+        let img = s.try_render_program_at(1.0, s.sequence_rate().tick_of(f)).unwrap();
+        let red = (0..img.w).filter(|x| is(img.get(*x, 90), RED)).count();
+        assert_eq!(red, 0, "frame {f}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_reversed_shot_keeps_its_direction_in_a_retimed_region() {
+    let (mut s, c, _) = shot();
+    s.execute("clip.speedDuration", json!({"clips": [c], "speed": 100, "reverse": true})).unwrap();
+    assert!(clip(&s, c).reverse && is(px(&s, 0, 280, 90), RED), "the block now starts on the right");
+    let r = s.execute("layers.retime", json!({"clip": c, "region": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0}, "speed": 50, "feather": 0})).unwrap();
+    let l = clip(&s, r["layer"].as_u64().unwrap());
+    assert!(l.reverse, "the layer plays the way the shot does");
+    assert_eq!((l.speed, l.start, l.end()), (0.5, clip(&s, c).start, clip(&s, c).end()));
+    // both start from the shot's last frame; ten frames in, the slowed half has gone back half as far
+    assert!(is(px(&s, 0, 280, 90), RED));
+    assert!(is(px(&s, 10, 254, 90), RED), "{:?}", px(&s, 10, 254, 90));
+}
+
+#[test]
+fn a_clip_too_long_to_track_is_refused_before_anything_is_made() {
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "long", "width": 320, "height": 180, "fps": 24.0})).unwrap();
+    let m = s.execute("file.newColorMatte", json!({"color": "#808080", "width": 320, "height": 180, "seconds": 200.0})).unwrap()["item"].as_u64().unwrap();
+    let c = s.execute("timeline.place", json!({"item": m, "track": "V1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
+    let region = json!({"x": 0.1, "y": 0.1, "w": 0.3, "h": 0.3});
+    let dir = tmp_dir("layers-long");
+    let path = dir.join("p.png").to_string_lossy().into_owned();
+    for (cmd, p) in [
+        ("layers.extract", json!({"clip": c, "region": region, "follow": true})),
+        ("layers.lift", json!({"clip": c, "region": region, "follow": true, "path": path})),
+        ("layers.adjust", json!({"clip": c, "region": region, "follow": true, "effect": "gaussian_blur"})),
+    ] {
+        let e = s.execute(cmd, p.clone()).unwrap_err().to_string();
+        assert!(e.contains("4800") && e.contains("3000"), "{cmd}: {e}");
+        refuses(&mut s, cmd, &[p]);
+    }
+    assert!(!std::path::Path::new(&path).exists(), "no plate was written for a lift that was refused");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_night_shot_stays_night_across_midnight() {
+    let (mut s, c, _) = shot();
+    let r = s.execute("color.relight", json!({"clip": c, "time": "22:00", "toTime": "02:00"})).unwrap();
+    // ten at night, midnight (once, though the table has it as 0 and as 24), two in the morning
+    assert_eq!((r["keyframes"].as_u64(), r["hours"].as_f64(), r["toTime"].as_str()), (Some(3), Some(4.0), Some("02:00")), "{r}");
+    let e = clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().clone();
+    let (temp, exposure) = (&e.params["temperature"], &e.params["exposure"]);
+    assert_eq!(temp.keyframes.len(), 3);
+    assert!(temp.keyframes.windows(2).all(|w| w[0].time < w[1].time));
+    let rate = s.sequence_rate();
+    for frame in [0, 12, 24, 36, 47] {
+        let t = clip(&s, c).effect_time_at(rate.tick_of(frame));
+        assert!(
+            temp.f64_at(t) < -35.0 && exposure.f64_at(t) < -1.3,
+            "frame {frame}: noon in the middle of the night ({}, {})",
+            temp.f64_at(t),
+            exposure.f64_at(t)
+        );
+    }
+    // midnight to midnight, and an hour to itself, are no move at all
+    for p in [json!({"clip": c, "time": "24:00", "toTime": "00:00"}), json!({"clip": c, "time": 7.5, "toTime": 7.5})] {
+        let r = s.execute("color.relight", p).unwrap();
+        assert_eq!((r["keyframes"].as_u64(), r["hours"].as_f64()), (Some(0), Some(0.0)), "{r}");
+        assert!(r["toTime"].is_null() && r["warnings"].as_array().unwrap().iter().all(|w| !w.as_str().unwrap().contains("midnight")));
+    }
+}
+
+#[test]
+fn a_held_frame_takes_the_light_of_the_first_hour() {
+    let (mut s, c, _) = shot();
+    s.execute("timeline.select", json!({"clips": [c]})).unwrap();
+    s.execute("clip.frameHoldOptions", json!({"holdOn": "in", "holdFilters": true})).unwrap();
+    assert!(clip(&s, c).frame_hold.is_some() && clip(&s, c).hold_filters);
+    let r = s.execute("color.relight", json!({"clip": c, "time": "12:00", "toTime": "21:00"})).unwrap();
+    assert_eq!(r["keyframes"], 0, "one moment of media has no time for the light to change in: {r}");
+    let e = clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().clone();
+    assert!(e.params["exposure"].keyframes.is_empty());
+    // the light the result names (noon), not the last stop's (night)
+    assert_eq!(e.params["exposure"].value, ParamValue::Float(crate::relight::grade_at(12.0, 1.0)[2]));
+    assert_eq!(e.params["temperature"].value, ParamValue::Float(0.0));
+}
+
+#[test]
+fn relight_says_what_it_writes_over_and_respects_a_lock() {
+    let (mut s, c, _) = shot();
+    // a clip nobody has graded: nothing to warn about
+    let r = s.execute("color.relight", json!({"clip": c, "time": "18:00"})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // a grade someone made by hand is replaced, and the result says so
+    s.execute("effects.apply", json!({"clips": [c], "effect": "lumetri"})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "lumetri", "param": "exposure", "value": 0.8})).unwrap();
+    let r = s.execute("color.relight", json!({"clip": c, "time": "18:00"})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("already had Color Grading")), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(grade(&s, c, "exposure"), 0.8, "undo brings the old grade back");
+    // a locked track is left alone, even when both effects are already there
+    s.execute("color.relight", json!({"clip": c, "time": "18:00"})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
+    assert!(s.active_sequence().unwrap().video_tracks[0].locked);
+    refuses(&mut s, "color.relight", &[json!({"clip": c, "time": "06:00"}), json!({"clip": c, "time": "06:00", "toTime": "09:00"})]);
+}
+
+/// The bounds of a clip's first opacity mask at its first keyframe, in clip pixels.
+fn mask_bounds(s: &Session, id: u64) -> (f64, f64, f64, f64, usize) {
+    let mask = &clip(s, id).effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
+    let ParamValue::Path(path) = &mask.path.value else { panic!("no path") };
+    let (xs, ys): (Vec<f64>, Vec<f64>) = path.vertices.iter().map(|v| (v.p.x, v.p.y)).unzip();
+    let r = |v: f64| (v * 100.0).round() / 100.0;
+    (
+        r(xs.iter().copied().fold(f64::MAX, f64::min)),
+        r(ys.iter().copied().fold(f64::MAX, f64::min)),
+        r(xs.iter().copied().fold(f64::MIN, f64::max)),
+        r(ys.iter().copied().fold(f64::MIN, f64::max)),
+        xs.len(),
+    )
+}
+
+#[test]
+fn a_region_read_off_the_frame_lands_on_the_clip_as_placed() {
+    let (mut s, c, _) = shot();
+    // the shot at half size in the top-left quarter of the frame: its block now crosses at y = 45
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [80.0, 45.0]})).unwrap();
+    assert!(is(px(&s, 0, 20, 45), RED) && px(&s, 0, 200, 120)[3] == 0.0);
+    // the left of the frame around the block, as seen: frame pixels 0…48 by 27…63
+    let seen = json!({"space": "frame", "x": 0.0, "y": 0.15, "w": 0.15, "h": 0.2});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": seen, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    // which is the clip's own pixels 0…96 by 54…126
+    assert_eq!(mask_bounds(&s, layer), (0.0, 54.0, 96.0, 126.0, 4));
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    assert!(is(px(&s, 0, 20, 45), RED) && is(px(&s, 0, 40, 60), GREY3), "the layer is what was pointed at");
+    assert_eq!((px(&s, 0, 60, 45)[3], px(&s, 0, 20, 70)[3]), (0.0, 0.0), "and nothing beside it");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // the same numbers without `space` are fractions of the clip's own picture: another place
+    let layer =
+        s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.0, "y": 0.15, "w": 0.15, "h": 0.2}, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    assert_eq!(mask_bounds(&s, layer), (0.0, 27.0, 48.0, 63.0, 4));
+    s.execute("edit.undo", json!({})).unwrap();
+    // points go the same way
+    let r = s
+        .execute("layers.extract", json!({"clip": c, "region": {"space": "frame", "points": [[0.0, 0.15], [0.15, 0.15], [0.15, 0.35]]}, "feather": 0}))
+        .unwrap();
+    assert_eq!(mask_bounds(&s, r["layer"].as_u64().unwrap()), (0.0, 54.0, 96.0, 126.0, 3));
+    s.execute("edit.undo", json!({})).unwrap();
+    // a clip turned in the frame: an upright box as seen is a turned one in the clip's own picture
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "rotation", "value": 90.0})).unwrap();
+    let r = s
+        .execute("layers.extract", json!({"clip": c, "region": {"space": "frame", "shape": "ellipse", "x": 0.2, "y": 0.2, "w": 0.1, "h": 0.1}, "feather": 0}))
+        .unwrap();
+    let (x0, y0, x1, y1, n) = mask_bounds(&s, r["layer"].as_u64().unwrap());
+    assert_eq!(n, 32, "an outline, turned with the clip");
+    // 32 by 18 frame pixels at half size and a quarter turn: 36 by 64 of the clip's
+    assert!(((x1 - x0) - 36.0).abs() < 0.5 && ((y1 - y0) - 64.0).abs() < 0.5, "{:?}", (x0, y0, x1, y1));
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    // where the frame shows nothing of the clip there is nothing to take
+    let region = |r: Value| json!({"clip": c, "region": r});
+    refuses(
+        &mut s,
+        "layers.extract",
+        &[
+            region(json!({"space": "frame", "x": 0.6, "y": 0.6, "w": 0.2, "h": 0.2})),
+            region(json!({"space": "frame", "points": [[0.6, 0.6], [0.9, 0.6], [0.9, 0.9]]})),
+            region(json!({"space": "screen", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})),
+            region(json!({"space": 3, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})),
+            region(json!({"space": "frame", "atSeconds": 99.0, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})),
+            region(json!({"space": "frame", "atSeconds": "now", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})),
+        ],
+    );
+    // a clip that moves: the region is read at the frame it was seen in
+    let last = s.sequence_rate().tick_of(47);
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [80.0, 45.0], "time": 0, "keyframe": true})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "position", "value": [240.0, 45.0], "time": last.0, "keyframe": true}))
+        .unwrap();
+    let late = json!({"space": "frame", "atSeconds": last.seconds(), "x": 0.5, "y": 0.15, "w": 0.15, "h": 0.2});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": late, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    assert_eq!(mask_bounds(&s, layer), (0.0, 54.0, 96.0, 126.0, 4), "the same part of the clip, seen 160 px further right at the end");
+}
+
+#[test]
+fn what_is_made_from_a_clip_stacks_in_the_order_it_was_made() {
+    let (mut s, c, _) = shot();
+    let cover_clip = cover(&mut s);
+    let dir = tmp_dir("layers-stack");
+    // a plate over the left half takes the block out of it
+    s.execute(
+        "layers.cleanPlate",
+        json!({"clip": c, "samples": 9, "feather": 0, "region": {"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0}, "path": dir.join("p.png").to_string_lossy()}),
+    )
+    .unwrap();
+    assert!(is(px(&s, 30, 60, 90), GREY3), "frame 30: past the cover, the left half is plate");
+    // a layer of the clip made afterwards lies over that plate, not under it: the block is back inside the layer
+    let region = json!({"x": 0.0, "y": 0.25, "w": 0.3, "h": 0.5});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    // at frame 5 the block is at x = 66; the cover still hides everything there
+    assert!(is(px(&s, 5, 66, 90), BLUE));
+    s.execute("clip.enable", json!({"clips": [layer]})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let of = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    let plate = q.video_tracks[1].items[0].id.0;
+    assert_eq!((of(c), of(plate), of(layer)), (0, 1, 2), "the clip, its plate, its layer");
+    assert!(q.video_tracks[3].items.iter().any(|i| i.item != clip(&s, c).item), "and the cover above them all");
+    s.execute("clip.enable", json!({"clips": [layer]})).unwrap();
+    assert!(is(px(&s, 30, 60, 90), GREY3) && is(px(&s, 5, 66, 90), BLUE), "with the layer back on, the cover still covers");
+    // a second layer goes above the first
+    let second = s.execute("layers.retime", json!({"clip": c, "region": region, "feather": 0, "speed": 200})).unwrap()["layer"].as_u64().unwrap();
+    let q = s.active_sequence().unwrap();
+    let of = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    assert_eq!((of(c), of(plate), of(layer), of(second)), (0, 1, 2, 3));
+    assert_eq!(q.video_tracks.len(), 6, "three tracks to begin with and three made");
+    assert_eq!(of(cover_clip), 4, "the cover has moved up with each");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn another_clip_of_the_same_footage_is_not_part_of_the_stack() {
+    let (mut s, c, shot_seq) = shot();
+    // a punch-in: the same shot again on the track above for the first second, twice the size
+    let punch =
+        s.execute("timeline.place", json!({"item": shot_seq, "track": "V2", "seconds": 0.0, "audio": false, "duration": {"seconds": 1.0}})).unwrap()["clips"]
+            [0]
+        .as_u64()
+        .unwrap();
+    s.execute("effects.setParam", json!({"clip": punch, "effect": "motion", "param": "scale", "value": 200.0})).unwrap();
+    let before: Vec<[f32; 4]> = [(0, 40, 90), (10, 100, 60), (30, 60, 90)].iter().map(|&(f, x, y)| px(&s, f, x, y)).collect();
+    let layer =
+        s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.0, "y": 0.25, "w": 0.4, "h": 0.5}, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    let q = s.active_sequence().unwrap();
+    let of = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    assert_eq!((of(c), of(layer), of(punch)), (0, 1, 2), "the layer goes under the punch-in, which was laid over the clip on purpose");
+    // and the picture is what it was: no unscaled patch over the punch-in
+    let after: Vec<[f32; 4]> = [(0, 40, 90), (10, 100, 60), (30, 60, 90)].iter().map(|&(f, x, y)| px(&s, f, x, y)).collect();
+    assert_eq!(before, after);
+    // a layer made from the clip is part of its stack: the next one goes over it, still under the punch-in
+    let second =
+        s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.5, "y": 0.25, "w": 0.4, "h": 0.5}, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    let q = s.active_sequence().unwrap();
+    let of = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    assert_eq!((of(c), of(layer), of(second), of(punch)), (0, 1, 2, 3));
+}
+
+#[test]
+fn relight_leaves_a_regions_own_grade_alone() {
+    let (mut s, c, _) = shot();
+    // a grade on a region only (a face lifted a stop)
+    let region = json!({"x": 0.0, "y": 0.0, "w": 0.3, "h": 0.3});
+    s.execute("layers.adjust", json!({"clip": c, "region": region, "effect": "lumetri", "params": {"exposure": 1.0}, "feather": 0})).unwrap();
+    let outside_before = px(&s, 30, 300, 170);
+    let r = s.execute("color.relight", json!({"clip": c, "time": "22:00", "lightStrength": 0})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "nothing over the whole picture was replaced: {r}");
+    let grades: Vec<&filmcraft_project::EffectInstance> = clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").collect();
+    assert_eq!(grades.len(), 2, "the region's grade, and the shot's");
+    let (masked, whole) = (grades.iter().find(|e| !e.masks.is_empty()).unwrap(), grades.iter().find(|e| e.masks.is_empty()).unwrap());
+    assert_eq!(masked.params["exposure"].value, ParamValue::Float(1.0), "the region keeps its own grade");
+    assert_eq!(whole.params["exposure"].value, ParamValue::Float(crate::relight::grade_at(22.0, 1.0)[2]));
+    // night falls on the whole picture, not on the region alone
+    let outside = px(&s, 30, 300, 170);
+    assert!(outside[0] < outside_before[0] * 0.6, "{outside:?} against {outside_before:?}");
+    // again: the same two effects, no third
+    s.execute("color.relight", json!({"clip": c, "time": "06:30", "lightStrength": 0})).unwrap();
+    assert_eq!(clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").count(), 2);
+}
+
+#[test]
+fn no_light_switches_a_light_off_and_says_so() {
+    let (mut s, c, _) = shot();
+    s.execute("color.relight", json!({"clip": c, "time": "17:00", "lightStrength": 0.8})).unwrap();
+    let lit = clip(&s, c).effects.iter().find(|e| e.effect == "lighting_effects").unwrap().clone();
+    assert!(lit.enabled);
+    let r = s.execute("color.relight", json!({"clip": c, "time": "17:00", "lightStrength": 0})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("switched off")), "{r}");
+    let off = clip(&s, c).effects.iter().find(|e| e.effect == "lighting_effects").unwrap().clone();
+    assert!(!off.enabled);
+    assert_eq!(off.params, lit.params, "its settings are as they were");
+    // already off: nothing more to say
+    let r = s.execute("color.relight", json!({"clip": c, "time": "17:00", "lightStrength": 0})).unwrap();
+    assert!(!r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("Lighting Effects")), "{r}");
+    // and a clip that never had one gets none
+    let (mut bare, b, _) = shot();
+    bare.execute("color.relight", json!({"clip": b, "time": "17:00", "lightStrength": 0})).unwrap();
+    assert!(!clip(&bare, b).effects.iter().any(|e| e.effect == "lighting_effects"));
+}
+
+#[test]
+fn a_whole_day_passes_from_midnight_to_midnight() {
+    let (mut s, c, _) = shot();
+    let r = s.execute("color.relight", json!({"clip": c, "time": "00:00", "toTime": "24:00"})).unwrap();
+    // every hour of the table: midnight, eleven in between, midnight
+    assert_eq!((r["keyframes"].as_u64(), r["hours"].as_f64(), r["toTime"].as_str()), (Some(13), Some(24.0), Some("24:00")), "{r}");
+    let e = clip(&s, c).effects.iter().find(|e| e.effect == "lumetri").unwrap().clone();
+    let rate = s.sequence_rate();
+    let exposure = |frame: i64| e.params["exposure"].f64_at(clip(&s, c).effect_time_at(rate.tick_of(frame)));
+    assert!(exposure(0) < -1.5 && exposure(47) < -1.5 && exposure(24) > -0.1, "night, noon, night: {} {} {}", exposure(0), exposure(24), exposure(47));
+    // the other way about it is no time at all
+    let r = s.execute("color.relight", json!({"clip": c, "time": "24:00", "toTime": "00:00"})).unwrap();
+    assert_eq!((r["keyframes"].as_u64(), r["hours"].as_f64()), (Some(0), Some(0.0)));
+}
+
+#[test]
+fn every_layer_command_says_what_it_did_to_the_picture_and_what_to_watch() {
+    let (mut s, c, _) = shot();
+    let dir = tmp_dir("layers-report");
+    let region = json!({"x": 0.0, "y": 0.25, "w": 0.3, "h": 0.5});
+    for (cmd, p, reads) in [
+        // a layer shows what was already there
+        ("layers.extract", json!({"clip": c, "region": region, "feather": 0}), "none"),
+        ("layers.extract", json!({"clip": c, "region": region, "feather": 0, "cutOut": true}), "none"),
+        // the subject is back over its plate
+        ("layers.lift", json!({"clip": c, "region": region, "feather": 0, "samples": 9, "path": dir.join("a.png").to_string_lossy()}), "none"),
+        // half speed inside the region: the block is somewhere else
+        ("layers.retime", json!({"clip": c, "region": {"x": 0.0, "y": 0.0, "w": 0.6, "h": 1.0}, "feather": 0, "speed": 50}), "strong"),
+        ("layers.adjust", json!({"clip": c, "region": region, "feather": 0, "effect": "tint", "params": {"amount": 100}}), "strong"),
+    ] {
+        let r = s.execute(cmd, p.clone()).unwrap();
+        assert!(r["warnings"].is_array(), "{cmd}: {r}");
+        assert_eq!(r["pictureChange"]["reads"], reads, "{cmd} {p}: {}", r["pictureChange"]);
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }

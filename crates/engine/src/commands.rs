@@ -270,7 +270,9 @@ pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
 /// A call that only reports, so it is not journaled although its command edits: `sequence.settings`
 /// with nothing to change (`null` or `{}`) answers the settings, as `sequence.inspect` does (#1540).
 pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
-    id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty()))
+    // `story.blinkPoints` edits only when asked to leave markers
+    (id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty())))
+        || (id == "story.blinkPoints" && p.get("markers").and_then(Value::as_bool) != Some(true))
 }
 /// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmcraft_project::HexColor>)>> {
@@ -932,7 +934,7 @@ fn with_links_p(s: &Session, p: &Value, clip: ClipId) -> Vec<ClipId> {
 /// The delta a roll of every cut in `pairs` can apply together: `delta` clamped by each pair's
 /// media and the frame left in each clip, each tried on a copy of `q`. 0 when a pair would roll
 /// by another amount (a clip whose Out point is past the end of its media rolls the other way).
-fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)], delta: Tick, ctx: &mut edit::EditCtx) -> Result<Tick> {
+pub(crate) fn clamp_roll_linked(q: &filmcraft_project::Sequence, pairs: &[(ClipId, ClipId)], delta: Tick, ctx: &mut edit::EditCtx) -> Result<Tick> {
     let mut d = delta;
     for &(pl, pr) in pairs {
         let mut probe = q.clone();

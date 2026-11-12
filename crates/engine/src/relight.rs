@@ -127,17 +127,27 @@ fn clock(hour: f64) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
+/// How many hours pass from `from` to `to`. The clock only runs forward: an end earlier than the
+/// start is on the next day, so 22:00 to 02:00 is four hours through midnight, not twenty back
+/// through noon.
+fn hours_between(from: f64, to: f64) -> f64 {
+    // midnight to midnight, written 0 to 24, is the whole day (a time-lapse); written 24 to 0 it is no time at all
+    let d = if to > from { to - from } else { (to - from).rem_euclid(24.0) };
+    if (1e-9..=24.0).contains(&d) { d } else { 0.0 }
+}
+
 /// The hours a move from `from` to `to` passes: both ends and every hour of the table between
 /// them, with how far through the move each lies (0…1).
 fn stops(from: f64, to: f64) -> Vec<(f64, f64)> {
     let mut out = vec![(0.0, from)];
-    if (to - from).abs() > 1e-9 {
-        let (lo, hi) = (from.min(to), from.max(to));
-        let mut mid: Vec<f64> = DAY.iter().map(|d| d.0).filter(|h| *h > lo + 1e-6 && *h < hi - 1e-6).collect();
-        if to < from {
-            mid.reverse();
-        }
-        out.extend(mid.into_iter().map(|h| ((h - from) / (to - from), h)));
+    let total = hours_between(from, to);
+    if total > 0.0 {
+        // each hour of the table by how long after `from` it comes (midnight is in the table twice, as 0 and as 24)
+        let mut mid: Vec<(f64, f64)> =
+            DAY.iter().map(|d| ((d.0 - from).rem_euclid(24.0), d.0)).filter(|(after, _)| *after > 1e-6 && *after < total - 1e-6).collect();
+        mid.sort_by(|a, b| a.0.total_cmp(&b.0));
+        mid.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
+        out.extend(mid.into_iter().map(|(after, h)| (after / total, h)));
         out.push((1.0, to));
     }
     out
@@ -156,6 +166,13 @@ fn write(e: &mut EffectInstance, id: &str, keys: &[(Tick, ParamValue)]) {
     }
 }
 
+/// Whether `e` is effect `id` over the clip's whole picture. One with a mask is an adjustment of a
+/// region (`layers.adjust`): relighting the shot through it would light that region alone and
+/// write over the adjustment.
+fn whole(e: &EffectInstance, id: &str) -> bool {
+    e.effect == id && e.masks.is_empty()
+}
+
 /// What a relight asks for.
 struct Ask {
     from: f64,
@@ -167,10 +184,17 @@ struct Ask {
 
 /// Write the grade and the light of `ask` into `it`'s Color Grading and Lighting Effects.
 fn apply(it: &mut TrackItem, size: (u32, u32), ask: &Ask) -> usize {
-    let stops = stops(ask.from, ask.to);
+    let mut stops = stops(ask.from, ask.to);
     let last = (it.end() - Tick(1)).max(it.start);
-    let when: Vec<Tick> = stops.iter().map(|(k, _)| it.effect_time_at(it.start + Tick(((last - it.start).0 as f64 * k) as i64))).collect();
-    if let Some(e) = it.effects.iter_mut().find(|e| e.effect == "lumetri") {
+    let at = |k: f64| it.effect_time_at(it.start + Tick(((last - it.start).0 as f64 * k) as i64));
+    // A clip that shows one moment of its media (a frame hold, a single frame) has no time for the
+    // light to change in: every stop would land on one keyframe and the last would win. It gets
+    // the light of `time`, still.
+    if stops.first().zip(stops.last()).is_some_and(|(a, b)| at(a.0) == at(b.0)) {
+        stops.truncate(1);
+    }
+    let when: Vec<Tick> = stops.iter().map(|(k, _)| at(*k)).collect();
+    if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lumetri")) {
         e.enabled = true;
         write(e, "basic_on", &[(Tick::ZERO, ParamValue::Bool(true))]);
         for (i, id) in GRADE.iter().enumerate() {
@@ -178,10 +202,14 @@ fn apply(it: &mut TrackItem, size: (u32, u32), ask: &Ask) -> usize {
             write(e, id, &keys);
         }
     }
-    if let Some(e) = it.effects.iter_mut().find(|e| e.effect == "lighting_effects") {
+    // no light asked for: one that is there is switched off and otherwise left as it was
+    if ask.light_strength <= 0.0 {
+        if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lighting_effects")) {
+            e.enabled = false;
+        }
+    } else if let Some(e) = it.effects.iter_mut().find(|e| whole(e, "lighting_effects")) {
         let (w, h) = (f64::from(size.0), f64::from(size.1));
-        let on = ask.light_strength > 0.0;
-        e.enabled = on;
+        e.enabled = true;
         let lights: Vec<(Vec2, [f32; 3], f64)> = stops.iter().map(|(_, hr)| sun_at(*hr)).collect();
         let keys =
             |f: &dyn Fn(&(Vec2, [f32; 3], f64)) -> ParamValue| -> Vec<(Tick, ParamValue)> { lights.iter().zip(&when).map(|(l, t)| (*t, f(l))).collect() };
@@ -214,13 +242,39 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
     let ask = Ask { from, to, strength: unit_p(p, "strength", 1.0, CMD)?, light, light_strength: unit_p(p, "lightStrength", 0.5, CMD)? };
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (track, it) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence", clip.0)))?;
-    if q.track(track).is_none_or(|t| t.kind != TrackKind::Video) {
-        return Err(bad(CMD, "the clip is a sound clip; relighting needs a picture"));
+    let tr = q.track(track).filter(|t| t.kind == TrackKind::Video).ok_or_else(|| bad(CMD, "the clip is a sound clip; relighting needs a picture"))?;
+    if tr.locked {
+        return Err(bad(CMD, format!("track {} is locked", tr.name)));
     }
     let size = filmcraft_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(CMD, "the clip has no picture"))?;
-    let has = |id: &str| it.effects.iter().any(|e| e.effect == id);
+    let has = |id: &str| it.effects.iter().any(|e| whole(e, id));
     let (need_grade, need_light) = (!has("lumetri"), !has("lighting_effects") && ask.light_strength > 0.0);
+    // What is already on the clip and is about to be written over: said, not done in silence.
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(e) = it.effects.iter().find(|e| whole(e, "lumetri")) {
+        let set = GRADE.iter().zip(NEUTRAL).any(|(id, neutral)| {
+            e.params.get(*id).is_some_and(|prm| !prm.keyframes.is_empty() || !matches!(prm.value, ParamValue::Float(v) if (v - neutral).abs() < 1e-9))
+        });
+        if set || !e.enabled {
+            warnings.push(
+                "the clip already had Color Grading with Basic Correction set: its white balance, tint, exposure, contrast, saturation, highlights and shadows were replaced (the other sections are untouched). Undo brings the old grade back".into(),
+            );
+        }
+    }
+    if let Some(e) = it.effects.iter().find(|e| whole(e, "lighting_effects")) {
+        if ask.light_strength > 0.0 {
+            warnings.push("the clip already had Lighting Effects: its first light and ambience were replaced".into());
+        } else if e.enabled {
+            warnings.push("the clip's Lighting Effects was switched off (`lightStrength` 0); its settings are as they were".into());
+        }
+    }
+    let hours = hours_between(from, to);
+    if to < from && hours > 0.0 {
+        warnings.push(format!("`toTime` is earlier in the day than `time`: the light runs forward {hours:.1} hours through midnight"));
+    }
     let apply_effect = crate::commands::find("effects.apply").ok_or_else(|| EngineError::UnknownCommand("effects.apply".into()))?.run;
+    let (start, end) = (it.start, it.end());
+    let before = crate::story::looks_across(s, start, end);
     let keyframes = s.edit_group("Relight", |s| {
         for (need, id) in [(need_grade, "lumetri"), (need_light, "lighting_effects")] {
             if need {
@@ -232,17 +286,21 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(apply(it, size, &ask))
         })
     })?;
+    let change = crate::story::change_json(&before, &crate::story::looks_across(s, start, end));
     let g = grade_at(from, ask.strength);
     let (pos, color, _) = sun_at(from);
     let pos = ask.light.unwrap_or(pos);
     Ok(json!({
         "clip": clip.0,
         "time": clock(from),
-        "toTime": ((to - from).abs() > 1e-9).then(|| clock(to)),
+        "toTime": (hours > 0.0).then(|| clock(to)),
+        "hours": (hours * 100.0).round() / 100.0,
         "keyframes": keyframes,
         "grade": GRADE.iter().zip(g).map(|(k, v)| ((*k).to_string(), json!((v * 100.0).round() / 100.0))).collect::<serde_json::Map<_, _>>(),
         "light": {"at": [(pos.x * 1000.0).round() / 1000.0, (pos.y * 1000.0).round() / 1000.0], "color": color, "strength": ask.light_strength},
         "effects": ["lumetri", "lighting_effects"],
+        "pictureChange": change,
+        "warnings": warnings,
         "note": "a grade toward the light of that hour, made of ordinary Color Grading and Lighting Effects parameters you can go on editing. It moves colour and exposure; it casts no new shadows",
     }))
 }
