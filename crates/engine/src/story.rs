@@ -158,7 +158,7 @@ fn display_aspect(q: &Sequence) -> f32 {
 }
 
 /// The first frame of the sequence's grid at or after `t`.
-pub(crate) fn frame_from(rate: FrameRate, t: Tick) -> Tick {
+fn frame_from(rate: FrameRate, t: Tick) -> Tick {
     let f = rate.frame_at(t);
     let on = rate.tick_of(f);
     if on < t { rate.tick_of(f.saturating_add(1)) } else { on }

@@ -284,19 +284,21 @@ What to expect:
     the bottom of a layer that is turned is its bottom as it shows.
   - While only the mask path moves, the Position gets a keyframe at each of the path's, with the
     path's easing, and holds where the path holds (a path that changes its number of points
-    between two keyframes jumps). When the layer's own Motion is keyframed as well (Position,
-    Rotation, Anchor Point, or a Scale that is left alone), two animations decide where the anchor
-    falls and no keyframes at theirs follow both in between: the Position then gets a keyframe on
-    every frame the layer is on screen, and the layer's other keyframes stay as they are. That
-    is refused for a layer longer than 20000 frames. With only `offset` the Position's own
-    keyframes are moved and keep their easing.
+    between two keyframes jumps). A Position keyed that way goes with the path, so scaling the
+    layer again, or back, keys it at the path's keyframes again. When the layer's own Motion is
+    keyframed as well (a Rotation, an Anchor Point, or a Position that does not go with the path),
+    two animations decide where the anchor falls and no keyframes at theirs follow both in
+    between: the Position then gets a keyframe on every frame the layer is on screen, and the
+    layer's other keyframes stay as they are. That is refused for a layer longer than 20000
+    frames. With only `offset` the Position's own keyframes are moved and keep their easing.
   - A Scale that is keyframed is refused when `scale` is given: take the keyframes off, or give
     only `offset`.
   - A subject made smaller, or shifted, uncovers the place it stood: the clip the layer was made
     from shows the subject there a second time, or the hole it was cut from. `warnings` says so
-    unless a plate lies between that clip and the layer, which is what `layers.lift` makes. A
-    still under the clip is a backdrop and hides nothing of it. A layer whose clip is gone or
-    switched off has nothing behind it to show twice, and gets no warning.
+    unless a plate lies between that clip and the layer, which is what `layers.lift` makes: a
+    still of other footage, shown for as long as the layer runs. A still under the clip is a
+    backdrop and hides nothing of it. A layer whose clip is gone, switched off or on a track that
+    is switched off has nothing behind it to show twice, and gets no warning.
   - It returns `scale` and `was`, the `position` and `anchorAt` (where the anchor is in the
     frame) at the layer's first frame, the number of Position `keyframes` it holds, and `changed`.
     `mask` picks one of several opacity masks by index; the default is the last that keeps a

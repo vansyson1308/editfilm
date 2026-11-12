@@ -939,13 +939,11 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         // the same size: every position moves by the offset, and its keyframes keep their easing
         None => {
             let mut pos = motion.param("position").cloned().unwrap_or_else(|| Param::new(ParamValue::Vec2(centre)));
-            if shift.x != 0.0 || shift.y != 0.0 {
-                pos.map_values(|v| match v {
-                    // a position never set is the middle of the frame
-                    ParamValue::Vec2(v) => ParamValue::Vec2(if v.x.is_nan() { centre } else { v } + shift),
-                    other => other,
-                });
-            }
+            pos.map_values(|v| match v {
+                // a position never set is the middle of the frame
+                ParamValue::Vec2(v) => ParamValue::Vec2(if v.x.is_nan() { centre } else { v } + shift),
+                other => other,
+            });
             pos
         }
         Some(sc) => {
@@ -966,14 +964,32 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
                 if pos.x.is_finite() && pos.y.is_finite() { Ok(ParamValue::Vec2(pos)) } else { Err(unplaced()) }
             };
             let path_keys = mask.path.keyframes.as_slice();
-            let keys = if ["position", "anchor", "rotation", "scale", "scale_width"].into_iter().any(animated) {
+            // How the position moves away from each keyframe of the path when only the path moves:
+            // with the path's easing, and not at all where the path has another number of points
+            // at its next keyframe (it does not move toward that one, it jumps).
+            let rides = |i: usize, k: &Keyframe| {
+                let points = |k: &Keyframe| k.value.as_path().map(MaskPath::len);
+                let held = path_keys.get(i + 1).is_some_and(|next| points(next) != points(k));
+                (if held { filmcraft_project::Interpolation::Hold } else { k.interp }, k.out_influence, k.in_influence)
+            };
+            // A position already keyed that way goes with the path (this command leaves it so):
+            // scaled again, it still does. The Scale is one value here, a keyframed one was refused.
+            let goes_with_path = motion.param("position").is_none_or(|pos| {
+                pos.keyframes.is_empty()
+                    || (pos.keyframes.len() == path_keys.len()
+                        && pos
+                            .keyframes
+                            .iter()
+                            .zip(path_keys.iter().enumerate())
+                            .all(|(at, (i, k))| at.time == k.time && (at.interp, at.out_influence, at.in_influence) == rides(i, k)))
+            });
+            let keys = if animated("anchor") || animated("rotation") || !goes_with_path {
                 // The layer's own Motion is keyframed. Where the anchor falls then turns on two
                 // animations at once, each with its own keyframes and easing, and no keyframes of
                 // the position at theirs follow both in between: a position for every frame the
                 // layer is on screen, and for every keyframe either of them has.
                 let rate = s.sequence_rate();
-                let step = rate.frame_duration().0.max(1);
-                let frames = it.duration.0 / step;
+                let frames = it.duration.0 / rate.frame_duration().0.max(1);
                 if frames > MAX_PLACED_FRAMES {
                     return Err(bad(
                         CMD,
@@ -983,33 +999,37 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
                     ));
                 }
                 let mut times: Vec<Tick> = path_keys.iter().map(|k| k.time).collect();
-                for id in ["position", "anchor", "rotation", "scale", "scale_width"] {
+                for id in ["position", "anchor", "rotation"] {
                     times.extend(motion.param(id).into_iter().flat_map(|p| p.keyframes.iter().map(|k| k.time)));
                 }
-                let mut on_screen = crate::story::frame_from(rate, it.start);
-                if on_screen >= it.end() {
-                    // shorter than a frame and between two of them
-                    on_screen = it.start;
+                // the frames of the sequence's own grid from the layer's first to its last
+                let mut frame = rate.frame_at(it.start);
+                if rate.tick_of(frame) < it.start {
+                    frame = frame.saturating_add(1);
                 }
-                while on_screen < it.end() {
-                    times.push(it.effect_time_at(on_screen));
-                    on_screen = Tick(on_screen.0.saturating_add(step));
+                let on_screen = times.len();
+                for _ in 0..=frames.saturating_add(1) {
+                    let at = rate.tick_of(frame);
+                    if at >= it.end() {
+                        break;
+                    }
+                    times.push(it.effect_time_at(at));
+                    frame = frame.saturating_add(1);
+                }
+                if times.len() == on_screen {
+                    // shorter than a frame and between two of them
+                    times.push(first);
                 }
                 times.sort_unstable();
                 times.dedup();
                 times.into_iter().map(|t| Ok(Keyframe::new(t, key(t)?))).collect::<Result<Vec<_>>>()?
             } else {
                 // Only the mask path moves: a position at each of its keyframes, moving between
-                // them as the path does (the same easing, and held where the path is held).
+                // them as the path does.
                 let mut keys = Vec::with_capacity(path_keys.len());
                 for (i, k) in path_keys.iter().enumerate() {
                     let mut at = Keyframe::new(k.time, key(k.time)?);
-                    (at.interp, at.out_influence, at.in_influence) = (k.interp, k.out_influence, k.in_influence);
-                    // a path with another number of points at its next keyframe does not move toward it
-                    let points = |k: &Keyframe| k.value.as_path().map(MaskPath::len);
-                    if path_keys.get(i + 1).is_some_and(|next| points(next) != points(k)) {
-                        at.interp = filmcraft_project::Interpolation::Hold;
-                    }
+                    (at.interp, at.out_influence, at.in_influence) = rides(i, k);
                     keys.push(at);
                 }
                 keys
@@ -1031,34 +1051,48 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     m.params.insert("position".into(), position);
     let set: Vec<(String, Param)> =
         ["position", "scale", "scale_width"].into_iter().filter_map(|k| m.params.get(k).map(|v| (k.to_string(), v.clone()))).collect();
-    // asked for what it already is, the layer is left alone: no undo step for a change that is none
-    let changes = set.iter().any(|(k, v)| motion.param(k) != Some(v));
+    // Asked for what it already is, the layer is left alone: no undo step for a change that is
+    // none. A position never set reads as the middle of the frame, which is where it is.
+    let settled = |p: &Param| {
+        let mut p = p.clone();
+        p.map_values(|v| match v {
+            ParamValue::Vec2(v) if v.x.is_nan() => ParamValue::Vec2(centre),
+            other => other,
+        });
+        p
+    };
+    let unset = Param::new(ParamValue::Vec2(centre));
+    let changes = set.iter().any(|(k, v)| match k.as_str() {
+        "position" => settled(v) != settled(motion.param(k).unwrap_or(&unset)),
+        _ => motion.param(k) != Some(v),
+    });
 
     // Smaller or shifted, the layer no longer covers the place its subject stood, and the clip it
-    // was made from shows there. Only that clip can: a layer whose clip is gone or switched off
-    // has nothing behind it to show twice.
+    // was made from shows there. Only that clip can: a layer whose clip is gone, switched off or
+    // on a track that is switched off has nothing behind it to show twice.
     let tracks = q.video_tracks.as_slice();
     let own = tracks.iter().position(|t| t.items.iter().any(|x| x.id == it.id)).unwrap_or(0);
-    let base = tracks.iter().take(own).enumerate().find_map(|(i, t)| t.items.iter().find(|x| of_its_stack(&s.project, x, &it)).map(|x| (i, x)));
+    let base = tracks.iter().take(own).enumerate().find_map(|(i, t)| t.items.iter().find(|x| of_its_stack(&s.project, x, &it)).map(|x| (i, t, x)));
     let seen = |item: &TrackItem, t: Tick| outline_bounds(&mask.path_at(t).transformed(&place(item, t)));
     let at_times: Vec<Tick> =
         after.effect("motion").and_then(|m| m.param("position")).map(|p| p.keyframes.iter().map(|k| k.time).collect()).unwrap_or_default();
     let mut warnings: Vec<String> = Vec::new();
-    if let Some((under, base)) = base.filter(|(_, b)| b.enabled) {
+    if let Some((under, _, base)) = base.filter(|(_, t, b)| t.enabled && b.enabled) {
         let uncovers = at_times.iter().copied().chain(at_times.is_empty().then_some(first)).any(|t| match (seen(base, t), seen(&after, t)) {
             (Some(stood), Some(now)) => {
                 stood.0.x < now.0.x - COVER_SLACK || stood.0.y < now.0.y - COVER_SLACK || stood.1.x > now.1.x + COVER_SLACK || stood.1.y > now.1.y + COVER_SLACK
             }
             _ => false,
         });
-        // a plate: a still over the clip for as long as the clip runs, between the clip and the layer.
-        // A still under the clip is a backdrop, and hides nothing of it.
+        // a plate: a still of something else that is shown between the clip and the layer for as
+        // long as the layer runs. A still under the clip is a backdrop, and hides nothing of it.
         let plate = tracks
             .iter()
             .take(own)
             .skip(under + 1)
+            .filter(|t| t.enabled)
             .flat_map(|t| t.items.iter())
-            .any(|x| x.enabled && x.item != it.item && is_still(&s.project, x.item) && of_its_stack(&s.project, base, x));
+            .any(|x| x.enabled && x.item != it.item && is_still(&s.project, x.item) && x.start <= it.start && x.end() >= it.end());
         if uncovers && !plate {
             warnings.push(
                 "the layer no longer covers the place its subject stood, and no plate lies between it and the clip it was made from: the clip shows there (the subject a second time, or the hole it was cut from). `layers.lift` makes the layer with a plate that fills the place"

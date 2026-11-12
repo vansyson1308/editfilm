@@ -1167,9 +1167,22 @@ fn a_layer_grows_where_it_stands() {
     // nothing of it is left where a scale about the middle of the picture would have thrown it
     assert!(is(px(&s, 47, 318, 95), GREY3));
     assert_eq!(r["changed"], true);
-    // asked again, nothing moves, and there is nothing to undo: the history is as it was, redo included
     s.execute("edit.undo", json!({})).unwrap();
-    s.execute("edit.redo", json!({})).unwrap();
+    let m = motion(&s, layer);
+    assert_eq!(m.params["scale"].value, ParamValue::Float(100.0), "undo puts the layer back");
+    assert!(m.params["position"].keyframes.is_empty());
+    assert_eq!(red_rows(&s, 47, 280), BLOCK_ROWS);
+}
+
+#[test]
+fn a_layer_asked_again_stays_as_it_is_and_scaled_again_keeps_to_the_paths_keyframes() {
+    let (mut s, c, _) = shot();
+    let layer = block_layer(&mut s, c);
+    let stood = [(0, 40), (24, 162), (47, 280)].map(|(f, x)| red_rows(&s, f, x));
+    let undo = s.history.undo.len();
+    s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap();
+    let keyed = motion(&s, layer).params["position"].clone();
+    // asked for what it is, nothing moves, and there is nothing to undo: the history is as it was, redo included
     s.execute("edit.undo", json!({})).unwrap();
     let again = s.execute("layers.transform", json!({"layer": layer, "offset": [0, 0]})).unwrap();
     assert_eq!((again["changed"].as_bool(), s.history.undo.len(), s.history.redo.len()), (Some(false), undo, 1), "{again}");
@@ -1177,16 +1190,15 @@ fn a_layer_grows_where_it_stands() {
     let again = s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap();
     assert_eq!((again["pictureChange"]["reads"].as_str(), again["changed"].as_bool()), (Some("none"), Some(false)), "{again}");
     assert_eq!(s.history.undo.len(), undo + 1, "no undo step for a change that is none");
-    assert_eq!(motion(&s, layer).params["position"], m.params["position"]);
-    // back to 100: the layer is where it was cut from
-    s.execute("layers.transform", json!({"layer": layer, "scale": 100})).unwrap();
-    assert_eq!([(0, 40), (24, 162), (47, 280)].map(|(f, x)| red_rows(&s, f, x)).to_vec(), stood);
-    s.execute("edit.undo", json!({})).unwrap();
-    s.execute("edit.undo", json!({})).unwrap();
-    let m = motion(&s, layer);
-    assert_eq!(m.params["scale"].value, ParamValue::Float(100.0), "undo puts the layer back");
-    assert!(m.params["position"].keyframes.is_empty());
-    assert_eq!(red_rows(&s, 47, 280), BLOCK_ROWS);
+    assert_eq!(motion(&s, layer).params["position"], keyed);
+    // back to 100: the layer is where it was cut from. The position this command keyed goes
+    // with the mask path, so scaling again keys it at the path's two keyframes again, not on every frame
+    let back = s.execute("layers.transform", json!({"layer": layer, "scale": 100})).unwrap();
+    assert_eq!(back["keyframes"].as_u64(), Some(2), "{back}");
+    assert_eq!([(0, 40), (24, 162), (47, 280)].map(|(f, x)| red_rows(&s, f, x)), stood);
+    let (worst, larger) = strays(&mut s, layer, json!({"scale": 200}), (0.0, 0.0));
+    assert!(worst < 1e-6 && larger["keyframes"].as_u64() == Some(2), "{worst}: {larger}");
+    assert_eq!(motion(&s, layer).params["position"].keyframes.len(), 2);
 }
 
 #[test]
@@ -1475,6 +1487,15 @@ fn a_layer_that_turns_keeps_its_feet_between_the_keyframes_too() {
     assert!(frames_of(&s, layer).end > 20_000);
     refuses(&mut s, "layers.transform", &[json!({"layer": layer, "scale": 150})]);
     assert!(s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap_err().to_string().contains("every frame"));
+    // as long, but only its mask moves: scaled, and scaled back, at the path's two keyframes
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    follow_block(&mut s, layer);
+    s.execute("clip.speedDuration", json!({"clips": [layer], "speed": 0.2, "ripple": false})).unwrap();
+    assert!(frames_of(&s, layer).end > 20_000);
+    for scale in [150, 100, 60] {
+        let r = s.execute("layers.transform", json!({"layer": layer, "scale": scale})).unwrap();
+        assert_eq!(r["keyframes"].as_u64(), Some(2), "{r}");
+    }
 }
 
 #[test]
@@ -1497,6 +1518,10 @@ fn a_path_that_is_held_holds_the_layer_too() {
     assert!(worst < 1e-6, "{worst} px off at worst: {r}");
     let keys = &motion(&s, layer).params["position"].keyframes;
     assert_eq!((keys.len(), keys[0].interp), (2, filmcraft_project::Interpolation::Hold));
+    // and again: the position is still the path's, two keyframes and a hold
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 80}), (0.0, 0.0));
+    assert!(worst < 1e-6 && r["keyframes"].as_u64() == Some(2), "{worst}: {r}");
+    assert_eq!(motion(&s, layer).params["position"].keyframes[0].interp, filmcraft_project::Interpolation::Hold);
 }
 
 #[test]
@@ -1617,5 +1642,56 @@ fn only_a_plate_over_the_clip_hides_the_place_the_subject_stood() {
     s.execute("edit.clear", json!({"clips": [c]})).unwrap();
     let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
     assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+
+    // a still laid by hand between the shot and its layer, running on past the shot, is a plate all the same
+    let (mut s, c, _) = shot();
+    let still =
+        s.execute("layers.cleanPlate", json!({"clip": c, "path": dir.join("plate.png").to_string_lossy(), "samples": 5, "place": false})).unwrap()["item"]
+            .as_u64()
+            .unwrap();
+    let layer = block_layer(&mut s, c);
+    s.execute("timeline.move", json!({"moves": [{"clip": layer, "track": "V4", "time": 0}]})).unwrap();
+    let longer = Tick(clip(&s, c).duration.0 * 3 / 2).0;
+    let plate = s.execute("timeline.place", json!({"item": still, "track": "V2", "seconds": 0.0, "duration": longer, "audio": false})).unwrap()["clips"][0]
+        .as_u64()
+        .unwrap();
+    let q = s.active_sequence().unwrap();
+    let on = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    assert_eq!((on(c), on(plate), on(layer)), (0, 1, 3));
+    assert!(clip(&s, plate).end() > clip(&s, c).end());
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty() && is(px(&s, 0, 40, 80), GREY3), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // on a track that is switched off the plate shows nothing: the shot's block is behind the copy again
+    s.execute("timeline.setTrack", json!({"track": "V2", "enabled": false})).unwrap();
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().len() == 1 && is(px(&s, 0, 40, 80), RED), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // and with the shot's own track off there is no block behind it
+    s.execute("timeline.setTrack", json!({"track": "V1", "enabled": false})).unwrap();
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_position_never_set_is_no_change_to_leave_alone() {
+    let (mut s, c, _) = shot();
+    let layer = block_layer(&mut s, c);
+    // a position that is still "auto": the middle of the frame
+    s.edit_sequence("Auto", |q, _, _| {
+        let m = q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("motion").unwrap();
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(f64::NAN, f64::NAN))));
+        Ok(())
+    })
+    .unwrap();
+    let undo = s.history.undo.len();
+    for p in [json!({"layer": layer, "offset": [0, 0]}), json!({"layer": layer, "scale": 100}), json!({"layer": layer, "scale": 100, "offset": [0, 0]})] {
+        let r = s.execute("layers.transform", p).unwrap();
+        assert_eq!((r["changed"].as_bool(), &r["position"], s.history.undo.len()), (Some(false), &json!([160.0, 90.0]), undo), "{r}");
+    }
+    // moved, it is a position like any other
+    let r = s.execute("layers.transform", json!({"layer": layer, "offset": [10, 0]})).unwrap();
+    assert_eq!((r["changed"].as_bool(), s.history.undo.len()), (Some(true), undo + 1), "{r}");
+    assert_eq!(motion(&s, layer).params["position"].value, ParamValue::Vec2(filmcraft_geom::Vec2::new(170.0, 90.0)));
 }
