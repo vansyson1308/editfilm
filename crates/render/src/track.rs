@@ -454,6 +454,12 @@ const LOOK_MIN_OWN: f32 = 0.1;
 /// under the mask, and a mask that stays on its subject keeps over 0.9 while the subject turns or
 /// grows under it, and stays above it through a stop of exposure either way.
 pub const LOST_BELOW: f32 = 0.5;
+/// [`Appearance::kept`] from which a tracked region is plainly still on what it started on.
+/// Between [`LOST_BELOW`] and this it may be on its way off: in the tests a mask sliding off a
+/// plain subject has over 70 % of the subject under it on every frame at or above this, and
+/// never comes back above it. Tracking holds the frames in between back until one says which
+/// way it went.
+pub const SURE_ABOVE: f32 = 0.8;
 
 #[derive(Clone, Copy)]
 struct LookSample {
@@ -472,11 +478,18 @@ struct LookSample {
 /// The look is a colour histogram of the region, weighted towards its middle (the rim is mostly
 /// background), less the histogram of a band around the region: what is left is the colours the
 /// region has more of than its surroundings, which is the subject. A histogram does not care
-/// where in the region a colour is, so a subject that turns, bends or changes size under the mask
-/// keeps its look; one the mask has slid off does not.
+/// where in the region a colour is, so a subject that turns or bends under the mask keeps its
+/// look; one the mask has slid off does not.
+///
+/// A later frame is read the same way, less only the colours the band had then and has now: a
+/// subject that shares a colour with what was behind it (a white shirt before a white wall) keeps
+/// that colour as its own when it walks in front of something else, and one that walks in front
+/// of something of its own colour is not taken for background.
 pub struct Appearance {
     samples: Vec<LookSample>,
-    /// Histogram of the band around the region (sums to 1, or all zero when the region fills the frame).
+    /// Sample points of the band around the region.
+    band: Vec<LookSample>,
+    /// Histogram of the band (sums to 1, or all zero when the region fills the frame).
     around: Vec<f32>,
     /// The region's histogram less `around`, negative bins dropped.
     own: Vec<f32>,
@@ -570,21 +583,19 @@ impl Appearance {
                     }
                 }
                 let q = Vec2::new(x0 + (2.0 * fx - 0.5) * bw, y0 + (2.0 * fy - 0.5) * bh);
-                if !point_in(region, q.x, q.y)
-                    && let Some(c) = rgb_at(w, h, rgba, q.x, q.y)
-                {
-                    band.push((c, 1.0));
+                if !point_in(region, q.x, q.y) && rgb_at(w, h, rgba, q.x, q.y).is_some() {
+                    band.push(LookSample { x: q.x as f32, y: q.y as f32, weight: 1.0 });
                 }
             }
         }
-        let (inside, weight) = look_histogram(samples.iter().filter_map(|s| Some((rgb_at(w, h, rgba, s.x as f64, s.y as f64)?, s.weight))));
+        let (inside, weight) = look_at(&samples, w, h, rgba, &Affine::IDENTITY);
         if weight <= 0.0 {
             return None;
         }
-        let (around, _) = look_histogram(band.into_iter());
+        let (around, _) = look_at(&band, w, h, rgba, &Affine::IDENTITY);
         let own: Vec<f32> = inside.iter().zip(&around).map(|(i, a)| (i - a).max(0.0)).collect();
         let own_total: f32 = own.iter().sum();
-        (own_total >= LOOK_MIN_OWN).then_some(Self { samples, around, own, own_total })
+        (own_total >= LOOK_MIN_OWN).then_some(Self { samples, band, around, own, own_total })
     }
 
     /// The share of what set the region apart that is still inside it, in a `w`×`h` 8-bit RGBA
@@ -593,16 +604,24 @@ impl Appearance {
     /// when it cannot be told: more than half of the region has left the frame.
     pub fn kept(&self, w: usize, h: usize, rgba: &[u8], to_frame: &Affine) -> Option<f32> {
         let all: f32 = self.samples.iter().map(|s| s.weight).sum();
-        let (now, seen) = look_histogram(self.samples.iter().filter_map(|s| {
-            let q = to_frame.apply(Vec2::new(s.x as f64, s.y as f64));
-            Some((rgb_at(w, h, rgba, q.x, q.y)?, s.weight))
-        }));
+        let (now, seen) = look_at(&self.samples, w, h, rgba, to_frame);
         if !(seen > 0.0 && seen >= 0.5 * all && self.own_total > 0.0) {
             return None;
         }
-        let kept: f32 = now.iter().zip(&self.around).zip(&self.own).map(|((n, a), o)| (n - a).max(0.0).min(*o)).sum();
+        // the band where it is now (all zero where it has left the frame: nothing is discounted)
+        let (around_now, _) = look_at(&self.band, w, h, rgba, to_frame);
+        let kept: f32 = now.iter().zip(self.around.iter().zip(&around_now)).zip(&self.own).map(|((n, (a0, a1)), o)| (n - a0.min(*a1)).max(0.0).min(*o)).sum();
         Some((kept / self.own_total).clamp(0.0, 1.0))
     }
+}
+
+/// Histogram ([`look_histogram`]) of `samples` read from a `w`×`h` 8-bit RGBA frame in which
+/// each has moved to `to_frame.apply(sample)`, and the weight that landed inside the frame.
+fn look_at(samples: &[LookSample], w: usize, h: usize, rgba: &[u8], to_frame: &Affine) -> (Vec<f32>, f32) {
+    look_histogram(samples.iter().filter_map(|s| {
+        let q = to_frame.apply(Vec2::new(s.x as f64, s.y as f64));
+        Some((rgb_at(w, h, rgba, q.x, q.y)?, s.weight))
+    }))
 }
 
 #[cfg(test)]
@@ -740,38 +759,48 @@ mod tests {
     fn a_mask_that_slides_off_a_plain_subject_is_noticed() {
         let (w, h) = (320usize, 240usize);
         let centre = Vec2::new(160.0, 120.0);
+        // the share of the 26×68 subject (it stands still at `centre`) under a mask of mw×mh moved by `slid`
+        let under = |slid: Vec2, mw: f64, mh: f64| {
+            let along = |d: f64, mask: f64, subject: f64| ((mask + subject) / 2.0 - d.abs()).clamp(0.0, subject) / subject;
+            along(slid.x, mw, 26.0) * along(slid.y, mh, 68.0)
+        };
         for (mw, mh, method) in [(60.0, 100.0, TrackMethod::Position), (34.0, 76.0, TrackMethod::Position), (60.0, 100.0, TrackMethod::PositionScaleRotation)] {
             let mut region = rect(centre, mw, mh);
             let first = plain_on_water(0.0, 1.0);
             let look = Appearance::capture(w, h, &first, &region).expect("a plain subject on water has a look");
             let mut prev = Prepared::new(Gray::from_rgba8(w, h, &first));
             let mut from_start = Affine::IDENTITY;
-            let (mut lost_at, mut slid_at_loss) = (None, 0.0);
+            let (mut unsure_at, mut lost_at) = (None, None);
             for k in 1..=30 {
                 let f = plain_on_water(k as f64, 1.0);
                 let next = Prepared::new(Gray::from_rgba8(w, h, &f));
                 let st = track_step(&prev, &next, &region, method).expect("every step fits: the tracker alone sees nothing wrong");
                 region = region.iter().map(|p| st.transform.apply(*p)).collect();
                 from_start = st.transform.then_apply(&from_start);
-                let slid = (from_start.apply(centre) - centre).length();
+                let slid = from_start.apply(centre) - centre;
                 let kept = look.kept(w, h, &f, &from_start).expect("the region is in the frame");
-                if slid < 4.0 {
-                    assert!(kept > 0.85, "{mw}×{mh} {method:?}: still on the subject at frame {k} ({slid:.1} px), kept {kept}");
+                let what = format!("{mw}×{mh} {method:?}, frame {k}: kept {kept}, {:.0} % of the subject under the mask", 100.0 * under(slid, mw, mh));
+                if kept >= SURE_ABOVE {
+                    // a frame taken as plainly on the subject has most of the subject under the mask
+                    assert!(unsure_at.is_none(), "sure again after doubt: {what}");
+                    assert!(under(slid, mw, mh) > 0.7, "{what}");
+                } else if unsure_at.is_none() {
+                    unsure_at = Some(k);
                 }
-                if lost_at.is_none() && kept < LOST_BELOW {
-                    (lost_at, slid_at_loss) = (Some(k), slid);
+                if kept < LOST_BELOW && lost_at.is_none() {
+                    // noticed before the mask is wholly off the subject
+                    assert!(under(slid, mw, mh) > 0.1, "{what}");
+                    lost_at = Some(k);
                 }
                 if lost_at.is_some() {
-                    assert!(kept < LOST_BELOW, "{mw}×{mh} {method:?}: lost stays lost (frame {k}, kept {kept})");
+                    assert!(kept < LOST_BELOW, "lost stays lost: {what}");
                 }
                 prev = next;
             }
             // the subject stands still, so how far the mask moved is how far it is off
             let slid = (from_start.apply(centre) - centre).length();
             assert!(slid > 60.0, "{mw}×{mh} {method:?}: the mask follows the water ({slid:.1} px)");
-            let lost_at = lost_at.unwrap_or_else(|| panic!("{mw}×{mh} {method:?}: never noticed"));
-            // noticed while part of the 26 px wide subject is still under the mask
-            assert!(slid_at_loss < mw / 2.0 + 13.0, "{mw}×{mh} {method:?}: noticed at frame {lost_at}, {slid_at_loss:.1} px off");
+            assert!(lost_at.is_some(), "{mw}×{mh} {method:?}: never noticed");
         }
     }
 
@@ -804,6 +833,39 @@ mod tests {
             // a stop doubles the light; the encoded value goes with its 1/2.2 power
             let kept = look.kept(w, h, &plain_on_water(17.0, 2f32.powf(stops / 2.2)), &Affine::IDENTITY).unwrap();
             assert!(kept > LOST_BELOW, "{stops} stops: kept {kept}");
+        }
+    }
+
+    /// A 28×80 figure in a white shirt and beige trousers, its middle at (`x`, 120) of a 320×240
+    /// shot: a white wall on the left, a green hedge on the right, a dark floor under both.
+    fn figure_by_wall_and_hedge(x: f64) -> Vec<u8> {
+        rgba(320, 240, |px, py| {
+            if (px - x).abs() < 14.0 && (py - 120.0).abs() < 40.0 {
+                if py < 120.0 { [0.95, 0.95, 0.94] } else { [0.76, 0.66, 0.5] }
+            } else if py >= 150.0 {
+                [0.15, 0.14, 0.13]
+            } else if px < 140.0 {
+                [0.92, 0.92, 0.9]
+            } else {
+                let v = 0.6 + 0.8 * texture(px + 300.0, py + 50.0);
+                [0.2 * v, 0.45 * v, 0.2 * v]
+            }
+        })
+    }
+
+    /// A subject that shares a colour with what is behind it keeps its look when it walks in
+    /// front of something else, either way, under a mask that stays exactly on it and has
+    /// background inside it.
+    #[test]
+    fn a_followed_subject_keeps_its_look_in_front_of_another_background() {
+        let (w, h) = (320usize, 240usize);
+        for (from, step) in [(60.0, 4.0), (260.0, -4.0)] {
+            let look = Appearance::capture(w, h, &figure_by_wall_and_hedge(from), &rect(Vec2::new(from, 120.0), 60.0, 110.0)).expect("the figure has a look");
+            for k in 1..=50 {
+                let moved = step * k as f64;
+                let kept = look.kept(w, h, &figure_by_wall_and_hedge(from + moved), &Affine::translate(moved, 0.0)).expect("in frame");
+                assert!(kept > 0.8, "from x = {from}, frame {k}: kept {kept}");
+            }
         }
     }
 

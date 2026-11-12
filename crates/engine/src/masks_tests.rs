@@ -217,15 +217,22 @@ impl filmcraft_media::MediaSource for Moving {
 }
 
 fn tracking_session() -> (Session, ClipId) {
-    session_of(|info| std::sync::Arc::new(Moving { info }))
+    session_of(320, 240, |info| std::sync::Arc::new(Moving { info }))
 }
 
-/// A plain 26×68 block (a figure in a plain shirt) standing still at the middle of a 320×240
-/// 24 fps clip, in front of water that drifts 2.5 px right and 1 px down a frame. The water has
-/// the detail and the block has none, so the motion found inside a mask around the block is the
-/// water's.
+/// A plain block (a figure in a plain shirt) standing still at the middle of a 24 fps clip, in
+/// front of water that drifts right and down. The water has the detail and the block has none, so
+/// the motion found inside a mask around the block is the water's. At `zoom` 1 the clip is
+/// 320×240, the block 26×68 and the water moves 2.5 px right and 1 px down a frame; `zoom` scales
+/// the clip, the block and the water's speed, and leaves the water's grain as fine as it was.
+/// Frames come at the scale they are asked for.
+///
+/// With `walk` (px a frame at `zoom` 1) it is the other way round: the block has a grain of its
+/// own and moves right at that speed, and the water stands still.
 struct Adrift {
     info: filmcraft_media::MediaInfo,
+    zoom: f64,
+    walk: f64,
 }
 
 impl filmcraft_media::MediaSource for Adrift {
@@ -234,14 +241,23 @@ impl filmcraft_media::MediaSource for Adrift {
     }
     fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
         let k = filmcraft_time::FrameRate::FPS_24.frame_at(req.time) as f64;
-        let (w, h) = (320usize, 240usize);
+        let scale = if req.scale > 0.0 && req.scale <= 1.0 { req.scale as f64 } else { 1.0 };
+        let (w, h) = ((320.0 * self.zoom * scale).round() as usize, (240.0 * self.zoom * scale).round() as usize);
+        // frame pixels per clip pixel
+        let per = w as f64 / (320.0 * self.zoom);
+        let z = self.zoom;
+        let walking = self.walk != 0.0;
+        // how far the block and the water have moved, in clip pixels
+        let (block, water) = if walking { (self.walk * z * k, (0.0, 0.0)) } else { (0.0, (2.5 * z * k, z * k)) };
         let mut px = vec![255u8; w * h * 4];
         for (i, o) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let (x, y) = ((i % w) as f64, (i / w) as f64);
-            let c = if (x - 160.0).abs() < 13.0 && (y - 120.0).abs() < 34.0 {
-                [0.78, 0.72, 0.6]
+            // in clip pixels
+            let (x, y) = ((i % w) as f64 / per, (i / w) as f64 / per);
+            let c = if (x - block - 160.0 * z).abs() < 13.0 * z && (y - 120.0 * z).abs() < 34.0 * z {
+                let v = if walking { 0.55 + 0.9 * texture(x - block + 500.0, y + 90.0) } else { 1.0 };
+                [0.78 * v, 0.72 * v, 0.6 * v]
             } else {
-                let v = 0.45 + 1.1 * texture(x - 2.5 * k + 40.0, y - k + 700.0);
+                let v = 0.45 + 1.1 * texture(x - water.0 + 40.0, y - water.1 + 700.0);
                 [0.22 * v, 0.42 * v, 0.6 * v]
             };
             for (o, c) in o.iter_mut().zip(c) {
@@ -255,22 +271,18 @@ impl filmcraft_media::MediaSource for Adrift {
     }
 }
 
-/// A session with the [`Adrift`] clip (two seconds) alone on V1, selected.
+/// A session with the 320×240 [`Adrift`] clip (two seconds) alone on V1, selected.
 pub(crate) fn adrift_session() -> (Session, ClipId) {
-    session_of(|info| std::sync::Arc::new(Adrift { info }))
+    session_of(320, 240, |info| std::sync::Arc::new(Adrift { info, zoom: 1.0, walk: 0.0 }))
 }
 
-/// A session with one two-second 320×240 clip on V1, selected, whose frames come from `source`.
-fn session_of(source: impl FnOnce(filmcraft_media::MediaInfo) -> std::sync::Arc<dyn filmcraft_media::MediaSource>) -> (Session, ClipId) {
+/// A session with one two-second `w`×`h` clip on V1 of a sequence of that size, selected, whose
+/// frames come from `source`.
+fn session_of(w: u32, h: u32, source: impl FnOnce(filmcraft_media::MediaInfo) -> std::sync::Arc<dyn filmcraft_media::MediaSource>) -> (Session, ClipId) {
     use filmcraft_media::MediaSource;
     let rate = filmcraft_time::FrameRate::FPS_24;
-    let g = filmcraft_media::generators::GeneratorSource::new(
-        filmcraft_media::Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] },
-        320,
-        240,
-        rate,
-        rate.tick_of(48),
-    );
+    let g =
+        filmcraft_media::generators::GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, w, h, rate, rate.tick_of(48));
     let info = g.info().clone();
     let mut p = filmcraft_project::Project::new("track");
     let item = p.add_item(
@@ -289,7 +301,7 @@ fn session_of(source: impl FnOnce(filmcraft_media::MediaInfo) -> std::sync::Arc<
         })),
         None,
     );
-    let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: 320, height: 240, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let ti =
         p.make_track_item(item, filmcraft_project::TrackKind::Video, Tick::ZERO, filmcraft_time::TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
     let clip = ti.id;
@@ -339,38 +351,108 @@ fn tracking_follows_known_motion_forward_and_backward() {
     assert_eq!(&undo[undo.len() - 2..], ["Track Mask", "Track Mask"], "{undo:?}");
 }
 
+/// The corners (x0, y0, x1, y1) of the box around mask 0's path at frame `frame`.
+fn mask_box(s: &mut Session, frame: i64) -> (f64, f64, f64, f64) {
+    let m = s.execute("masks.list", json!({"time": filmcraft_time::FrameRate::FPS_24.tick_of(frame).0})).unwrap();
+    let path = crate::masks::path_from_json(&m["masks"][0]["path"]).unwrap();
+    let fold = |pick: fn(filmcraft_geom::Vec2) -> f64, f: fn(f64, f64) -> f64, from: f64| path.vertices.iter().map(|v| pick(v.p)).fold(from, f);
+    (fold(|p| p.x, f64::min, f64::MAX), fold(|p| p.y, f64::min, f64::MAX), fold(|p| p.x, f64::max, f64::MIN), fold(|p| p.y, f64::max, f64::MIN))
+}
+
 /// A mask around a small plain subject follows the busy background behind it instead, one good
-/// fit after another. Tracking notices that the mask is no longer on what it started on, stops
-/// there with the frames it has, and says so.
+/// fit after another. Tracking notices that the mask is no longer on what it started on, stops,
+/// keeps the frames on which the mask still held its subject, and says so. `zoom` 4 is a
+/// 1280×960 clip, tracked at three quarters of its size.
 #[test]
 fn tracking_stops_when_the_mask_slides_off_its_subject() {
-    for method in ["position", "positionRotation", "positionScaleRotation"] {
-        let (mut s, _) = adrift_session();
-        s.execute("masks.add", json!({"effect": "opacity", "shape": "rectangle", "center": [160, 120], "size": [60, 100]})).unwrap();
+    for (zoom, method) in [(1.0, "position"), (1.0, "positionRotation"), (1.0, "positionScaleRotation"), (4.0, "position"), (4.0, "positionScaleRotation")] {
+        let what = format!("×{zoom} {method}");
+        let (mut s, _) = session_of((320.0 * zoom) as u32, (240.0 * zoom) as u32, |info| std::sync::Arc::new(Adrift { info, zoom, walk: 0.0 }));
+        s.execute("masks.add", json!({"effect": "opacity", "shape": "rectangle", "center": [160.0 * zoom, 120.0 * zoom], "size": [60.0 * zoom, 100.0 * zoom]}))
+            .unwrap();
         let r = s.execute("masks.track", json!({"direction": "forward", "method": method, "wait": true})).unwrap();
-        assert_eq!(r["frames"], 47, "{r}");
+        assert_eq!(r["frames"], 47, "{what}: {r}");
         let st = &r["status"];
-        assert_eq!(st["finished"], true, "{r}");
-        let error = st["result"]["error"].as_str().unwrap_or_else(|| panic!("{method}: tracking reported no error: {r}"));
-        assert!(error.starts_with("lost track after ") && error.contains("drifted off what it started on"), "{method}: {error}");
+        assert_eq!(st["finished"], true, "{what}: {r}");
+        let error = st["result"]["error"].as_str().unwrap_or_else(|| panic!("{what}: tracking reported no error: {r}"));
+        assert!(error.starts_with("lost track after ") && error.contains("are no longer inside it"), "{what}: {error}");
         let status = st["status"].as_str().unwrap();
-        assert!(status.starts_with("lost track after ") && status.ends_with("frame(s) tracked)"), "{method}: {status}");
+        assert!(status.starts_with("lost track after ") && status.ends_with("frame(s) tracked)"), "{what}: {status}");
         // the frames before it are kept, as Mask Path keyframes in one undo step
         let tracked = st["done"].as_u64().unwrap();
-        assert!(error.starts_with(&format!("lost track after {tracked} frame(s)")), "{method}: {error}");
-        assert!((1..20).contains(&tracked), "{method}: stopped after {tracked} of 47 frames");
+        assert!(error.starts_with(&format!("lost track after {tracked} frame(s)")), "{what}: {error}");
+        assert!((2..20).contains(&tracked), "{what}: stopped after {tracked} of 47 frames");
         let l = s.execute("masks.list", json!({})).unwrap();
-        assert_eq!(l["masks"][0]["pathKeyframes"].as_array().unwrap().len() as u64, tracked + 1, "{method}: {l}");
+        assert_eq!(l["masks"][0]["pathKeyframes"].as_array().unwrap().len() as u64, tracked + 1, "{what}: {l}");
         assert!(s.mask_jobs.is_empty());
         let h = s.execute("history.list", json!({})).unwrap();
         assert_eq!(h["undo"].as_array().unwrap().last().unwrap(), "Track Mask", "{h}");
-        // where it stopped, the subject (26 px wide, standing still at x = 160) is still under the 60 px mask
-        let rate = filmcraft_time::FrameRate::FPS_24;
-        let last = s.execute("masks.list", json!({"time": rate.tick_of(tracked as i64).0})).unwrap();
-        let path = crate::masks::path_from_json(&last["masks"][0]["path"]).unwrap();
-        let cx = path.vertices.iter().map(|v| v.p.x).sum::<f64>() / path.vertices.len() as f64;
-        assert!((cx - 160.0).abs() < 30.0 + 13.0, "{method}: the mask is {:.1} px off after {tracked} frames", cx - 160.0);
+        // on the last frame kept, the whole subject (26×68 at the middle, standing still) is under the mask
+        let (x0, y0, x1, y1) = mask_box(&mut s, tracked as i64);
+        let (sx, sy) = (13.0 * zoom, 34.0 * zoom);
+        assert!(
+            x0 <= 160.0 * zoom - sx && x1 >= 160.0 * zoom + sx && y0 <= 120.0 * zoom - sy && y1 >= 120.0 * zoom + sy,
+            "{what}: after {tracked} frames the mask is at {x0:.0}..{x1:.0} × {y0:.0}..{y1:.0}"
+        );
     }
+}
+
+/// A subject that is followed a long way is not called lost, on a clip the tracker reads at its
+/// own size and on a 1280×960 one it reads at three quarters: the first frame's picture is looked
+/// for where the mask has gone in the frame as read, not in the clip's pixels.
+#[test]
+fn a_followed_subject_is_checked_where_the_mask_is_at_any_clip_size() {
+    for zoom in [1.0, 4.0] {
+        let (mut s, _) = session_of((320.0 * zoom) as u32, (240.0 * zoom) as u32, |info| std::sync::Arc::new(Adrift { info, zoom, walk: 2.0 }));
+        // a mask inside the 26×68 block, so what moves inside it is the block
+        s.execute("masks.add", json!({"effect": "opacity", "shape": "rectangle", "center": [160.0 * zoom, 120.0 * zoom], "size": [20.0 * zoom, 60.0 * zoom]}))
+            .unwrap();
+        let r = s.execute("masks.track", json!({"direction": "forward", "method": "position", "frames": 40, "wait": true})).unwrap();
+        assert!(r["status"]["result"]["error"].is_null(), "×{zoom}: {r}");
+        let status = r["status"]["status"].as_str().unwrap();
+        assert!(status.starts_with("Tracked 40 frame(s)") && !status.contains("not checked"), "×{zoom}: {status}");
+        // the block has moved 80 px (at zoom 1) to the right, and the mask with it
+        let (x0, y0, x1, y1) = mask_box(&mut s, 40);
+        let (cx, cy) = ((x0 + x1) / 2.0 / zoom, (y0 + y1) / 2.0 / zoom);
+        assert!((cx - 240.0).abs() < 2.0 && (cy - 120.0).abs() < 2.0, "×{zoom}: the mask is at {cx:.1}, {cy:.1}");
+    }
+}
+
+/// Frames tracked while the mask may be coming off its subject are held back, not thrown away:
+/// a run that ends before tracking finds the subject lost keeps them.
+#[test]
+fn frames_in_doubt_are_kept_when_the_run_ends_without_losing_the_subject() {
+    let (mut s, _) = adrift_session();
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "rectangle", "center": [160, 120], "size": [60, 100]})).unwrap();
+    // the whole clip loses the subject and keeps fewer frames than this run asks for
+    let lost = s.execute("masks.track", json!({"direction": "forward", "method": "position", "wait": true})).unwrap()["status"]["done"].as_u64().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let frames = lost + 2;
+    let r = s.execute("masks.track", json!({"direction": "forward", "method": "position", "frames": frames, "wait": true})).unwrap();
+    assert!(r["status"]["result"]["error"].is_null(), "{r}");
+    assert_eq!(r["status"]["done"], frames, "{r}");
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][0]["pathKeyframes"].as_array().unwrap().len() as u64, frames + 1, "{l}");
+}
+
+/// A mask whose inside has the colours of what is around it has nothing to be checked against:
+/// it is tracked as before, and the status says it was not checked.
+#[test]
+fn a_run_with_nothing_to_check_against_says_so() {
+    let (mut s, _) = adrift_session();
+    // water in water
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "rectangle", "center": [60, 60], "size": [60, 100]})).unwrap();
+    let r = s.execute("masks.track", json!({"direction": "forward", "method": "position", "frames": 6, "wait": true})).unwrap();
+    assert!(r["status"]["result"]["error"].is_null(), "{r}");
+    let status = r["status"]["status"].as_str().unwrap();
+    assert!(status.starts_with("Tracked 6 frame(s)") && status.contains("not checked against the first frame"), "{status}");
+    // a mask with something of its own is checked, and says nothing of the kind
+    let (mut s, _) = tracking_session();
+    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [170, 170]})).unwrap();
+    let r = s.execute("masks.track", json!({"direction": "forward", "frames": 6, "wait": true})).unwrap();
+    let status = r["status"]["status"].as_str().unwrap();
+    assert!(status.starts_with("Tracked 6 frame(s)") && !status.contains("not checked"), "{status}");
 }
 
 #[test]

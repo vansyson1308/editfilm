@@ -560,8 +560,9 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   wide. On synthetic footage with known similarity motion the path stays within 0.3 px over 20 frames.
   Each step fits the dominant motion inside the mask, which around a small plain subject is the
   background's; `track::Appearance` keeps the colours that set the inside of the mask apart from
-  a band around it in the first frame, and the job stops with `lost track after N frame(s)`
-  (keeping the frames before) once less than half of them are still inside.
+  a band around it in the first frame. Under half of them still inside (`LOST_BELOW`), the job
+  stops with `lost track after N frame(s)`; frames under four fifths (`SURE_ABOVE`) are held back
+  and written only if a later frame is above it again or the run ends without losing the subject.
 
 ### 5.4 Colour management
 

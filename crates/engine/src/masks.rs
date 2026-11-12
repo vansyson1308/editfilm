@@ -612,10 +612,12 @@ pub struct PendingTrack {
 /// Longest side of the frames the tracker works on (speed; the result is in clip pixels).
 const TRACK_MAX_WIDTH: f64 = 960.0;
 
-/// Why tracking stops when the picture inside the mask is no longer what it started on
-/// ([`filmcraft_render::track::Appearance`]).
-const LOST_SUBJECT: &str =
-    "the mask has drifted off what it started on (the subject has too little detail of its own for the tracker to hold against its background)";
+/// What tracking saw when it stops because the picture inside the mask is no longer what it
+/// started on ([`filmcraft_render::track::Appearance`]), and what that can mean.
+const LOST_SUBJECT: &str = "the colours that set the inside of the mask apart when tracking started are no longer inside it (the mask has slid off its subject, or the subject is covered, lit differently or a different size)";
+
+/// Added to the status of a run that had nothing to check the mask against.
+const UNCHECKED: &str = "not checked against the first frame: the inside of the mask has the colours of what is around it";
 
 /// A decoded frame as the tracker reads it.
 struct TrackFrame {
@@ -689,6 +691,8 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         let mut path = start_path;
         let mut err: Option<String> = None;
         let mut done = 0u64;
+        // nothing set the inside of the mask apart, so nothing checked that tracking stayed on it
+        let mut unchecked = false;
         match frame(mt0) {
             None => err = Some("can't decode the clip".into()),
             Some(first) => {
@@ -697,9 +701,14 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                 // fit the motion it finds while that motion is the background's
                 let start: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * first.k).collect();
                 let look = filmcraft_render::track::Appearance::capture(first.w, first.h, &first.rgba, &start);
+                unchecked = look.is_none();
                 // clip pixels at the first frame → clip pixels now
                 let mut from_start = Affine::IDENTITY;
                 let (mut prev, k_first, mut k_prev) = (first.gray, first.k, first.k);
+                // frames tracked since the mask was last plainly on its subject: written once a
+                // later frame is, dropped if tracking finds it has lost the subject
+                let mut unsure: Vec<(Tick, MaskPath)> = Vec::new();
+                let mut lost = false;
                 for step in 1..=steps {
                     if prog.cancel.load(Ordering::Relaxed) {
                         err = Some("stopped".into());
@@ -723,18 +732,29 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                     let to_frame = Affine::scale(k, k).then_apply(&moved).then_apply(&Affine::scale(1.0 / k_first, 1.0 / k_first));
                     let kept = look.as_ref().and_then(|l| l.kept(next.w, next.h, &next.rgba, &to_frame));
                     if kept.is_some_and(|kept| kept < filmcraft_render::track::LOST_BELOW) {
-                        // this frame's path is not written: it is where the mask was found to be off
-                        err = Some(format!("lost track after {} frame(s): {LOST_SUBJECT}", step - 1));
+                        lost = true;
                         break;
                     }
                     from_start = moved;
                     path = path.transformed(&m);
-                    lock(&out).push((t, path.clone()));
-                    done += 1;
-                    prog.done.store(done, Ordering::Relaxed);
+                    unsure.push((t, path.clone()));
+                    if kept.is_none_or(|kept| kept >= filmcraft_render::track::SURE_ABOVE) {
+                        done += unsure.len() as u64;
+                        lock(&out).append(&mut unsure);
+                        prog.done.store(done, Ordering::Relaxed);
+                    }
                     *lock(&prog.status) = format!("Frame {step} of {steps} · {} features", st.inliers);
                     prev = next.gray;
                     k_prev = k;
+                }
+                if lost {
+                    // the mask was coming off its subject through the frames held back: they go with it
+                    err = Some(format!("lost track after {done} frame(s): {LOST_SUBJECT}"));
+                } else {
+                    // never found lost (the run ended, was stopped or could not go on): what was tracked is kept
+                    done += unsure.len() as u64;
+                    lock(&out).append(&mut unsure);
+                    prog.done.store(done, Ordering::Relaxed);
                 }
             }
         }
@@ -753,6 +773,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         };
         *lock(&prog.status) = match &err {
             Some(e) => format!("{e} ({done} frame(s) tracked)"),
+            None if unchecked => format!("Tracked {done} frame(s) in {secs:.1}s ({UNCHECKED})"),
             None => format!("Tracked {done} frame(s) in {secs:.1}s"),
         };
         prog.finished.store(true, Ordering::Relaxed);

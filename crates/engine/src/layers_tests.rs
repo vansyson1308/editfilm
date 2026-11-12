@@ -275,10 +275,10 @@ fn follow_says_when_the_mask_slid_off_the_subject() {
         let t = &r["tracking"];
         assert_eq!(t["frames"], 47, "{cmd}: {r}");
         let error = t["error"].as_str().unwrap_or_else(|| panic!("{cmd}: tracking.error is null: {r}"));
-        assert!(error.starts_with("lost track after ") && error.contains("drifted off what it started on"), "{cmd}: {error}");
+        assert!(error.starts_with("lost track after ") && error.contains("are no longer inside it"), "{cmd}: {error}");
         assert!(t["status"].as_str().unwrap().starts_with("lost track after "), "{cmd}: {r}");
         let tracked = t["tracked"].as_u64().unwrap();
-        assert!((1..20).contains(&tracked), "{cmd}: the frames before it are kept: {r}");
+        assert!((2..20).contains(&tracked), "{cmd}: the frames before it are kept: {r}");
     }
 }
 

@@ -267,17 +267,26 @@ What to expect:
   moves the most inside the region. Around a small or plain subject on a busy background (a
   figure in a plain shirt against moving water) that is the background, and the mask would slide
   off the subject one well-fitted frame at a time. So every frame is compared with the first: the
-  colours that set the inside of the region apart from a band around it have to stay inside. Once
-  less than half of them are, tracking stops with `lost track after N frame(s): the mask has
-  drifted off what it started on`, in `tracking.error` and `tracking.status` (and in the job's
-  status and result for `masks.track`). `tracking.tracked` is N: the mask has keyframes up to
-  there, and from that frame on it is yours to place, or to draw closer to the subject and track
-  again with `masks.track`, which compares with the frame it starts on. A region closer to the
-  subject holds on longer, because less of what moves inside it is background. Two things the
-  comparison cannot do: when the inside of the region has the colours of what is around it, there
-  is nothing to compare and tracking runs unchecked, as before; and a subject whose own colours
-  change (it turns to show another side, or the light on it changes by much more than a stop)
-  reads as lost while the mask is still on it.
+  colours that set the inside of the region apart from a band around it have to stay inside (a
+  colour counts as background only where the band had it then and has it now, so a subject keeps
+  its look when it walks in front of something else). Once less than half of them are inside,
+  tracking stops with `lost track after N frame(s): the colours that set the inside of the mask
+  apart when tracking started are no longer inside it`, in `tracking.error` and `tracking.status`
+  (and in the job's status and result for `masks.track`).
+  - **What is kept.** `tracking.tracked` is N, and the mask has keyframes for those N frames: up
+    to the last frame on which at least four fifths of those colours were still inside. The frames
+    between that one and the stop, on which the mask was coming off, are not written. From there
+    the mask is yours to place, or to draw closer to the subject and track again with
+    `masks.track`, which compares with the frame it starts on. A region closer to the subject
+    holds on longer, because less of what moves inside it is background.
+  - **What also reads as lost**, with the mask still in place: a subject that is covered; one
+    whose colours change (it turns to show another side, or the light changes: a stop either way
+    is tolerated, a stop and a half brighter or two stops darker is not); and one that shrinks to
+    about three fifths of its size under a mask that does not follow scale (`position`,
+    `positionRotation`).
+  - **What is not checked.** When the inside of the region has the colours of what is around it
+    there is nothing to compare: tracking runs as it did before, and the status ends with `not
+    checked against the first frame`.
 - **Transitions belong to the clip they were put on.** A layer or a plate does not fade with the
   clip's transitions; `warnings` says so when the clip has any.
 - **Limits.** Each frame of a plate is held in memory while it is made (at most 768 MB of frames;
