@@ -3,7 +3,7 @@
 pub mod color_picker;
 
 use egui::{Align2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use filmcraft_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
+use filmagic_time::{FrameRate, Tick, TimeDisplay, parse_time_display};
 
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;

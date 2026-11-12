@@ -1,0 +1,38 @@
+[package]
+name = "filmagic-cli"
+description = "Filmagic headless CLI and MCP server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "filmagic-cli"
+path = "src/main.rs"
+
+[features]
+default = []
+# Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
+whisper = ["filmagic-engine/whisper", "filmagic-engine/speech-download"]
+
+[dependencies]
+filmagic-engine = { workspace = true }
+filmagic-export = { workspace = true }
+filmagic-project = { workspace = true }
+filmagic-render = { workspace = true }
+filmagic-time = { workspace = true }
+filmagic-gpu = { workspace = true }
+filmagic-media = { workspace = true }
+filmagic-codecs = { workspace = true }
+filmagic-platform = { workspace = true }
+filmagic-mxf = { workspace = true }
+filmagic-mpegts = { workspace = true }
+filmagic-ogg = { workspace = true }
+filmagic-automation = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+filmagic-testkit = { workspace = true }

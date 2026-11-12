@@ -1,20 +1,20 @@
-use super::{EXPORT_SAVE_DIALOGS, FileDialog, FilmcraftApp, Value, json, panels};
+use super::{EXPORT_SAVE_DIALOGS, FileDialog, FilmagicApp, Value, json, panels};
 
-impl FilmcraftApp {
+impl FilmagicApp {
     // ---------------------------------------------------------------- files
 
     /// Destination of imports started from the currently shown Project panel view.
-    pub fn import_bin(&self) -> filmcraft_project::BinId {
+    pub fn import_bin(&self) -> filmagic_project::BinId {
         panels::project::view_of(self, panels::project::shown_inst(self)).bin
     }
 
     pub fn file_dialog(&mut self, id: &str, params: &Value) -> Result<Value, String> {
         match id {
             "file.import" => {
-                let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS
+                let exts: Vec<&str> = filmagic_media::VIDEO_EXTENSIONS
                     .iter()
-                    .chain(filmcraft_media::AUDIO_EXTENSIONS)
-                    .chain(filmcraft_media::STILL_EXTENSIONS)
+                    .chain(filmagic_media::AUDIO_EXTENSIONS)
+                    .chain(filmagic_media::STILL_EXTENSIONS)
                     .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "prfpset"])
                     .copied()
                     .collect();
@@ -43,7 +43,7 @@ impl FilmcraftApp {
                 })
             }
             // File ▸ Import with Image Sequence: choose the first numbered still
-            "file.importImageSequence" => self.pick(FileDialog::open_files(filmcraft_media::STILL_EXTENSIONS), |app, paths| {
+            "file.importImageSequence" => self.pick(FileDialog::open_files(filmagic_media::STILL_EXTENSIONS), |app, paths| {
                 let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                 let r = app.session.execute("file.importImageSequence", json!({"path": path})).map_err(|e| e.to_string());
                 if let Err(e) = &r {
@@ -73,7 +73,7 @@ impl FilmcraftApp {
                 app.session.execute("file.open", json!({"path": path})).map_err(|e| e.to_string())
             }),
             "graphics.newFromFile" => {
-                let exts: Vec<&str> = filmcraft_media::STILL_EXTENSIONS.iter().chain(filmcraft_media::VIDEO_EXTENSIONS).copied().collect();
+                let exts: Vec<&str> = filmagic_media::STILL_EXTENSIONS.iter().chain(filmagic_media::VIDEO_EXTENSIONS).copied().collect();
                 self.pick(FileDialog::open_files(&exts), |app, paths| {
                     let Some(path) = paths.into_iter().next() else { return Ok(Value::Null) };
                     app.session.execute("graphics.newFromFile", json!({"path": path})).map_err(|e| e.to_string())
@@ -93,7 +93,7 @@ impl FilmcraftApp {
     /// File ▸ Export ▸ EDL…, Final Cut Pro XML… etc. from the menus (#382): ask where to save, then
     /// run the command with that `path` and the rest of `params`.
     fn export_save_dialog(&mut self, id: &str, filter: &str, ext: &str, params: &Value) -> Result<Value, String> {
-        filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&self.session))?;
+        filmagic_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&self.session))?;
         if !FileDialog::save_as(filter, &[ext], "").available(&self.hooks) {
             return Err("no save dialog available: run the command with a `path`".into());
         }

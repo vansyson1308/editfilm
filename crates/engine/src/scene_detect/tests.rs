@@ -5,10 +5,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{DemoScene, Generator, MediaSource};
-use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
-use filmcraft_time::{FrameRate, Tick, TimeRange};
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{DemoScene, Generator, MediaSource};
+use filmagic_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+use filmagic_time::{FrameRate, Tick, TimeRange};
 use serde_json::json;
 
 use crate::Session;
@@ -29,7 +29,7 @@ fn make_movie(path: &Path, shots: &[(DemoScene, i64, i64)], w: u32, h: u32) {
     let rate = FrameRate::FPS_24;
     let mut p = Project::new("fixture");
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
-    let mut sources: Vec<(ItemId, filmcraft_media::SharedSource)> = Vec::new();
+    let mut sources: Vec<(ItemId, filmagic_media::SharedSource)> = Vec::new();
     let mut at = Tick::ZERO;
     for (k, (scene, first, frames)) in shots.iter().enumerate() {
         let dur = rate.tick_of(*frames);
@@ -48,19 +48,18 @@ fn make_movie(path: &Path, shots: &[(DemoScene, i64, i64)], w: u32, h: u32) {
         let item = p.add_item(&format!("shot{k}"), Label::Iris, ItemKind::Media(Box::new(clip)), None);
         let mut v = p.make_track_item(item, TrackKind::Video, at, TimeRange::new(rate.tick_of(*first), dur), rate).unwrap();
         for e in &mut v.effects {
-            filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
+            filmagic_project::resolve_auto_points(e, (w, h), (w, h));
         }
         p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
         sources.push((item, Arc::new(src)));
         at += dur;
     }
-    let settings =
-        filmcraft_export::ExportSettings { format: filmcraft_export::Format::ProRes, path: path.to_string_lossy().into_owned(), ..Default::default() };
+    let settings = filmagic_export::ExportSettings { format: filmagic_export::Format::ProRes, path: path.to_string_lossy().into_owned(), ..Default::default() };
     let provider = move |id: ItemId| sources.iter().find(|(i, _)| *i == id).map(|(_, s)| s.clone());
-    filmcraft_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+    filmagic_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
 }
 
-fn select_v1(s: &mut Session) -> filmcraft_project::ClipId {
+fn select_v1(s: &mut Session) -> filmagic_project::ClipId {
     let c = s.active_sequence().unwrap().video_tracks[0].items[0].id;
     s.execute("timeline.select", json!({"clips": [c.0]})).unwrap();
     c
@@ -108,7 +107,7 @@ fn detects_cuts_in_our_own_render_and_applies_cuts_markers_and_subclips() {
             TimeRange::new(rate.tick_of(36), rate.tick_of(14))
         ]
     );
-    assert!(s.project.root.children.iter().any(|c| matches!(c, filmcraft_project::BinEntry::Bin(b) if b.name == "cuts.mov Scenes" && b.children.len() == 3)));
+    assert!(s.project.root.children.iter().any(|c| matches!(c, filmagic_project::BinEntry::Bin(b) if b.name == "cuts.mov Scenes" && b.children.len() == 3)));
     // undo restores everything
     s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(s.active_sequence().unwrap().video_tracks[0].items.len(), 1);
@@ -161,9 +160,9 @@ fn background_job_reports_progress_and_cancel_changes_nothing() {
 }
 
 fn ffmpeg_fixture() -> Option<PathBuf> {
-    let ffmpeg = filmcraft_testkit::oracle::ffmpeg_or_skip("scene_detect")?;
-    let out = filmcraft_testkit::fixtures_dir("engine/scene").join("three_shots.mp4");
-    filmcraft_testkit::fixtures::generate(&out, |tmp| {
+    let ffmpeg = filmagic_testkit::oracle::ffmpeg_or_skip("scene_detect")?;
+    let out = filmagic_testkit::fixtures_dir("engine/scene").join("three_shots.mp4");
+    filmagic_testkit::fixtures::generate(&out, |tmp| {
         std::process::Command::new(&ffmpeg)
             .args(["-y", "-loglevel", "error"])
             .args(["-f", "lavfi", "-i", "testsrc2=size=192x108:rate=24:duration=1"])
@@ -238,7 +237,7 @@ fn a_capped_analysis_extends_the_last_subclip_to_the_clip_end_and_warns() {
     // a reversed clip runs down: its tail is below the first scheduled time
     assert_eq!(analysed_range(Tick(900), Tick(860), fd, Some(Tick(100))), TimeRange::from_bounds(Tick(100), Tick(910)));
     let scenes = |name: &str, unanalysed| ClipScenes {
-        clip: filmcraft_project::ClipId(1),
+        clip: filmagic_project::ClipId(1),
         name: name.into(),
         media_item: ItemId(2),
         media_range: TimeRange::from_bounds(Tick(0), Tick(10)),

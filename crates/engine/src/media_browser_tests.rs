@@ -20,7 +20,7 @@ struct FakeFs {
 
 impl FakeFs {
     fn new() -> Self {
-        let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+        let wav = filmagic_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
         let mut files = BTreeMap::new();
         for f in ["/home/me/Movies/b-roll.wav", "/home/me/Movies/A-interview.wav", "/home/me/Movies/notes.txt", "/home/me/Movies/.hidden.wav"] {
             files.insert(f.to_string(), wav.clone());
@@ -234,7 +234,7 @@ fn import_the_selection_and_open_in_source() {
 #[test]
 fn importing_a_folder_mirrors_its_sub_folders_as_bins() {
     let mut fs = FakeFs::new();
-    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    let wav = filmagic_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
     fs.dirs.extend(["/Shoot", "/Shoot/Day 1", "/Shoot/Day 1/Cam A", "/Shoot/Empty"].map(String::from));
     for f in ["/Shoot/slate.wav", "/Shoot/Day 1/room.wav", "/Shoot/Day 1/Cam A/take1.wav", "/Shoot/Day 1/Cam A/take2.wav"] {
         fs.files.get_mut().unwrap().insert(f.into(), wav.clone());
@@ -243,20 +243,20 @@ fn importing_a_folder_mirrors_its_sub_folders_as_bins() {
     let r = s.execute("mediaBrowser.import", json!({"paths": ["/Shoot"]})).unwrap();
     assert_eq!(r["items"].as_array().unwrap().len(), 4, "{r}");
     assert_eq!(r["bins"].as_array().unwrap().len(), 3, "{r}");
-    let tree = |b: &filmcraft_project::Bin| -> Vec<String> {
+    let tree = |b: &filmagic_project::Bin| -> Vec<String> {
         b.children
             .iter()
             .map(|c| match c {
-                filmcraft_project::BinEntry::Bin(b) => format!("bin {}", b.name),
-                filmcraft_project::BinEntry::Item(i) => s.project.item(*i).unwrap().name.clone(),
+                filmagic_project::BinEntry::Bin(b) => format!("bin {}", b.name),
+                filmagic_project::BinEntry::Item(i) => s.project.item(*i).unwrap().name.clone(),
             })
             .collect()
     };
-    let sub = |b: &filmcraft_project::Bin, name: &str| -> filmcraft_project::Bin {
+    let sub = |b: &filmagic_project::Bin, name: &str| -> filmagic_project::Bin {
         b.children
             .iter()
             .find_map(|c| match c {
-                filmcraft_project::BinEntry::Bin(b) if b.name == name => Some(b.clone()),
+                filmagic_project::BinEntry::Bin(b) if b.name == name => Some(b.clone()),
                 _ => None,
             })
             .unwrap()
@@ -324,9 +324,9 @@ fn probing_large_unstreamable_files_does_not_read_them_whole() {
     std::fs::write(&avi, &head).unwrap();
     std::fs::OpenOptions::new().write(true).open(&avi).unwrap().set_len(crate::media_pool::PROBE_WHOLE_FILE_MAX + 36 * 1024 * 1024).unwrap();
     let wav = dir.join("voice.wav");
-    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 9_600], 2, 48_000)).unwrap();
+    std::fs::write(&wav, filmagic_media::wav::write_wav16(&[0.1; 9_600], 2, 48_000)).unwrap();
     let mov = dir.join("clip.mov");
-    crate::media_test_util::make_movie(&mov, filmcraft_media::DemoScene::OceanSunset, 64, 36, 24);
+    crate::media_test_util::make_movie(&mov, filmagic_media::DemoScene::OceanSunset, 64, 36, 24);
     let mut s = Session::default();
     assert!(media_browser::probe(&mut s, &avi.to_string_lossy()).is_none());
     assert_eq!(media_browser::probe(&mut s, &wav.to_string_lossy()).unwrap().audio().unwrap().channels, 2);
@@ -337,7 +337,7 @@ fn probing_large_unstreamable_files_does_not_read_them_whole() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// #1292: an Avid Log Exchange file is something FilmCraft writes (File ▸ Export), not a project
+/// #1292: an Avid Log Exchange file is something Filmagic writes (File ▸ Export), not a project
 /// it can import, so the browser doesn't list it with the project files.
 #[test]
 fn ale_logs_are_not_offered_for_import() {
@@ -353,7 +353,7 @@ fn ale_logs_are_not_offered_for_import() {
 fn probe_background_returns_the_blocking_probe_result() {
     let dir = crate::media_test_util::tmp_dir("browser-probe-background");
     let wav = dir.join("voice.wav");
-    std::fs::write(&wav, filmcraft_media::wav::write_wav16(&[0.1; 9_600], 2, 48_000)).unwrap();
+    std::fs::write(&wav, filmagic_media::wav::write_wav16(&[0.1; 9_600], 2, 48_000)).unwrap();
     let path = wav.to_string_lossy().to_string();
     let mut s = Session::default();
     let mut got = None;
@@ -398,7 +398,7 @@ fn every_interchange_document_the_importer_reads_is_listed() {
 #[test]
 fn importing_files_with_an_empty_folder_reports_the_folder() {
     let mut fs = FakeFs::new();
-    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    let wav = filmagic_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
     fs.dirs.extend(["/Shoot", "/Shoot/Empty"].map(String::from));
     fs.files.get_mut().unwrap().insert("/Shoot/slate.wav".into(), wav);
     let mut s = Session::new(Arc::new(fs));
@@ -413,7 +413,7 @@ fn importing_files_with_an_empty_folder_reports_the_folder() {
 #[test]
 fn importing_a_folder_reports_a_sub_folder_it_cannot_list() {
     let mut fs = FakeFs::new();
-    let wav = filmcraft_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
+    let wav = filmagic_media::wav::write_wav16(&[0.0; 4800], 2, 48_000);
     fs.dirs.extend(["/Shoot", "/Shoot/Locked"].map(String::from));
     fs.denied.push("/Shoot/Locked".into());
     fs.files.get_mut().unwrap().insert("/Shoot/slate.wav".into(), wav);

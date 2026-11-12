@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
-use filmcraft_engine::Session;
+use filmagic_engine::Session;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
@@ -33,7 +33,7 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 }
 
 #[derive(Clone)]
-pub struct FilmcraftMcp {
+pub struct FilmagicMcp {
     backend: Arc<Backend>,
     /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
     /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
@@ -250,7 +250,7 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 /// Parse-error replies queued for the writer before the reader waits for it to catch up.
 const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 
-impl FilmcraftMcp {
+impl FilmagicMcp {
     pub fn headless(session: Session) -> Self {
         Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
     }
@@ -373,15 +373,15 @@ impl FilmcraftMcp {
     async fn ui(&self, method: &str, params: Value) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
             Some(b) => wrap(b.call(method, params).await),
-            None => Ok(fail(
-                "this tool drives the live app: run `filmcraft-cli mcp --bridge 127.0.0.1:<port>` with the app started as `filmcraft --control <port>`",
-            )),
+            None => {
+                Ok(fail("this tool drives the live app: run `filmagic-cli mcp --bridge 127.0.0.1:<port>` with the app started as `filmagic --control <port>`"))
+            }
         }
     }
 }
 
 #[tool_router]
-impl FilmcraftMcp {
+impl FilmagicMcp {
     #[tool(
         title = "List commands",
         description = "List every command (id, label, menu path, shortcut, parameter doc, enabled now). Menus, shortcuts, panels and timeline gestures all map to these ids.",
@@ -501,7 +501,7 @@ impl FilmcraftMcp {
                 let r = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AutomationError> {
                     let g = s.lock().unwrap_or_else(PoisonError::into_inner);
                     // read-only: render at `seconds` without moving the playhead (#114)
-                    let t = p.seconds.map_or_else(|| g.playhead(), filmcraft_time::Tick::from_seconds_f64);
+                    let t = p.seconds.map_or_else(|| g.playhead(), filmagic_time::Tick::from_seconds_f64);
                     let (w, h) =
                         g.active_sequence().map(|q| (q.settings.width, q.settings.height)).ok_or_else(|| AutomationError::Other("no sequence".into()))?;
                     let scale = render_scale(max, w, h);
@@ -661,7 +661,7 @@ impl FilmcraftMcp {
     }
 }
 
-impl FilmcraftMcp {
+impl FilmagicMcp {
     async fn screenshot(&self, b: &BridgeClient, panel: Option<String>, max: u32) -> Result<CallToolResult, McpError> {
         // The desktop bridge needs a pathname, so use a freshly-created,
         // owner-only directory rather than exposing image bytes at a
@@ -686,11 +686,11 @@ impl FilmcraftMcp {
             }
             Err(_) => bytes,
         };
-        Ok(png_result(&bytes, "screenshot of the live FilmCraft window"))
+        Ok(png_result(&bytes, "screenshot of the live Filmagic window"))
     }
 }
 
-impl FilmcraftMcp {
+impl FilmagicMcp {
     /// The first argument `tool` doesn't take, as a message naming the ones it does.
     fn unknown_arg(&self, tool: &str, args: Option<&rmcp::model::JsonObject>) -> Option<String> {
         let def = self.tool_router.get(tool)?;
@@ -702,11 +702,11 @@ impl FilmcraftMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
+const INSTRUCTIONS: &str = "Filmagic video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
-const DOCUMENT_URI: &str = "filmcraft://document";
-const COMMANDS_URI: &str = "filmcraft://commands";
+const DOCUMENT_URI: &str = "filmagic://document";
+const COMMANDS_URI: &str = "filmagic://commands";
 
 /// MCP 2026-07-28 clients (current Claude Code) require `ttlMs` and `cacheScope` on list and read
 /// results; rmcp fills `resultType` and leaves the cache hints to the server, as the generated
@@ -716,10 +716,10 @@ fn cache_hints(context: &rmcp::service::RequestContext<rmcp::RoleServer>, ttl_ms
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for FilmcraftMcp {
+impl ServerHandler for FilmagicMcp {
     fn get_info(&self) -> rmcp::model::ServerConfig {
         rmcp::model::ServerConfig::new(rmcp::model::ServerCapabilities::builder().enable_tools().enable_resources().build())
-            .with_server_info(rmcp::model::Implementation::new("filmcraft", env!("CARGO_PKG_VERSION")))
+            .with_server_info(rmcp::model::Implementation::new("filmagic", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS.to_string())
     }
 

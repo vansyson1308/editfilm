@@ -1,10 +1,10 @@
-use super::{FilmcraftApp, ThemeKind, Tokens, dock, i18n, state, theme};
+use super::{FilmagicApp, ThemeKind, Tokens, dock, i18n, state, theme};
 
-impl FilmcraftApp {
+impl FilmagicApp {
     /// Show theme `k` with the Settings ▸ Appearance highlight colour and contrast.
     pub fn set_theme(&mut self, ctx: &egui::Context, k: ThemeKind) {
         let a = &self.session.prefs.appearance;
-        let highlight = filmcraft_engine::settings::parse_hex(&a.highlight_color);
+        let highlight = filmagic_engine::settings::parse_hex(&a.highlight_color);
         self.tokens = Tokens::for_kind(k).with_appearance(highlight, a.accessible_contrast);
         theme::apply_visuals(ctx, &self.tokens);
         self.apply_tooltips(ctx);
@@ -58,7 +58,7 @@ impl FilmcraftApp {
     }
 
     /// Point the scrub output at the sequence that is active now (#2633).
-    /// [`FilmcraftApp::apply_prefs`] carries the sequence's sample rate to the output, but it
+    /// [`FilmagicApp::apply_prefs`] carries the sequence's sample rate to the output, but it
     /// returns early while the settings stay the same, and Settings ▸ Sequence, opening another
     /// project or switching sequences change what the next grain needs without changing them. A
     /// stale rate mixes the grain at the wrong speed; and a stream that is still open keeps the
@@ -191,7 +191,7 @@ impl FilmcraftApp {
         };
         let stored = self.session.state.timeline_views.get(&active).copied();
         let v = &mut self.ui.timeline;
-        let shown = filmcraft_engine::project::SequenceView {
+        let shown = filmagic_engine::project::SequenceView {
             pps: v.target_pps,
             scroll: v.target_scroll,
             v_scroll: v.v_scroll,
@@ -199,7 +199,7 @@ impl FilmcraftApp {
             video_track_h: v.video_track_h,
             audio_track_h: v.audio_track_h,
         };
-        let show = |v: &mut state::TimelineView, s: filmcraft_engine::project::SequenceView| {
+        let show = |v: &mut state::TimelineView, s: filmagic_engine::project::SequenceView| {
             (v.pps, v.target_pps, v.scroll, v.target_scroll) = (s.pps, s.pps, s.scroll, s.scroll);
             (v.v_scroll, v.a_scroll, v.video_track_h, v.audio_track_h) = (s.v_scroll, s.a_scroll, s.video_track_h, s.audio_track_h);
             (v.fit_pending, v.fit_empty) = (false, None);

@@ -1,9 +1,9 @@
 use super::*;
-use filmcraft_media::{DemoScene, MediaSource};
+use filmagic_media::{DemoScene, MediaSource};
 
 fn demo_project() -> (Project, ItemId, ItemId) {
     let mut p = Project::new("Test");
-    let src = filmcraft_media::generators::GeneratorSource::demo(DemoScene::OceanSunset);
+    let src = filmagic_media::generators::GeneratorSource::demo(DemoScene::OceanSunset);
     let info = src.info().clone();
     let clip = p.add_item(
         "Ocean_Sunset.mp4",
@@ -397,7 +397,7 @@ fn source_par_follows_interpret_footage_subclips_and_sequences() {
 
 #[test]
 fn sequence_display_format_round_trips_and_old_files_load_as_timecode() {
-    use filmcraft_time::TimeDisplay;
+    use filmagic_time::TimeDisplay;
     for d in [TimeDisplay::Timecode, TimeDisplay::Feet35, TimeDisplay::Feet16, TimeDisplay::Frames] {
         let st = SequenceSettings { display: d, ..Default::default() };
         let back: SequenceSettings = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
@@ -408,4 +408,27 @@ fn sequence_display_format_round_trips_and_old_files_load_as_timecode() {
     assert!(v.as_object_mut().unwrap().remove("display").is_some());
     let old: SequenceSettings = serde_json::from_value(v).unwrap();
     assert_eq!(old.display, TimeDisplay::Timecode);
+}
+
+/// A project saved by FilmCraft names its renderer "FilmCraft …". Read here, the name becomes this
+/// app's name for the same renderer: before this, a project set to Software Only there opened with a
+/// name the editor did not know and was composited on the GPU.
+#[test]
+fn a_renderer_saved_by_filmcraft_keeps_its_meaning() {
+    let saved = serde_json::to_value(ProjectSettings::default()).unwrap();
+    for (theirs, ours) in
+        [("FilmCraft Software Only (CPU)", "Filmagic Software Only (CPU)"), ("FilmCraft GPU Acceleration (wgpu)", "Filmagic GPU Acceleration (wgpu)")]
+    {
+        let mut doc = saved.clone();
+        doc["renderer"] = serde_json::json!(theirs);
+        let read: ProjectSettings = serde_json::from_value(doc).unwrap();
+        assert_eq!(read.renderer, ours);
+    }
+    // this app's own names, and a name neither app knows, are kept as they are
+    for name in ["Filmagic Software Only (CPU)", "Some Other Renderer"] {
+        let mut doc = saved.clone();
+        doc["renderer"] = serde_json::json!(name);
+        let read: ProjectSettings = serde_json::from_value(doc).unwrap();
+        assert_eq!(read.renderer, name);
+    }
 }

@@ -41,7 +41,7 @@ pub trait VideoEncoder: Send {
         None
     }
     /// First-pass statistics of a two-pass encode (H.264).
-    fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
+    fn pass_stats(&self) -> Option<filmagic_h264enc::PassStats> {
         None
     }
     /// Work on a rendered picture that needs nothing of the encoder's state (H.264: the colour
@@ -104,8 +104,8 @@ pub fn encoder_registered(f: EncoderFactory) -> bool {
 }
 
 /// Renders one export frame on something other than the CPU reference renderer — today the GPU
-/// compositor (`filmcraft-gpu`), registered by the app or CLI at startup. `render` returns the
-/// frame exactly as [`filmcraft_render::render_sequence`] would (same size, premultiplied
+/// compositor (`filmagic-gpu`), registered by the app or CLI at startup. `render` returns the
+/// frame exactly as [`filmagic_render::render_sequence`] would (same size, premultiplied
 /// linear-light RGBA), or `None` to let the CPU render this frame (no adapter, a plan the GPU
 /// cannot draw, any internal error): the CPU renderer is the reference and the fallback.
 pub trait FrameRenderer: Send {
@@ -114,14 +114,14 @@ pub trait FrameRenderer: Send {
         project: &Project,
         seq: ItemId,
         t: Tick,
-        opts: filmcraft_render::RenderOptions,
+        opts: filmagic_render::RenderOptions,
         sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image>;
+    ) -> Option<filmagic_render::Image>;
 
     /// What the renderer's device runs. The export plans with it before taking a renderer
-    /// ([`filmcraft_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
+    /// ([`filmagic_render::plan::is_cpu_frame`]), so a frame the device can't composite renders
     /// on the export's own thread instead of on the CPU inside the renderer.
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps;
+    fn caps(&self) -> filmagic_render::plan::DeviceCaps;
 }
 
 /// Builds the frame renderer for one export, or `None` when this host cannot (no adapter).

@@ -1,9 +1,9 @@
 //! Decode speed (ignored by default; run with
-//! `cargo test --release -p filmcraft-vp9 --test it perf:: -- --ignored --nocapture`).
+//! `cargo test --release -p filmagic-vp9 --test it perf:: -- --ignored --nocapture`).
 
 use crate::common;
 
-use filmcraft_vp9::Decoder;
+use filmagic_vp9::Decoder;
 use std::time::Instant;
 
 fn bench(frames: &[&[u8]], threads: usize, iters: usize) -> (usize, f64) {

@@ -5,7 +5,7 @@
 //! names an effect (`FilterMatchName`) and points at a `VideoFilterComponent` /
 //! `AudioFilterComponent` carrying the parameter values and keyframes.
 //!
-//! FilmCraft has no plugin API, so this reader maps Premiere effects and parameters onto the
+//! Filmagic has no plugin API, so this reader maps Premiere effects and parameters onto the
 //! built-in ones:
 //!
 //! * effects: known match names first, then a normalised comparison with the built-in display
@@ -14,7 +14,7 @@
 //! * parameters: stable Premiere parameter ids where we know them, otherwise parameter names in
 //!   English and Spanish (and common synonyms), so localised presets work too.
 //!
-//! A preset whose effects have no FilmCraft counterpart is *skipped*, not fatal: the import
+//! A preset whose effects have no Filmagic counterpart is *skipped*, not fatal: the import
 //! reports which effects were missing (Premiere itself refuses to apply a preset when a third-party
 //! plugin is not installed). Parameters the target effect does not have are reported per preset.
 //!
@@ -23,11 +23,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use filmcraft_geom::Vec2;
-use filmcraft_project::effect::{LIGHT_IDS, find_effect_by_name};
-use filmcraft_project::graphic::is_layer_id;
-use filmcraft_project::{EffectInstance, Interpolation, Keyframe, Param, ParamDef, ParamKind, ParamValue, find_effect};
-use filmcraft_time::{TICKS_PER_SECOND, Tick};
+use filmagic_geom::Vec2;
+use filmagic_project::effect::{LIGHT_IDS, find_effect_by_name};
+use filmagic_project::graphic::is_layer_id;
+use filmagic_project::{EffectInstance, Interpolation, Keyframe, Param, ParamDef, ParamKind, ParamValue, find_effect};
+use filmagic_time::{TICKS_PER_SECOND, Tick};
 use roxmltree::{Document, Node};
 
 use crate::presets::{EffectPreset, KeyframeMode};
@@ -44,7 +44,7 @@ const MAX_TOTAL_EFFECTS: usize = 10_000;
 const MAX_TOTAL_KEYFRAMES: usize = 250_000;
 const DEFAULT_DURATION: i64 = 5 * TICKS_PER_SECOND;
 
-/// One preset whose effects FilmCraft cannot reproduce.
+/// One preset whose effects Filmagic cannot reproduce.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkippedPreset {
     pub name: String,
@@ -155,12 +155,12 @@ pub fn parse_prfpset(text: &str) -> Result<PrfpsetImport, String> {
             if !unsupported.is_empty() {
                 let shown = unsupported.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
                 let more = if unsupported.len() > 6 { format!(" and {} more", unsupported.len() - 6) } else { String::new() };
-                out.warnings.push(format!("{}: effects not supported by FilmCraft: {shown}{more}", preset.name));
+                out.warnings.push(format!("{}: effects not supported by Filmagic: {shown}{more}", preset.name));
             }
             if !dropped.is_empty() {
                 let shown = dropped.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
                 let more = if dropped.len() > 6 { format!(" and {} more", dropped.len() - 6) } else { String::new() };
-                out.warnings.push(format!("{}: parameters not supported by FilmCraft: {shown}{more}", preset.name));
+                out.warnings.push(format!("{}: parameters not supported by Filmagic: {shown}{more}", preset.name));
             }
         }
     }
@@ -397,7 +397,7 @@ fn parse_item<'a, 'input>(
 
     if effects.is_empty() {
         let reason =
-            if unsupported.is_empty() { "the preset has no effect data".to_string() } else { "none of its effects are supported by FilmCraft".to_string() };
+            if unsupported.is_empty() { "the preset has no effect data".to_string() } else { "none of its effects are supported by Filmagic".to_string() };
         return Err(SkippedPreset { name: name.to_string(), effects: unsupported, reason });
     }
 
@@ -444,7 +444,7 @@ fn unsupported_name(match_name: &str, display: &str) -> String {
 
 // ---------------------------------------------------------------- components
 
-/// Parse a Premiere component node into a FilmCraft `EffectInstance`.
+/// Parse a Premiere component node into a Filmagic `EffectInstance`.
 fn parse_component<'a, 'input>(
     effect_id: &str,
     match_name: &str,
@@ -527,7 +527,7 @@ impl RawParam {
 
 // ---------------------------------------------------------------- effect mapping
 
-/// Resolve a Premiere match name or display name to a FilmCraft effect ID.
+/// Resolve a Premiere match name or display name to a Filmagic effect ID.
 fn resolve_effect(match_name: &str, display: &str) -> Option<&'static str> {
     if let Some(id) = explicit_effect(match_name)
         && let Some(def) = find_effect(id).filter(|d| !is_layer_id(d.id))
@@ -548,7 +548,7 @@ fn resolve_effect(match_name: &str, display: &str) -> Option<&'static str> {
         if key.is_empty() {
             continue;
         }
-        if let Some(def) = filmcraft_project::effect_defs().iter().find(|def| !is_layer_id(def.id) && loose_effect_eq(&key, &normalize_effect_name(def.name))) {
+        if let Some(def) = filmagic_project::effect_defs().iter().find(|def| !is_layer_id(def.id) && loose_effect_eq(&key, &normalize_effect_name(def.name))) {
             return Some(def.id);
         }
     }
@@ -668,7 +668,7 @@ fn loose_effect_eq(a: &str, b: &str) -> bool {
 
 /// Resolve a Premiere parameter name or ID to an effect's parameter definition.
 fn resolve_param(
-    def: &filmcraft_project::EffectDef,
+    def: &filmagic_project::EffectDef,
     effect_id: &str,
     match_name: &str,
     id: i32,
@@ -897,7 +897,7 @@ fn param_by_premiere_id(effect_id: &str, id: i32) -> Option<&'static str> {
         "lighting_effects" => {
             // Five lights of eight controls each: type, colour, centre, major/minor radius,
             // angle, intensity, focus. The group headers and hidden separators in between do
-            // not exist as FilmCraft parameters.
+            // not exist as Filmagic parameters.
             for (i, ids) in LIGHT_IDS.iter().enumerate() {
                 let base = 2 + i as i32 * 10;
                 if id >= base && id < base + 8 {
@@ -989,7 +989,7 @@ fn param_synonyms(effect_id: &str, key: &str) -> Vec<&'static str> {
 
 // ---------------------------------------------------------------- values
 
-/// Parse and convert a raw parameter into a typed FilmCraft `Param`.
+/// Parse and convert a raw parameter into a typed Filmagic `Param`.
 fn parse_param(pdef: &ParamDef, effect_id: &str, premiere_id: i32, raw: &RawParam, anchor_in: i64) -> Option<Param> {
     let static_text = raw.static_value();
     let raw_keys = raw.keyframes.as_deref().map(raw_keyframes).unwrap_or_default();
@@ -1065,7 +1065,7 @@ fn parse_param(pdef: &ParamDef, effect_id: &str, premiere_id: i32, raw: &RawPara
         }
         ParamKind::Bool => {
             let base = static_text.map(parse_bool).or_else(|| pdef.default.as_bool()).unwrap_or(false);
-            // Premiere stores "Use Composition's Shutter Angle"; FilmCraft stores the opposite.
+            // Premiere stores "Use Composition's Shutter Angle"; Filmagic stores the opposite.
             let base = if effect_id == "transform" && premiere_id == 9 { !base } else { base };
             Some(Param::new(ParamValue::Bool(base)))
         }
@@ -1094,7 +1094,7 @@ fn finish_param(mut base: ParamValue, mut keys: Vec<Keyframe>) -> Option<Param> 
     Some(Param { value: base, keyframes: keys })
 }
 
-/// Unit conversions between Premiere's stored ranges and FilmCraft's.
+/// Unit conversions between Premiere's stored ranges and Filmagic's.
 fn convert_float(effect_id: &str, premiere_id: i32, value: f64) -> f64 {
     if !value.is_finite() {
         return 0.0;
@@ -1104,7 +1104,7 @@ fn convert_float(effect_id: &str, premiere_id: i32, value: f64) -> f64 {
         return (value * 100.0 / 255.0).clamp(0.0, 100.0);
     }
     if effect_id == "vr_glow" && premiere_id == 2 {
-        // VR Glow shows the luminance threshold as 0..1; FilmCraft stores it as a percentage.
+        // VR Glow shows the luminance threshold as 0..1; Filmagic stores it as a percentage.
         return (value * 100.0).clamp(0.0, 100.0);
     }
     value
@@ -1117,7 +1117,7 @@ fn choice_index(effect_id: &str, param: &str, value: f64) -> u32 {
     }
     let n = value as u32;
     // Premiere's opacity blend-mode enum numbers Normal as 18; the rest of the list is not
-    // guaranteed to match FilmCraft's, so only the common default is translated.
+    // guaranteed to match Filmagic's, so only the common default is translated.
     if effect_id == "opacity" && param == "blend" && n == 18 {
         return 0;
     }
@@ -1231,7 +1231,7 @@ fn parse_usize(text: &str) -> Option<usize> {
     text.trim().parse::<usize>().ok()
 }
 
-/// Map Premiere keyframe interpolation codes to FilmCraft `Interpolation` enum.
+/// Map Premiere keyframe interpolation codes to Filmagic `Interpolation` enum.
 fn parse_interp(code: Option<&str>) -> Interpolation {
     match code.map(str::trim) {
         Some("0") => Interpolation::Linear,

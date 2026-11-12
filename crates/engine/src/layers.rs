@@ -26,9 +26,9 @@
 //! exist: it needs a camera that does not move and a subject that does. Nothing here replaces an
 //! object with a different one, or shows what was never photographed.
 
-use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{ClipId, ItemId, Keyframe, MaskMode, MaskPath, Param, ParamValue, TrackItem, TrackKind};
-use filmcraft_time::Tick;
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::{ClipId, ItemId, Keyframe, MaskMode, MaskPath, Param, ParamValue, TrackItem, TrackKind};
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, bad, clip_p, has_seq, str_p, u64_p};
@@ -103,7 +103,7 @@ enum Space {
     /// The clip's own picture: (width, height) in its pixels.
     Clip(f64, f64),
     /// The programme frame, (width, height), and the way back from it into the clip's pixels.
-    Frame(f64, f64, filmcraft_geom::Affine),
+    Frame(f64, f64, filmagic_geom::Affine),
 }
 
 impl Space {
@@ -112,7 +112,7 @@ impl Space {
         match self {
             Space::Clip(w, h) => (x * w, y * h),
             Space::Frame(w, h, back) => {
-                let p = back.apply(filmcraft_geom::Vec2::new(x * w, y * h));
+                let p = back.apply(filmagic_geom::Vec2::new(x * w, y * h));
                 (p.x, p.y)
             }
         }
@@ -151,7 +151,7 @@ fn space_p(s: &Session, r: &Value, it: &TrackItem, size: (u32, u32), cmd: &str) 
             t
         }
     };
-    let placed = filmcraft_render::motion_matrix(q, it, size, filmcraft_render::source_par(&s.project, it.item), it.effect_time_at(at));
+    let placed = filmagic_render::motion_matrix(q, it, size, filmagic_render::source_par(&s.project, it.item), it.effect_time_at(at));
     let back = placed.inverse().ok_or_else(|| bad(cmd, "the clip is scaled to nothing at that frame: a region of the frame has no place in it"))?;
     Ok(Space::Frame(f64::from(q.settings.width.max(1)), f64::from(q.settings.height.max(1)), back))
 }
@@ -254,7 +254,7 @@ fn picture_clip_of(s: &Session, clip: ClipId, cmd: &str) -> Result<(TrackItem, (
     if it.multicam.is_some() {
         return Err(bad(cmd, "a multi-camera clip shows one of several angles; flatten it or work on the angle's own clip"));
     }
-    let size = filmcraft_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(cmd, "the clip has no picture"))?;
+    let size = filmagic_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(cmd, "the clip has no picture"))?;
     Ok((it.clone(), size))
 }
 
@@ -293,20 +293,21 @@ fn edge_warnings(s: &Session, it: &TrackItem, what: &str) -> Vec<String> {
 /// footage within the clip's span, masked down to a region) or a plate (a still over exactly the
 /// clip's span). A second clip of the same footage that is not masked is an edit of its own, a
 /// punch-in or a cutaway back to the same take, and is not part of the stack.
-pub(crate) fn of_its_stack(p: &filmcraft_project::Project, base: &TrackItem, x: &TrackItem) -> bool {
+pub(crate) fn of_its_stack(p: &filmagic_project::Project, base: &TrackItem, x: &TrackItem) -> bool {
     let within = x.start >= base.start && x.end() <= base.end();
     let still =
-        p.item(x.item).is_some_and(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(m.info.kind, filmcraft_media::MediaKind::Still)));
-    let masked = x.effects.iter().any(|e| e.effect == "opacity" && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None));
+        p.item(x.item).is_some_and(|i| matches!(&i.kind, filmagic_project::ItemKind::Media(m) if matches!(m.info.kind, filmagic_media::MediaKind::Still)));
+    let masked = x.effects.iter().any(|e| e.effect == "opacity" && e.masks.iter().any(|m| m.mode != filmagic_project::MaskMode::None));
     let layer = x.item == base.item && x.link.is_none() && masked;
     x.id != base.id && within && (layer || (still && x.start == base.start && x.end() == base.end()))
 }
 
 /// Whether `path` is a file some media of the project is read from.
 pub(crate) fn is_project_media(s: &Session, path: &str) -> bool {
-    s.project.items.values().any(
-        |i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(&m.media, filmcraft_project::MediaRef::File { path: used } if used == path)),
-    )
+    s.project
+        .items
+        .values()
+        .any(|i| matches!(&i.kind, filmagic_project::ItemKind::Media(m) if matches!(&m.media, filmagic_project::MediaRef::File { path: used } if used == path)))
 }
 
 /// A new video track for something made from `clip`: above the clip and above the layers and
@@ -354,7 +355,7 @@ fn add_mask(s: &mut Session, clip: ClipId, effect: Value, shape: &Value, feather
             Value::String(id) => it.effects.iter().find(|e| &e.effect == id),
             _ => None,
         })
-        .is_some_and(|e| e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None));
+        .is_some_and(|e| e.masks.iter().any(|m| m.mode != filmagic_project::MaskMode::None));
     let mode = match (usage, masked_already) {
         (MaskUse::Hole, _) => "subtract",
         (MaskUse::Keep, true) => "intersect",
@@ -494,9 +495,9 @@ fn samples_p(p: &Value, cmd: &str) -> Result<usize> {
     match p.get("samples") {
         None | Some(Value::Null) => Ok(15),
         Some(_) => u64_p(p, "samples")
-            .filter(|n| (3..=filmcraft_render::plate::MAX_PLATE_SAMPLES as u64).contains(n))
+            .filter(|n| (3..=filmagic_render::plate::MAX_PLATE_SAMPLES as u64).contains(n))
             .map(|n| n as usize)
-            .ok_or_else(|| bad(cmd, format!("`samples` must be 3 to {}", filmcraft_render::plate::MAX_PLATE_SAMPLES))),
+            .ok_or_else(|| bad(cmd, format!("`samples` must be 3 to {}", filmagic_render::plate::MAX_PLATE_SAMPLES))),
     }
 }
 
@@ -513,7 +514,7 @@ fn path_p(p: &Value, cmd: &str) -> Result<String> {
 
 /// The median of `samples` frames across the part of its media the clip shows: (RGBA8, width,
 /// height, how well the frames agreed, frames used).
-fn median_plate(s: &Session, it: &TrackItem, samples: usize, cmd: &str) -> Result<(Vec<u8>, usize, usize, filmcraft_render::plate::Stillness, usize)> {
+fn median_plate(s: &Session, it: &TrackItem, samples: usize, cmd: &str) -> Result<(Vec<u8>, usize, usize, filmagic_render::plate::Stillness, usize)> {
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     let mut frames: Vec<Vec<u8>> = Vec::new();
     let mut dims: Option<(usize, usize)> = None;
@@ -522,7 +523,7 @@ fn median_plate(s: &Session, it: &TrackItem, samples: usize, cmd: &str) -> Resul
     while k < n {
         // the middle of each of `n` equal parts of the clip
         let t = it.start + Tick(it.duration.0 / (n as i64 * 2) * (2 * k as i64 + 1));
-        let img = filmcraft_render::render_item(&s.project, it.item, it.source_time_at(t), 1.0, &provider)
+        let img = filmagic_render::render_item(&s.project, it.item, it.source_time_at(t), 1.0, &provider)
             .ok_or_else(|| bad(cmd, "a frame of the clip could not be decoded"))?;
         if img.w == 0 || img.h == 0 {
             return Err(bad(cmd, "the clip has no picture"));
@@ -551,7 +552,7 @@ fn median_plate(s: &Session, it: &TrackItem, samples: usize, cmd: &str) -> Resul
         k += 1;
     }
     let (w, h) = dims.ok_or_else(|| bad(cmd, "the clip has no picture"))?;
-    let (plate, still) = filmcraft_render::plate::temporal_median(&frames, w, h).ok_or_else(|| bad(cmd, "the plate could not be made from these frames"))?;
+    let (plate, still) = filmagic_render::plate::temporal_median(&frames, w, h).ok_or_else(|| bad(cmd, "the plate could not be made from these frames"))?;
     Ok((plate, w, h, still, frames.len()))
 }
 
@@ -564,7 +565,7 @@ fn make_plate(s: &mut Session, it: &TrackItem, path: &str, samples: usize, cover
     }
     let (plate, w, h, still, used) = median_plate(s, it, samples, cmd)?;
     let (w32, h32) = (u32::try_from(w).map_err(|_| bad(cmd, "the frame is too wide"))?, u32::try_from(h).map_err(|_| bad(cmd, "the frame is too tall"))?);
-    let bytes = filmcraft_export::encode_png(plate, w32, h32).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = filmagic_export::encode_png(plate, w32, h32).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     // one still, whatever numbered files lie beside it
     let imported = run(s, "file.import", json!({"paths": [path], "imageSequence": false}))?;
@@ -583,11 +584,11 @@ fn make_plate(s: &mut Session, it: &TrackItem, path: &str, samples: usize, cover
     if still.disturbed < 0.002 {
         warnings.push("nothing moves in this clip: the plate is the clip's own frame, with whatever stands in it".into());
     }
-    if s.active_sequence().is_some_and(|q| q.settings.color.working != filmcraft_color::WorkingSpace::Rec709) {
+    if s.active_sequence().is_some_and(|q| q.settings.color.working != filmagic_color::WorkingSpace::Rec709) {
         warnings.push("the plate is made in Rec. 709; in this HDR sequence its colour will not match the clip exactly".into());
     }
     // pixels that are not square: the still is given the clip's pixel shape, or it would sit narrower or wider than the clip
-    if let Some((num, den)) = filmcraft_render::source_par(&s.project, it.item).filter(|(n, d)| n != d && *n > 0 && *d > 0) {
+    if let Some((num, den)) = filmagic_render::source_par(&s.project, it.item).filter(|(n, d)| n != d && *n > 0 && *d > 0) {
         run(s, "clip.interpretFootage", json!({"items": [item.0], "pixelAspect": [num, den]}))?;
     }
     let mut clip = None;
@@ -714,7 +715,7 @@ fn retime(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => None,
         Some(v) => Some(
             v.as_str()
-                .filter(|m| filmcraft_project::TimeInterpolation::from_name(m).is_some())
+                .filter(|m| filmagic_project::TimeInterpolation::from_name(m).is_some())
                 .ok_or_else(|| bad(CMD, "`interpolation` must be frameSampling, frameBlending or opticalFlow"))?
                 .to_string(),
         ),
@@ -873,8 +874,8 @@ fn fixed_point(path: &MaskPath, placed: &Affine, anchor: (f64, f64)) -> Option<(
 }
 
 /// Whether a project item is a still image.
-fn is_still(p: &filmcraft_project::Project, item: ItemId) -> bool {
-    p.item(item).is_some_and(|i| matches!(&i.kind, filmcraft_project::ItemKind::Media(m) if matches!(m.info.kind, filmcraft_media::MediaKind::Still)))
+fn is_still(p: &filmagic_project::Project, item: ItemId) -> bool {
+    p.item(item).is_some_and(|i| matches!(&i.kind, filmagic_project::ItemKind::Media(m) if matches!(m.info.kind, filmagic_media::MediaKind::Still)))
 }
 
 /// Most frames `layers.transform` works a layer's place out on one by one (eleven minutes at
@@ -890,7 +891,7 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     }
     .ok_or_else(|| bad(CMD, "need `layer`: the id of a clip with an opacity mask (`layers.extract` and `layers.lift` return one as `layer`)"))?;
     let (it, size) = picture_clip_of(s, id, CMD)?;
-    if s.project.item(it.item).is_some_and(|i| matches!(i.kind, filmcraft_project::ItemKind::AdjustmentLayer { .. })) {
+    if s.project.item(it.item).is_some_and(|i| matches!(i.kind, filmagic_project::ItemKind::AdjustmentLayer { .. })) {
         return Err(bad(CMD, "an adjustment layer's masks are drawn on the frame and its Motion does not move them: it has no subject to hold in place"));
     }
     let (scale, offset, anchor) = (scale_p(p, CMD)?, offset_p(p, CMD)?, anchor_p(p, CMD)?);
@@ -916,8 +917,8 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "the clip's Motion is switched off, so nothing set on it would show; switch it on first (`effects.toggleEnabled`)"));
     }
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
-    let par = filmcraft_render::source_par(&s.project, it.item);
-    let place = |item: &TrackItem, t: Tick| filmcraft_render::motion_matrix(q, item, size, par, t);
+    let par = filmagic_render::source_par(&s.project, it.item);
+    let place = |item: &TrackItem, t: Tick| filmagic_render::motion_matrix(q, item, size, par, t);
     let first = it.effect_time_at(it.start);
     let animated = |id: &str| motion.param(id).is_some_and(Param::is_animated);
     let uniform = motion.param("uniform_scale").and_then(|p| p.value.as_bool()).unwrap_or(true);
@@ -970,7 +971,7 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
             let rides = |i: usize, k: &Keyframe| {
                 let points = |k: &Keyframe| k.value.as_path().map(MaskPath::len);
                 let held = path_keys.get(i + 1).is_some_and(|next| points(next) != points(k));
-                (if held { filmcraft_project::Interpolation::Hold } else { k.interp }, k.out_influence, k.in_influence)
+                (if held { filmagic_project::Interpolation::Hold } else { k.interp }, k.out_influence, k.in_influence)
             };
             // A position already keyed that way goes with the path (this command leaves it so):
             // scaled again, it still does. The Scale is one value here, a keyframed one was refused.
@@ -1106,7 +1107,7 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     let before = crate::story::looks_across(s, it.start, it.end());
     if changes {
         s.edit_sequence("Transform Layer", |q, _, _| {
-            let (_, layer) = q.find_item_mut(id).ok_or(filmcraft_edit::EditError::NoItem(id))?;
+            let (_, layer) = q.find_item_mut(id).ok_or(filmagic_edit::EditError::NoItem(id))?;
             let m = layer.effect_mut("motion").ok_or_else(|| bad(CMD, "the clip has no Motion to set"))?;
             m.params.extend(set);
             Ok(())

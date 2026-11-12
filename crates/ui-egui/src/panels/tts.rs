@@ -13,11 +13,11 @@
 //! `tts.download`, `tts.download.confirm`, `tts.download.cancel`.
 
 use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
-use filmcraft_project::{ClipId, VocalPitch};
+use filmagic_project::{ClipId, VocalPitch};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::FilmcraftApp;
+use crate::FilmagicApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
@@ -60,7 +60,7 @@ impl Default for TtsDraft {
         TtsDraft {
             text: String::new(),
             language: "en-US".into(),
-            voice: if natural_installed() { "kokoro-heart".into() } else { filmcraft_tts::default_voice_id().into() },
+            voice: if natural_installed() { "kokoro-heart".into() } else { filmagic_tts::default_voice_id().into() },
             pitch: VocalPitch::Default,
             pace: 1.0,
             advanced_open: true,
@@ -80,12 +80,12 @@ impl TtsDraft {
 
 /// The natural voice package is downloaded.
 fn natural_installed() -> bool {
-    filmcraft_engine::transcript::models_dir().as_deref().is_some_and(filmcraft_tts::catalog::installed)
+    filmagic_engine::transcript::models_dir().as_deref().is_some_and(filmagic_tts::catalog::installed)
 }
 
 /// This build can download and run the natural voices (`neural-voices` on the engine).
 fn natural_voices_available() -> bool {
-    filmcraft_engine::narration::natural_voices_available()
+    filmagic_engine::narration::natural_voices_available()
 }
 
 /// The panel offers the download only when this build includes the feature and the package is not installed.
@@ -94,7 +94,7 @@ fn offer_natural_download(available: bool, installed: bool) -> bool {
 }
 
 /// State of job `id`: `None` while running, else its result.
-fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
+fn job_outcome(app: &FilmagicApp, id: u64) -> Option<Result<(), String>> {
     use std::sync::atomic::Ordering;
     let Some(j) = app.session.jobs.iter().find(|j| j.id == id) else { return Some(Err("the job disappeared".into())) };
     if !j.progress.finished.load(Ordering::Relaxed) {
@@ -108,7 +108,7 @@ fn job_outcome(app: &FilmcraftApp, id: u64) -> Option<Result<(), String>> {
 }
 
 /// Start an action: synthesize in the background (or reuse the cache), then run `cmd`.
-fn start(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: bool) {
+fn start(app: &mut FilmagicApp, cmd: &str, params: serde_json::Value, play: bool) {
     let mut render = params.clone();
     if let Some(o) = render.as_object_mut() {
         o.remove("dir");
@@ -126,7 +126,7 @@ fn start(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: boo
     }
 }
 
-fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: bool) {
+fn run_now(app: &mut FilmagicApp, cmd: &str, params: serde_json::Value, play: bool) {
     match app.session.execute(cmd, params) {
         Ok(r) => {
             if play {
@@ -145,7 +145,7 @@ fn run_now(app: &mut FilmcraftApp, cmd: &str, params: serde_json::Value, play: b
 }
 
 /// Finish a pending action whose synthesis job is done.
-fn poll(app: &mut FilmcraftApp) {
+fn poll(app: &mut FilmagicApp) {
     if let Some(p) = app.ui.tts.pending.clone() {
         match job_outcome(app, p.job) {
             None => {}
@@ -171,21 +171,21 @@ fn poll(app: &mut FilmcraftApp) {
 }
 
 /// The selected narration clip and its item, if any.
-fn selected_narration(app: &FilmcraftApp) -> Option<(ClipId, u64)> {
-    let clip = filmcraft_engine::narration::target_clip(&app.session, &serde_json::Value::Null)?;
+fn selected_narration(app: &FilmagicApp) -> Option<(ClipId, u64)> {
+    let clip = filmagic_engine::narration::target_clip(&app.session, &serde_json::Value::Null)?;
     let item = app.session.active_sequence()?.find_item(clip)?.1.item;
     Some((clip, item.0))
 }
 
 /// Load the selected narration clip into the draft when the selection moves to a different one,
 /// and bring the panel forward. Runs every frame, also when the panel is hidden.
-pub fn follow_selection(app: &mut FilmcraftApp) {
+pub fn follow_selection(app: &mut FilmagicApp) {
     poll(app);
     let sel = selected_narration(app);
     match sel {
         Some((clip, item)) if app.ui.tts.loaded_from != Some((clip.0, item)) => {
             let first_time = app.ui.tts.loaded_from.map(|(c, _)| c) != Some(clip.0);
-            if let Some(n) = app.session.project.narrations.get(&filmcraft_project::ItemId(item)).cloned() {
+            if let Some(n) = app.session.project.narrations.get(&filmagic_project::ItemId(item)).cloned() {
                 let d = &mut app.ui.tts;
                 d.text = n.text;
                 d.language = n.language;
@@ -213,14 +213,14 @@ enum Action {
     CancelDownload,
 }
 
-pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, t.panel_bg);
-    let models = filmcraft_engine::transcript::models_dir();
+    let models = filmagic_engine::transcript::models_dir();
     let available = natural_voices_available();
-    let voices = filmcraft_tts::voices_in(models.as_deref());
-    let installed = models.as_deref().is_some_and(filmcraft_tts::catalog::installed);
+    let voices = filmagic_tts::voices_in(models.as_deref());
+    let installed = models.as_deref().is_some_and(filmagic_tts::catalog::installed);
     let busy = app.ui.tts.pending.is_some();
     let download = app
         .ui
@@ -254,9 +254,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         ui.add_space(6.0);
         label(ui, &t, "Language");
-        let lang_name = filmcraft_tts::LANGUAGES.iter().find(|(id, _)| *id == d.language).map_or(d.language.as_str(), |(_, n)| n);
+        let lang_name = filmagic_tts::LANGUAGES.iter().find(|(id, _)| *id == d.language).map_or(d.language.as_str(), |(_, n)| n);
         let cb = craft_ui::ComboBox::from_id_salt("tts-language").selected_text(lang_name).width(w).show_ui(ui, |ui| {
-            for (id, name) in filmcraft_tts::LANGUAGES {
+            for (id, name) in filmagic_tts::LANGUAGES {
                 if ui.selectable_label(d.language == *id, *name).clicked() {
                     d.language = id.to_string();
                 }
@@ -286,7 +286,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.add_space(4.0);
             ui.label(egui::RichText::new("Natural voices are not included in this build.").color(t.text_dim).size(11.5));
         }
-        let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
+        let natural = filmagic_tts::catalog::find(&d.voice).is_some();
         if natural && offer_natural_download(available, installed) {
             ui.add_space(6.0);
             egui::Frame::new().fill(t.field_bg).stroke(egui::Stroke::new(1.0, t.field_border)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
@@ -302,13 +302,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                     None if d.confirm_download => {
-                        let mb = filmcraft_tts::catalog::size() as f64 / 1e6;
+                        let mb = filmagic_tts::catalog::size() as f64 / 1e6;
                         ui.label(egui::RichText::new(format!("Download the natural voices? {mb:.0} MB, once.")).color(t.text).size(12.0).strong());
                         ui.label(
                             egui::RichText::new(format!(
                                 "From {} and github.com/cmusphinx/cmudict (pronunciations). Licence: {}. Every file is checked against a pinned SHA-256.",
-                                filmcraft_tts::catalog::SOURCE,
-                                filmcraft_tts::catalog::LICENSE
+                                filmagic_tts::catalog::SOURCE,
+                                filmagic_tts::catalog::LICENSE
                             ))
                             .color(t.text_dim)
                             .size(11.0),
@@ -327,7 +327,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     None => {
                         ui.label(egui::RichText::new("Natural voices need a one-time download.").color(t.text).size(11.5));
-                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", filmcraft_tts::catalog::size() as f64 / 1e6));
+                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", filmagic_tts::catalog::size() as f64 / 1e6));
                         auto.add("tts.download", visible(ui, b.rect), "Download natural voices");
                         if b.clicked() {
                             d.confirm_download = true;
@@ -364,7 +364,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.add_space(10.0);
             label(ui, &t, "Pace");
             ui.spacing_mut().slider_width = w - 56.0;
-            let s = ui.add(egui::Slider::new(&mut d.pace, filmcraft_tts::MIN_PACE..=filmcraft_tts::MAX_PACE).step_by(0.05).fixed_decimals(2).suffix("×"));
+            let s = ui.add(egui::Slider::new(&mut d.pace, filmagic_tts::MIN_PACE..=filmagic_tts::MAX_PACE).step_by(0.05).fixed_decimals(2).suffix("×"));
             auto.add("tts.pace", visible(ui, s.rect), "Pace");
             let (r, _) = ui.allocate_exact_size(vec2(w - 56.0, 14.0), Sense::hover());
             for (x, l) in [(0.0, "0.5×"), (1.0 / 3.0, "1×"), (1.0, "2×")] {
@@ -385,7 +385,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     if !d.text.is_empty() && !d.text.ends_with(' ') {
                         d.text.push(' ');
                     }
-                    d.text.push_str(filmcraft_tts::script::PAUSE_MARKER);
+                    d.text.push_str(filmagic_tts::script::PAUSE_MARKER);
                     d.text.push(' ');
                 }
             });
@@ -395,7 +395,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             .hint_text("Type what you want the voice to say")
             .desired_width(w)
             .desired_rows(8)
-            .char_limit(filmcraft_tts::MAX_TEXT_BYTES);
+            .char_limit(filmagic_tts::MAX_TEXT_BYTES);
         let r = crate::widgets::accessible_name(ui.add(te), "Text");
         auto.add("tts.text", visible(ui, r.rect), "Text");
     });
@@ -403,8 +403,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // footer: Preview | Save
     let fy = rect.max.y - FOOTER_H + 10.0;
     let half = (rect.width() - PAD * 2.0 - 10.0) / 2.0;
-    let natural = filmcraft_tts::catalog::find(&d.voice).is_some();
-    let can_say = filmcraft_tts::check_text(&d.text).is_ok() && (!natural || installed) && !busy;
+    let natural = filmagic_tts::catalog::find(&d.voice).is_some();
+    let can_say = filmagic_tts::check_text(&d.text).is_ok() && (!natural || installed) && !busy;
     let pr = Rect::from_min_size(pos2(rect.min.x + PAD, fy), vec2(half, 28.0));
     if button(ui, &t, pr, Icon::Play, if busy { "Synthesizing…" } else { "Preview" }, false, can_say, "tts-preview").clicked() && can_say {
         actions.push(Action::Run("tts.preview", d.params(), true));
@@ -485,7 +485,7 @@ fn button(ui: &mut egui::Ui, t: &Tokens, r: Rect, icon: Icon, text: &str, primar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FilmcraftApp;
+    use crate::FilmagicApp;
 
     #[test]
     fn the_download_is_offered_only_when_the_build_includes_natural_voices() {
@@ -495,7 +495,7 @@ mod tests {
         assert!(!offer_natural_download(true, true));
     }
 
-    fn frame(app: &mut FilmcraftApp, ctx: &egui::Context) {
+    fn frame(app: &mut FilmagicApp, ctx: &egui::Context) {
         app.auto.begin_frame();
         let mut out = ctx.run_ui(
             egui::RawInput { time: Some(1.0), screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 800.0))), ..Default::default() },
@@ -504,19 +504,19 @@ mod tests {
         out.textures_delta.clear();
     }
 
-    fn has_id(app: &FilmcraftApp, id: &str) -> bool {
+    fn has_id(app: &FilmagicApp, id: &str) -> bool {
         app.auto.elements.iter().any(|w| w.id == id)
     }
 
     #[test]
     fn a_build_without_the_feature_does_not_offer_the_natural_voice_download() {
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let mut app = FilmagicApp::new(filmagic_engine::Session::default());
         let ctx = egui::Context::default();
         crate::theme::install(&ctx, &app.tokens);
         // A natural voice in the draft must not surface a download the build cannot perform (#2318).
         app.ui.tts.voice = "kokoro-heart".into();
         frame(&mut app, &ctx);
-        assert!(!filmcraft_engine::narration::natural_voices_available(), "ui-egui tests build the engine without neural-voices");
+        assert!(!filmagic_engine::narration::natural_voices_available(), "ui-egui tests build the engine without neural-voices");
         assert!(!has_id(&app, "tts.download"), "download offered in a build without neural-voices");
         assert!(!has_id(&app, "tts.download.confirm"));
     }

@@ -6,14 +6,14 @@ use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::menus::{self, MenuItem};
+use filmagic_engine::Session;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
+use filmagic_ui_egui::menus::{self, MenuItem};
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     menu: Sender<String>,
     sent: Rc<RefCell<Vec<MenuItem>>>,
@@ -27,7 +27,7 @@ impl Driver {
         let (menu, inbox) = channel();
         let sent: Rc<RefCell<Vec<MenuItem>>> = Rc::default();
         let sink = sent.clone();
-        let mut app = FilmcraftApp::new(s).with_control(rx);
+        let mut app = FilmagicApp::new(s).with_control(rx);
         app.command_inbox = Some(inbox);
         app.hooks.menu_changed = Some(Box::new(move |items: &[MenuItem]| *sink.borrow_mut() = items.to_vec()));
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);

@@ -180,8 +180,8 @@ fn reference_decode(granules: &[Granule]) -> Vec<f32> {
 }
 
 fn ffmpeg_decode_mono(bytes: &[u8], name: &str) -> Option<(Vec<f32>, String)> {
-    let ff = filmcraft_testkit::ffmpeg_or_skip("mp3enc Huffman tables")?;
-    let path = filmcraft_testkit::fixtures_dir("mp3enc").join(name);
+    let ff = filmagic_testkit::ffmpeg_or_skip("mp3enc Huffman tables")?;
+    let path = filmagic_testkit::fixtures_dir("mp3enc").join(name);
     std::fs::write(&path, bytes).unwrap();
     let out = std::process::Command::new(ff).args(["-v", "error", "-i"]).arg(&path).args(["-f", "f32le", "-acodec", "pcm_f32le", "-"]).output().unwrap();
     let pcm = out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
@@ -274,7 +274,7 @@ fn parse(bytes: &[u8]) -> Vec<Parsed> {
         let rate = if lsf { tables::RATES_LSF } else { tables::RATES_MPEG1 }[rate_index as usize];
         let len = (if lsf { 72_000 } else { 144_000 } * kbps / rate) as usize + usize::from(padding);
         let nch = if mode == 3 { 1 } else { 2 };
-        let mut r = filmcraft_bitstream::BitReader::new(&bytes[pos + 4..pos + len]);
+        let mut r = filmagic_bitstream::BitReader::new(&bytes[pos + 4..pos + len]);
         let main_data_begin = r.read_bits(if lsf { 8 } else { 9 }).unwrap() as usize;
         r.skip(if lsf { nch } else { [5, 3][nch - 1] + 4 * nch }).unwrap();
         let (mut part2_3, mut global_gain) = (Vec::new(), Vec::new());

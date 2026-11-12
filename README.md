@@ -249,13 +249,11 @@ The trailer and the grades in these screenshots were built exactly this way, by 
 Filmagic is built from source with a stable Rust toolchain:
 
 ```sh
-cargo run --release -p filmcraft                           # the desktop app, with a demo project
-cargo run --release -p filmcraft -- --control 9876         # plus the JSON-lines control server
-cargo run --release -p filmcraft-cli -- commands           # list every engine command
-cargo run --release -p filmcraft-cli -- mcp                # the MCP server (headless): connect your agent to this
+cargo run --release -p filmagic                            # the desktop app, with a demo project
+cargo run --release -p filmagic -- --control 9876          # plus the JSON-lines control server
+cargo run --release -p filmagic-cli -- commands            # list every engine command
+cargo run --release -p filmagic-cli -- mcp                 # the MCP server (headless): connect your agent to this
 ```
-
-(`filmcraft` and `filmcraft-cli` are the names of the Cargo packages.)
 
 New to editing here? Follow [Getting started: video fades and audio volume keyframes](docs/getting-started-fades.md). The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md), and the loop an agent works in is in [docs/agents.md](docs/agents.md).
 

@@ -1,30 +1,30 @@
 //! The wgpu compositor.
 //!
-//! Executes a [`FramePlan`](filmcraft_render::plan::FramePlan) on the GPU: every layer's source is
+//! Executes a [`FramePlan`](filmagic_render::plan::FramePlan) on the GPU: every layer's source is
 //! uploaded as textures (Y/Cb/Cr planes stay YUV — conversion to linear RGB happens per pixel in
 //! the shader), drawn as a transformed quad with premultiplied "over" blending into a Rgba16Float
 //! accumulator, then resolved over black into an sRGB `Rgba8UnormSrgb` texture that the UI
 //! registers as a native texture. Uploads are cached by pixel-buffer identity, so a paused frame or
 //! a still costs nothing.
 //!
-//! Every blend mode of [`filmcraft_render::Blend`] runs here. Normal and Dissolve (whose per-pixel
+//! Every blend mode of [`filmagic_render::Blend`] runs here. Normal and Dissolve (whose per-pixel
 //! pattern is the CPU's 64-bit hash, reproduced in WGSL) use fixed-function "over" blending. The
 //! other 25 modes need the colour under the layer: before such a layer is drawn, the accumulator
 //! region under its quad is copied into a backdrop texture, and the fragment shader composites
-//! with the CPU reference's math (`filmcraft_render::blend::composite`: sRGB-encoded straight
+//! with the CPU reference's math (`filmagic_render::blend::composite`: sRGB-encoded straight
 //! colour, W3C formulas, back to linear) and writes the result. Only those layers pay the copy.
 //!
-//! A layer carrying standard effects ([`filmcraft_render::plan::LayerFx`]) goes through the
+//! A layer carrying standard effects ([`filmagic_render::plan::LayerFx`]) goes through the
 //! effect stage ([`fx`]) first: its source is drawn into an `Rgba32Float` working image, the
 //! effects run as compute passes in WGSL with the CPU reference's math
-//! (`filmcraft_render::gpufx::FxOp::apply`), and the result is drawn like any RGBA layer. Layers
+//! (`filmagic_render::gpufx::FxOp::apply`), and the result is drawn like any RGBA layer. Layers
 //! without effects take the single draw above.
 //!
 //! Layers that need converting before upload (linear f32 RGBA from CPU-rendered layers, 16-bit
 //! YUV such as ProRes) are converted to half floats by [`prepare`], which frame workers run off the
 //! UI thread; [`GpuCompositor::composite_prepared`] then only copies bytes into textures.
 //!
-//! The CPU plan executor (`filmcraft_render::plan::execute_cpu`) is the oracle; tests compare.
+//! The CPU plan executor (`filmagic_render::plan::execute_cpu`) is the oracle; tests compare.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -33,10 +33,10 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use filmcraft_color::{Matrix, Range, Transfer};
-use filmcraft_frame::{Chroma, PixelData, VideoFrame};
-use filmcraft_render::Blend;
-use filmcraft_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
+use filmagic_color::{Matrix, Range, Transfer};
+use filmagic_frame::{Chroma, PixelData, VideoFrame};
+use filmagic_render::Blend;
+use filmagic_render::plan::{DeviceCaps, FramePlan, PlanLayer, PlanStep};
 
 pub mod adapter;
 pub mod export_renderer;
@@ -284,7 +284,7 @@ fn prepare_layers(layers: &[PlanLayer]) -> PreparedPlan {
 impl GpuCompositor {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("filmcraft-composite"),
+            label: Some("filmagic-composite"),
             source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
         });
         let layer_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -450,7 +450,7 @@ impl GpuCompositor {
             return s.1.clone();
         }
         let t = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("filmcraft-target"),
+            label: Some("filmagic-target"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
@@ -466,7 +466,7 @@ impl GpuCompositor {
 
     fn plane_texture(&mut self, w: u32, h: u32, format: wgpu::TextureFormat, bytes: &[u8], bpp: u32) -> wgpu::TextureView {
         let t = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("filmcraft-plane"),
+            label: Some("filmagic-plane"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
@@ -616,13 +616,10 @@ impl GpuCompositor {
     }
 
     /// The uniforms drawing `frame` onto `fx`'s working image: box-decimated, then turned.
-    fn fx_source_uniforms(src: &SrcInfo, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> [f32; UNIFORM_FLOATS] {
+    fn fx_source_uniforms(src: &SrcInfo, frame: &VideoFrame, fx: &filmagic_render::plan::LayerFx) -> [f32; UNIFORM_FLOATS] {
         let n = fx.decimation.max(1) as f64;
-        let m = filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n).then_apply(&filmcraft_render::plan::quarter_turns(
-            fx.turns,
-            frame.width as f64,
-            frame.height as f64,
-        ));
+        let m =
+            filmagic_geom::Affine::scale(1.0 / n, 1.0 / n).then_apply(&filmagic_render::plan::quarter_turns(fx.turns, frame.width as f64, frame.height as f64));
         let mut su = Self::uniforms(src, &m, 1.0, Blend::Normal, (fx.size.0.max(1), fx.size.1.max(1)));
         // Effect sources use the working pixel center, avoiding interpolated vertex coordinates.
         su[26] = n as f32;
@@ -630,7 +627,7 @@ impl GpuCompositor {
         su
     }
 
-    fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32)) -> [f32; UNIFORM_FLOATS] {
+    fn uniforms(src: &SrcInfo, m: &filmagic_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32)) -> [f32; UNIFORM_FLOATS] {
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_levels / 256.0; // 2^(bits - 8), independent of texture encoding
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
@@ -653,10 +650,10 @@ impl GpuCompositor {
         // colour management (q0..q5), stage by stage as `InputTransform::apply`
         let q = src.input.map_or([0.0; 24], |p| {
             let curve = match p.curve {
-                filmcraft_color::GpuCurve::Sdr => 0.0,
-                filmcraft_color::GpuCurve::Linear => 1.0,
-                filmcraft_color::GpuCurve::Pq => 2.0,
-                filmcraft_color::GpuCurve::Hlg => 3.0,
+                filmagic_color::GpuCurve::Sdr => 0.0,
+                filmagic_color::GpuCurve::Linear => 1.0,
+                filmagic_color::GpuCurve::Pq => 2.0,
+                filmagic_color::GpuCurve::Hlg => 3.0,
             };
             let (hl, hk) = p.hlg.unwrap_or(([0.0; 3], 0.0));
             let mx = p.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
@@ -665,7 +662,7 @@ impl GpuCompositor {
             let on = |b: bool| if b { 1.0 } else { 0.0 };
             #[rustfmt::skip]
             let q = [
-                1.0, curve, hk, filmcraft_color::REFERENCE_WHITE_NITS as f32,
+                1.0, curve, hk, filmagic_color::REFERENCE_WHITE_NITS as f32,
                 hl[0], hl[1], hl[2], on(p.matrix.is_some()),
                 mx[0][0], mx[0][1], mx[0][2], on(p.tone.is_some()),
                 mx[1][0], mx[1][1], mx[1][2], sp,
@@ -749,7 +746,7 @@ impl GpuCompositor {
                     None => VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px.clone()),
                 };
                 owned =
-                    [PlanLayer { frame: Arc::new(frame), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
+                    [PlanLayer { frame: Arc::new(frame), matrix: filmagic_geom::Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, input: None }];
                 (img.w as u32, img.h as u32, &owned[..])
             }
             FramePlan::Composite { width, height, steps } => return self.composite_steps(*width, *height, steps, prep, resolve),
@@ -772,7 +769,7 @@ impl GpuCompositor {
                 if self.fx.is_some() && lfx.size.0.max(lfx.size.1) <= max_side {
                     return None;
                 }
-                let img = filmcraft_render::plan::effect_image(&l.frame, lfx);
+                let img = filmagic_render::plan::effect_image(&l.frame, lfx);
                 Some(PlanLayer::new(Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px)), l.matrix, l.opacity, l.blend))
             })
             .collect();
@@ -848,7 +845,7 @@ impl GpuCompositor {
                     let m = match &l.fx {
                         Some(lfx) => {
                             let n = 1.0 / lfx.decimation.max(1) as f64;
-                            l.matrix.then_apply(&filmcraft_geom::Affine::scale(n, n)).then_apply(&filmcraft_render::plan::quarter_turns(
+                            l.matrix.then_apply(&filmagic_geom::Affine::scale(n, n)).then_apply(&filmagic_render::plan::quarter_turns(
                                 lfx.turns,
                                 l.frame.width as f64,
                                 l.frame.height as f64,
@@ -886,7 +883,7 @@ impl GpuCompositor {
             layout: &self.final_bgl,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmagic-composite") });
         // Runs of fixed-function layers draw in one pass. A layer that reads the destination
         // ends it, copies the accumulator under its quad into the backdrop and draws on its own.
         let accum_tex = self.accum.as_ref().map(|a| a.0.clone());
@@ -964,7 +961,7 @@ impl GpuCompositor {
     ) -> (wgpu::TextureView, (u32, u32)) {
         let cpu = |c: &mut Self| {
             let plan = FramePlan::Composite { width, height, steps: steps.to_vec() };
-            c.composite_prepared(&FramePlan::Image(filmcraft_render::plan::execute_cpu(&plan)), None)
+            c.composite_prepared(&FramePlan::Image(filmagic_render::plan::execute_cpu(&plan)), None)
         };
         if steps.iter().any(|s| matches!(s, PlanStep::Transition { effect, .. } if effect.effect != "push")) {
             self.cpu_transitions += 1;
@@ -1027,7 +1024,7 @@ impl GpuCompositor {
         out
     }
 
-    /// What this device runs, for planning its frames ([`filmcraft_render::plan::plan_frame`]):
+    /// What this device runs, for planning its frames ([`filmagic_render::plan::plan_frame`]):
     /// adjustment layers up to its texture limit when it has an effect stage.
     pub fn caps(&self) -> DeviceCaps {
         DeviceCaps { adjust_side: if self.fx.is_some() { self.device.limits().max_texture_dimension_2d } else { 0 } }
@@ -1037,7 +1034,7 @@ impl GpuCompositor {
     /// into the effect stage's working image as a linear premultiplied RGBA source, the effects
     /// run there, and the result replaces the accumulator. None when the stage can't run them
     /// (nothing is drawn then).
-    fn adjust(&mut self, canvas: &wgpu::TextureView, (w, h): (u32, u32), ops: &[filmcraft_render::gpufx::FxOp]) -> Option<()> {
+    fn adjust(&mut self, canvas: &wgpu::TextureView, (w, h): (u32, u32), ops: &[filmagic_render::gpufx::FxOp]) -> Option<()> {
         let rgba = SrcInfo {
             kind: 1,
             code_scale: 1.0,
@@ -1045,10 +1042,10 @@ impl GpuCompositor {
             alpha: 0.0,
             chroma: (w, h),
             size: (w, h),
-            color: filmcraft_color::ColorInfo::SRGB_FULL,
+            color: filmagic_color::ColorInfo::SRGB_FULL,
             input: None,
         };
-        let identity = filmcraft_geom::Affine::IDENTITY;
+        let identity = filmagic_geom::Affine::IDENTITY;
         let mut su = Self::uniforms(&rgba, &identity, 1.0, Blend::Normal, (w, h));
         // (the effect source draw's integer decimation: the canvas is the working image)
         su[26] = 1.0;
@@ -1064,7 +1061,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
-        let lfx = filmcraft_render::plan::LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.to_vec() };
+        let lfx = filmagic_render::plan::LayerFx { size: (w, h), decimation: 1, turns: 0, ops: ops.to_vec() };
         let job = self.fx.as_mut()?.job(&self.device, &self.queue, &lfx, sbg, &self.dummy)?;
         let buf = self.uniform_buffer(&Self::uniforms(&rgba, &identity, 1.0, Blend::Normal, (w, h)));
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1078,7 +1075,7 @@ impl GpuCompositor {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&self.dummy) },
             ],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-adjust") });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmagic-adjust") });
         self.fx.as_ref()?.record(&mut enc, &job);
         {
             // cleared, then drawn "over" nothing: the adjusted picture replaces the canvas
@@ -1098,7 +1095,7 @@ impl GpuCompositor {
     pub fn render_export_prepared(&mut self, plan: &FramePlan, prep: Option<&PreparedPlan>) -> Option<(u32, u32, Vec<f32>)> {
         let t = std::time::Instant::now();
         self.render_plan(plan, prep, true, false);
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite-export") });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmagic-composite-export") });
         let size = self.copy_accumulator(&mut enc)?;
         self.queue.submit([enc.finish()]);
         export_renderer::timing::add_submit(t.elapsed());
@@ -1108,7 +1105,7 @@ impl GpuCompositor {
     /// Run the effect stage of a layer alone: `frame` decoded into its working image and `fx`
     /// applied, read back as linear premultiplied RGBA f32 (what `LayerFx` ops produce on the
     /// CPU from the same frame). None when the working image does not fit in a texture.
-    pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmcraft_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
+    pub fn effect_image(&mut self, frame: &VideoFrame, fx: &filmagic_render::plan::LayerFx) -> Option<(u32, u32, Vec<f32>)> {
         let key = self.upload(frame, None);
         let src = self.src_info(frame, key)?;
         let views = self.uploads.get(&key)?.views.clone();
@@ -1233,7 +1230,7 @@ impl GpuCompositor {
         export_renderer::timing::add_map_wait(t.elapsed());
         let t = std::time::Instant::now();
         let (width, row) = (w as usize, row as usize);
-        let mut out = filmcraft_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
+        let mut out = filmagic_frame::pool::take_f32_overwritten(width.checked_mul(h as usize)?.checked_mul(4)?);
         let data = slice.get_mapped_range().ok()?;
         let mut line = Vec::with_capacity(width * 8);
         // every row must be there: the pooled output holds stale values until written
@@ -1331,9 +1328,9 @@ struct SrcInfo {
     alpha: f32,
     chroma: (u32, u32),
     size: (u32, u32),
-    color: filmcraft_color::ColorInfo,
+    color: filmagic_color::ColorInfo,
     /// Colour management beyond the default decode (a Y'CbCr layer's [`PlanLayer::input`]).
-    input: Option<filmcraft_color::GpuInputParams>,
+    input: Option<filmagic_color::GpuInputParams>,
 }
 
 /// Floats in a layer's uniform block (`U` in `composite.wgsl`: 13 vec4).

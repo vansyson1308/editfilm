@@ -1,7 +1,7 @@
 //! `layers.*` (a region of a clip as a layer of its own) and `color.relight`.
 
-use filmcraft_project::{ClipId, ItemId, ParamValue};
-use filmcraft_time::Tick;
+use filmagic_project::{ClipId, ItemId, ParamValue};
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -44,7 +44,7 @@ fn is(p: [f32; 4], want: [f32; 3]) -> bool {
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREY3: [f32; 3] = [GREY, GREY, GREY];
 
-fn clip(s: &Session, id: u64) -> &filmcraft_project::TrackItem {
+fn clip(s: &Session, id: u64) -> &filmagic_project::TrackItem {
     s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1
 }
 
@@ -130,7 +130,7 @@ fn a_cut_out_leaves_a_hole_in_the_original() {
     let layer = r["layer"].as_u64().unwrap();
     assert_eq!(r["cutOut"]["clip"].as_u64(), Some(c));
     let hole = &clip(&s, c).effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
-    assert_eq!((hole.mode, hole.inverted), (filmcraft_project::MaskMode::Subtract, false), "a hole takes away from what is there");
+    assert_eq!((hole.mode, hole.inverted), (filmagic_project::MaskMode::Subtract, false), "a hole takes away from what is there");
     // together they are the whole picture again
     assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 200, 90), GREY3));
     // the layer off: the original has a hole where the ellipse was
@@ -154,7 +154,7 @@ fn regions_take_points_and_refuse_nonsense() {
         // a sound clip to refuse
         let dir = tmp_dir("layers-sound");
         let wav = dir.join("a.wav");
-        std::fs::write(&wav, filmcraft_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
+        std::fs::write(&wav, filmagic_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
         let item = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
         let id = s.execute("timeline.place", json!({"item": item, "track": "A1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -195,7 +195,7 @@ fn regions_take_points_and_refuse_nonsense() {
                 match id {
                     "layers.retime" => p["speed"] = json!(50),
                     "layers.adjust" => p["effect"] = json!("black_white"),
-                    "layers.lift" | "layers.cleanPlate" => p["path"] = json!(std::env::temp_dir().join("filmcraft-never-written.png").to_string_lossy()),
+                    "layers.lift" | "layers.cleanPlate" => p["path"] = json!(std::env::temp_dir().join("filmagic-never-written.png").to_string_lossy()),
                     _ => {}
                 }
                 p
@@ -203,7 +203,7 @@ fn regions_take_points_and_refuse_nonsense() {
             .collect();
         refuses(&mut s, id, &cases);
     }
-    assert!(!std::env::temp_dir().join("filmcraft-never-written.png").exists());
+    assert!(!std::env::temp_dir().join("filmagic-never-written.png").exists());
     // a locked track is left alone
     s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
     assert!(s.active_sequence().unwrap().video_tracks[0].locked);
@@ -435,7 +435,7 @@ fn a_region_plays_at_its_own_speed() {
         .unwrap();
     let l = clip(&s, r["layer"].as_u64().unwrap());
     assert_eq!((l.speed, l.duration, r["untilShotEnd"].as_bool()), (2.0, Tick(clip(&s, c).duration.0 / 2), Some(false)));
-    assert_eq!(l.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
+    assert_eq!(l.time_interpolation, filmagic_project::TimeInterpolation::FrameBlending);
     let region = json!({"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0});
     refuses(
         &mut s,
@@ -725,7 +725,7 @@ fn a_second_cut_out_does_not_fill_the_first() {
     let b = s.execute("layers.extract", json!({"clip": c, "region": right, "feather": 0, "cutOut": true})).unwrap()["layer"].as_u64().unwrap();
     // The second layer is a copy of the clip as it was, hole and all: its region is kept out of what is left.
     let masks = &clip(&s, b).effects.iter().find(|e| e.effect == "opacity").unwrap().masks;
-    assert_eq!(masks.iter().map(|m| m.mode).collect::<Vec<_>>(), [filmcraft_project::MaskMode::Subtract, filmcraft_project::MaskMode::Intersect]);
+    assert_eq!(masks.iter().map(|m| m.mode).collect::<Vec<_>>(), [filmagic_project::MaskMode::Subtract, filmagic_project::MaskMode::Intersect]);
     assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 300, 90), GREY3) && is(px(&s, 0, 160, 90), GREY3), "together they are the picture");
     s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
     assert_eq!(px(&s, 0, 40, 90)[3], 0.0, "the first hole is still a hole");
@@ -1044,7 +1044,7 @@ fn relight_leaves_a_regions_own_grade_alone() {
     let outside_before = px(&s, 30, 300, 170);
     let r = s.execute("color.relight", json!({"clip": c, "time": "22:00", "lightStrength": 0})).unwrap();
     assert!(r["warnings"].as_array().unwrap().is_empty(), "nothing over the whole picture was replaced: {r}");
-    let grades: Vec<&filmcraft_project::EffectInstance> = clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").collect();
+    let grades: Vec<&filmagic_project::EffectInstance> = clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").collect();
     assert_eq!(grades.len(), 2, "the region's grade, and the shot's");
     let (masked, whole) = (grades.iter().find(|e| !e.masks.is_empty()).unwrap(), grades.iter().find(|e| e.masks.is_empty()).unwrap());
     assert_eq!(masked.params["exposure"].value, ParamValue::Float(1.0), "the region keeps its own grade");
@@ -1143,7 +1143,7 @@ fn follow_block(s: &mut Session, layer: u64) {
     assert_eq!(clip(s, layer).effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0].path.keyframes.len(), 2);
 }
 
-fn motion(s: &Session, id: u64) -> &filmcraft_project::EffectInstance {
+fn motion(s: &Session, id: u64) -> &filmagic_project::EffectInstance {
     clip(s, id).effect("motion").unwrap()
 }
 
@@ -1242,7 +1242,7 @@ fn a_layer_keeps_the_anchor_it_is_given_and_moves_by_an_offset() {
     // an offset moves the subject from where it is, here 30 px right and 40 px up, at the same size
     let r = s.execute("layers.transform", json!({"layer": layer, "offset": [30, -40]})).unwrap();
     assert_eq!((r["scale"].as_f64(), r["keyframes"].as_u64(), &r["offset"]), (Some(100.0), Some(0), &json!([30.0, -40.0])), "{r}");
-    assert_eq!(motion(&s, layer).params["position"].value, ParamValue::Vec2(filmcraft_geom::Vec2::new(190.0, 50.0)));
+    assert_eq!(motion(&s, layer).params["position"].value, ParamValue::Vec2(filmagic_geom::Vec2::new(190.0, 50.0)));
     assert_eq!(red_rows(&s, 0, 70).0, 39, "the layer's block, 40 px higher");
     assert_eq!(red_rows(&s, 0, 40), BLOCK_ROWS, "the shot's own block still stands under it");
     assert!(r["warnings"][0].as_str().unwrap().contains("no plate"), "moved off the place it stood: {r}");
@@ -1304,9 +1304,9 @@ fn transform_holds_the_anchor_through_the_layers_own_motion() {
     s.execute("effects.setParam", json!({"clip": layer, "effect": "motion", "param": "rotation", "value": 90.0})).unwrap();
     // the mask's bounds as the frame shows them: (left, right, bottom)
     let seen = |s: &Session| {
-        let m = filmcraft_render::motion_matrix(s.active_sequence().unwrap(), clip(s, layer), (320, 180), None, Tick::ZERO);
+        let m = filmagic_render::motion_matrix(s.active_sequence().unwrap(), clip(s, layer), (320, 180), None, Tick::ZERO);
         let mask = &clip(s, layer).effect("opacity").unwrap().masks[0];
-        let pts: Vec<filmcraft_geom::Vec2> = mask.path_at(Tick::ZERO).vertices.iter().map(|v| m.apply(v.p)).collect();
+        let pts: Vec<filmagic_geom::Vec2> = mask.path_at(Tick::ZERO).vertices.iter().map(|v| m.apply(v.p)).collect();
         let (left, right) = pts.iter().fold((f64::MAX, f64::MIN), |b, p| (b.0.min(p.x), b.1.max(p.x)));
         (left, right, pts.iter().fold(f64::MIN, |b, p| b.max(p.y)))
     };
@@ -1328,7 +1328,7 @@ fn transform_refuses_what_it_cannot_do() {
     let sound = {
         let dir = tmp_dir("layers-transform-sound");
         let wav = dir.join("a.wav");
-        std::fs::write(&wav, filmcraft_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
+        std::fs::write(&wav, filmagic_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
         let item = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
         let id = s.execute("timeline.place", json!({"item": item, "track": "A1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -1394,11 +1394,11 @@ fn transform_refuses_what_it_cannot_do() {
     s.execute("edit.undo", json!({})).unwrap();
     // a mask path that is not numbers, or has no points, gives an error and not a layer placed at NaN
     let broken = s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}})).unwrap()["layer"].as_u64().unwrap();
-    let v = filmcraft_geom::Vec2::new;
+    let v = filmagic_geom::Vec2::new;
     for points in [vec![v(0.0, 0.0), v(10.0, f64::INFINITY), v(0.0, 10.0)], vec![v(f64::NAN, 0.0), v(10.0, 0.0), v(0.0, 10.0)], Vec::new()] {
         s.edit_sequence("Break Mask", |q, _, _| {
             let m = &mut q.find_item_mut(ClipId(broken)).unwrap().1.effect_mut("opacity").unwrap().masks[0];
-            m.path.value = ParamValue::Path(filmcraft_project::MaskPath::polygon(&points));
+            m.path.value = ParamValue::Path(filmagic_project::MaskPath::polygon(&points));
             Ok(())
         })
         .unwrap();
@@ -1429,14 +1429,14 @@ fn transform_refuses_what_it_cannot_do() {
 
 /// Where the bottom centre of a layer's first opacity mask is in the frame at sequence frame
 /// `frame`, through the layer's own Motion: its picture's size and pixel shape, and its own clock.
-fn feet(s: &Session, layer: u64, frame: i64) -> filmcraft_geom::Vec2 {
+fn feet(s: &Session, layer: u64, frame: i64) -> filmagic_geom::Vec2 {
     let it = clip(s, layer);
     let t = it.effect_time_at(s.sequence_rate().tick_of(frame));
-    let size = filmcraft_render::source_size(&s.project, it.item).unwrap();
-    let m = filmcraft_render::motion_matrix(s.active_sequence().unwrap(), it, size, filmcraft_render::source_par(&s.project, it.item), t);
-    let pts: Vec<filmcraft_geom::Vec2> = it.effect("opacity").unwrap().masks[0].path_at(t).vertices.iter().map(|v| m.apply(v.p)).collect();
+    let size = filmagic_render::source_size(&s.project, it.item).unwrap();
+    let m = filmagic_render::motion_matrix(s.active_sequence().unwrap(), it, size, filmagic_render::source_par(&s.project, it.item), t);
+    let pts: Vec<filmagic_geom::Vec2> = it.effect("opacity").unwrap().masks[0].path_at(t).vertices.iter().map(|v| m.apply(v.p)).collect();
     let (left, right) = pts.iter().fold((f64::MAX, f64::MIN), |b, p| (b.0.min(p.x), b.1.max(p.x)));
-    filmcraft_geom::Vec2::new((left + right) / 2.0, pts.iter().fold(f64::MIN, |b, p| b.max(p.y)))
+    filmagic_geom::Vec2::new((left + right) / 2.0, pts.iter().fold(f64::MIN, |b, p| b.max(p.y)))
 }
 
 /// The frames of the sequence a clip is on screen for.
@@ -1448,11 +1448,11 @@ fn frames_of(s: &Session, id: u64) -> std::ops::Range<i64> {
 /// Transform `layer` with `p` and return how far its feet strayed, at worst, over every frame it
 /// is on screen for from where they were plus `offset`.
 fn strays(s: &mut Session, layer: u64, mut p: Value, offset: (f64, f64)) -> (f64, Value) {
-    let stood: Vec<filmcraft_geom::Vec2> = frames_of(s, layer).map(|f| feet(s, layer, f)).collect();
+    let stood: Vec<filmagic_geom::Vec2> = frames_of(s, layer).map(|f| feet(s, layer, f)).collect();
     p["layer"] = json!(layer);
     let r = s.execute("layers.transform", p).unwrap();
     let worst =
-        frames_of(s, layer).zip(stood).map(|(f, was)| (feet(s, layer, f) - was - filmcraft_geom::Vec2::new(offset.0, offset.1)).length()).fold(0.0, f64::max);
+        frames_of(s, layer).zip(stood).map(|(f, was)| (feet(s, layer, f) - was - filmagic_geom::Vec2::new(offset.0, offset.1)).length()).fold(0.0, f64::max);
     (worst, r)
 }
 
@@ -1484,7 +1484,7 @@ fn a_layer_that_turns_keeps_its_feet_between_the_keyframes_too() {
     key(&mut s, layer, "position", 47, json!([360.0, 60.0]));
     s.edit_sequence("Ease", |q, _, _| {
         let pos = q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("motion").unwrap().params.get_mut("position").unwrap();
-        pos.keyframes.iter_mut().for_each(|k| k.interp = filmcraft_project::Interpolation::Bezier);
+        pos.keyframes.iter_mut().for_each(|k| k.interp = filmagic_project::Interpolation::Bezier);
         Ok(())
     })
     .unwrap();
@@ -1526,10 +1526,10 @@ fn a_path_that_is_held_holds_the_layer_too() {
     // a box, then a triangle 240 px on: with another number of points the path does not move from one to the other, it jumps
     let last = s.sequence_rate().tick_of(47);
     s.edit_sequence("Key Mask", |q, _, _| {
-        let v = filmcraft_geom::Vec2::new;
+        let v = filmagic_geom::Vec2::new;
         let m = &mut q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("opacity").unwrap().masks[0];
-        m.path.put_keyframe(Tick::ZERO, ParamValue::Path(filmcraft_project::MaskPath::rect(10.0, 63.0, 70.0, 101.25)));
-        m.path.put_keyframe(last, ParamValue::Path(filmcraft_project::MaskPath::polygon(&[v(250.0, 101.25), v(310.0, 101.25), v(280.0, 63.0)])));
+        m.path.put_keyframe(Tick::ZERO, ParamValue::Path(filmagic_project::MaskPath::rect(10.0, 63.0, 70.0, 101.25)));
+        m.path.put_keyframe(last, ParamValue::Path(filmagic_project::MaskPath::polygon(&[v(250.0, 101.25), v(310.0, 101.25), v(280.0, 63.0)])));
         Ok(())
     })
     .unwrap();
@@ -1537,11 +1537,11 @@ fn a_path_that_is_held_holds_the_layer_too() {
     let (worst, r) = strays(&mut s, layer, json!({"scale": 150}), (0.0, 0.0));
     assert!(worst < 1e-6, "{worst} px off at worst: {r}");
     let keys = &motion(&s, layer).params["position"].keyframes;
-    assert_eq!((keys.len(), keys[0].interp), (2, filmcraft_project::Interpolation::Hold));
+    assert_eq!((keys.len(), keys[0].interp), (2, filmagic_project::Interpolation::Hold));
     // and again: the position is still the path's, two keyframes and a hold
     let (worst, r) = strays(&mut s, layer, json!({"scale": 80}), (0.0, 0.0));
     assert!(worst < 1e-6 && r["keyframes"].as_u64() == Some(2), "{worst}: {r}");
-    assert_eq!(motion(&s, layer).params["position"].keyframes[0].interp, filmcraft_project::Interpolation::Hold);
+    assert_eq!(motion(&s, layer).params["position"].keyframes[0].interp, filmagic_project::Interpolation::Hold);
 }
 
 #[test]
@@ -1576,7 +1576,7 @@ fn transform_reads_the_clips_own_picture_size_and_shape() {
     let width = |f: i64| {
         let it = clip(&s, layer);
         let t = it.effect_time_at(s.sequence_rate().tick_of(f));
-        let m = filmcraft_render::motion_matrix(s.active_sequence().unwrap(), it, (320, 180), None, t);
+        let m = filmagic_render::motion_matrix(s.active_sequence().unwrap(), it, (320, 180), None, t);
         let xs: Vec<f64> = it.effect("opacity").unwrap().masks[0].path_at(t).vertices.iter().map(|v| m.apply(v.p).x).collect();
         xs.iter().copied().fold(f64::MIN, f64::max) - xs.iter().copied().fold(f64::MAX, f64::min)
     };
@@ -1602,7 +1602,7 @@ fn transform_keeps_to_the_clips_own_clock() {
     s.edit_sequence("Key Mask", |q, _, _| {
         let m = &mut q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("opacity").unwrap().masks[0];
         for f in [24, 47] {
-            m.path.put_keyframe(rate.tick_of(f), ParamValue::Path(filmcraft_project::MaskPath::rect(block_x(f) - 30.0, 63.0, block_x(f) + 30.0, 101.25)));
+            m.path.put_keyframe(rate.tick_of(f), ParamValue::Path(filmagic_project::MaskPath::rect(block_x(f) - 30.0, 63.0, block_x(f) + 30.0, 101.25)));
         }
         Ok(())
     })
@@ -1701,7 +1701,7 @@ fn a_position_never_set_is_no_change_to_leave_alone() {
     // a position that is still "auto": the middle of the frame
     s.edit_sequence("Auto", |q, _, _| {
         let m = q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("motion").unwrap();
-        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(f64::NAN, f64::NAN))));
+        m.params.insert("position".into(), filmagic_project::Param::new(ParamValue::Vec2(filmagic_geom::Vec2::new(f64::NAN, f64::NAN))));
         Ok(())
     })
     .unwrap();
@@ -1713,5 +1713,5 @@ fn a_position_never_set_is_no_change_to_leave_alone() {
     // moved, it is a position like any other
     let r = s.execute("layers.transform", json!({"layer": layer, "offset": [10, 0]})).unwrap();
     assert_eq!((r["changed"].as_bool(), s.history.undo.len()), (Some(true), undo + 1), "{r}");
-    assert_eq!(motion(&s, layer).params["position"].value, ParamValue::Vec2(filmcraft_geom::Vec2::new(170.0, 90.0)));
+    assert_eq!(motion(&s, layer).params["position"].value, ParamValue::Vec2(filmagic_geom::Vec2::new(170.0, 90.0)));
 }

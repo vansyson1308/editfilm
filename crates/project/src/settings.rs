@@ -1,10 +1,23 @@
 use super::{Deserialize, Serialize, TICKS_PER_SECOND, Tick};
 
+/// The renderer names FilmCraft saves in a project, and the names of the same renderers here.
+const FILMCRAFT_RENDERERS: [(&str, &str); 2] =
+    [("FilmCraft GPU Acceleration (wgpu)", "Filmagic GPU Acceleration (wgpu)"), ("FilmCraft Software Only (CPU)", "Filmagic Software Only (CPU)")];
+
+/// Reads a project's renderer, taking a name FilmCraft saved as this app's name for the same renderer.
+/// Without it a project set to Software Only there would open here as an unknown name, which the
+/// editor treats as the GPU renderer.
+fn renderer_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let name = String::deserialize(d)?;
+    Ok(FILMCRAFT_RENDERERS.iter().find(|(theirs, _)| *theirs == name).map_or(name, |(_, ours)| (*ours).to_string()))
+}
+
 /// Project-level settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
+    #[serde(deserialize_with = "renderer_name")]
     pub renderer: String,
-    pub video_display: filmcraft_time::TimeDisplay,
+    pub video_display: filmagic_time::TimeDisplay,
     pub audio_display_samples: bool,
     /// Kept for file compatibility; the editor uses Settings ▸ Timeline (user preferences) for
     /// still and transition default durations, as Premiere does.
@@ -19,7 +32,7 @@ pub struct ProjectSettings {
     pub title_safe: (f64, f64),
     #[serde(default = "action_safe_default")]
     pub action_safe: (f64, f64),
-    /// Project Settings ▸ General ▸ Capture Format (`DV` or `HDV`; informational, FilmCraft has no
+    /// Project Settings ▸ General ▸ Capture Format (`DV` or `HDV`; informational, Filmagic has no
     /// tape capture). Schema v11.
     #[serde(default = "capture_format_default")]
     pub capture_format: String,
@@ -84,8 +97,8 @@ pub enum IngestAction {
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
-            renderer: "FilmCraft GPU Acceleration (wgpu)".into(),
-            video_display: filmcraft_time::TimeDisplay::Timecode,
+            renderer: "Filmagic GPU Acceleration (wgpu)".into(),
+            video_display: filmagic_time::TimeDisplay::Timecode,
             audio_display_samples: true,
             default_still_duration: Tick(5 * TICKS_PER_SECOND),
             default_transition_duration_frames: 24,

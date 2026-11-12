@@ -3,10 +3,10 @@
 //! Premiere's behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{DemoScene, Generator, MediaSource};
-use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, ClipId, Label, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackId, TrackKind};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{DemoScene, Generator, MediaSource};
+use filmagic_project::{Caption, CaptionFormat, CaptionTrack, ClipId, Label, MediaClip, MediaRef, ParamValue, SequenceSettings, TrackId, TrackKind};
+use filmagic_time::{FrameRate, TICKS_PER_SECOND, TimeRange};
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
@@ -196,7 +196,7 @@ fn opacity_and_effects_on_a_nest_apply_to_its_whole_picture() {
     // a crop on the nest cuts its picture like any clip's
     let c = r.clip(outer, nest);
     c.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(100.0);
-    let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+    let mut crop = filmagic_project::effect::find_effect("crop").unwrap().instance();
     crop.params.get_mut("left").unwrap().value = ParamValue::Float(50.0);
     c.effects.push(crop);
     let img = r.frame(outer, Tick(1000));
@@ -330,7 +330,7 @@ fn a_nest_that_is_not_plain_is_still_drawn_right() {
             r.clip(outer, nest).effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
         }),
         ("nest with an effect", |r, _, outer, nest| {
-            let mut crop = filmcraft_project::effect::find_effect("crop").unwrap().instance();
+            let mut crop = filmagic_project::effect::find_effect("crop").unwrap().instance();
             crop.params.get_mut("left").unwrap().value = ParamValue::Float(30.0);
             r.clip(outer, nest).effects.push(crop);
         }),
@@ -369,10 +369,10 @@ fn transformed_plain_nests_preserve_the_group_picture() {
         let (inner, outer, nest) = two_layer_nest(&mut r);
         let sequence = r.p.sequence(inner).unwrap();
         let child = sequence.video_tracks[0].items[0].id;
-        let position = filmcraft_geom::Vec2::new(sequence.settings.width as f64 * 0.75, sequence.settings.height as f64 * 0.5);
+        let position = filmagic_geom::Vec2::new(sequence.settings.width as f64 * 0.75, sequence.settings.height as f64 * 0.5);
         r.clip(inner, child).effect_mut("motion").unwrap().param_mut("position").unwrap().value = ParamValue::Vec2(position);
         let motion = r.clip(outer, nest).effect_mut("motion").unwrap();
-        motion.param_mut("position").unwrap().value = ParamValue::Vec2(filmcraft_geom::Vec2::new(175.0, 75.0));
+        motion.param_mut("position").unwrap().value = ParamValue::Vec2(filmagic_geom::Vec2::new(175.0, 75.0));
         motion.param_mut("scale").unwrap().value = ParamValue::Float(scale);
         motion.param_mut("rotation").unwrap().value = ParamValue::Float(rotation);
         for preview in [1.0, 0.5] {
@@ -424,7 +424,7 @@ fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
     }
     let s = r.seq("S", 4096, 16, FrameRate::FPS_24);
     let c = r.put(s, m, 10);
-    let mut e = filmcraft_project::find_effect("median").unwrap().instance();
+    let mut e = filmagic_project::find_effect("median").unwrap().instance();
     e.params.get_mut("radius").unwrap().value = ParamValue::Float(1.0);
     r.clip(s, c).effects.push(e);
     let t = std::time::Instant::now();
@@ -437,7 +437,7 @@ fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
 /// A 24 fps movie whose frame `k` is one flat grey, a step brighter than frame `k - 1`. It counts
 /// the frames it hands out.
 struct Steps {
-    info: filmcraft_media::MediaInfo,
+    info: filmagic_media::MediaInfo,
     fetched: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -449,17 +449,17 @@ impl Steps {
 }
 
 impl MediaSource for Steps {
-    fn info(&self) -> &filmcraft_media::MediaInfo {
+    fn info(&self) -> &filmagic_media::MediaInfo {
         &self.info
     }
-    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+    fn video_frame(&self, req: FrameRequest) -> filmagic_media::Result<Arc<VideoFrame>> {
         self.fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (w, h) = self.info.video.as_ref().map_or((1, 1), |v| (v.width, v.height));
         let v = Steps::code(FrameRate::FPS_24.frame_at(req.time));
         Ok(Arc::new(VideoFrame::rgba8(w, h, [v, v, v, 255].repeat((w * h) as usize))))
     }
-    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
-        Ok(filmcraft_frame::AudioBuffer::silence(sample_rate, 2, frames))
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmagic_media::Result<filmagic_frame::AudioBuffer> {
+        Ok(filmagic_frame::AudioBuffer::silence(sample_rate, 2, frames))
     }
 }
 
@@ -480,7 +480,7 @@ fn slowed_steps(r: &mut Rig) -> (ItemId, ItemId, ClipId, Arc<std::sync::atomic::
 
 #[test]
 fn frame_blending_on_a_slowed_nest_mixes_the_two_neighbouring_frames_of_its_sequence() {
-    use filmcraft_project::TimeInterpolation;
+    use filmagic_project::TimeInterpolation;
     let mut r = Rig::new();
     let (inner, outer, nest, _) = slowed_steps(&mut r);
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
@@ -543,13 +543,13 @@ fn frame_blending_mixes_whole_frames_of_a_nest_that_animates_between_them() {
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
     let inside = r.p.sequence(inner).unwrap().video_tracks[0].items[0].id;
     let opacity = r.clip(inner, inside).effect_mut("opacity").unwrap().param_mut("opacity").unwrap();
-    let key = |t: Tick, v: f64| filmcraft_project::Keyframe::new(t, ParamValue::Float(v));
+    let key = |t: Tick, v: f64| filmagic_project::Keyframe::new(t, ParamValue::Float(v));
     opacity.keyframes = vec![key(f(1), 100.0), key(Tick(f(1).0 * 5 / 4), 40.0), key(f(2), 40.0)];
     let alpha = |img: &Image| img.get(32, 18)[3];
     let (one, two) = (alpha(&r.frame(inner, f(1))), alpha(&r.frame(inner, f(2))));
     assert!((one - 1.0).abs() < 1e-3 && (two - 0.4).abs() < 1e-3, "the nest fades: {one} {two}");
     assert!((alpha(&r.frame(inner, Tick(f(1).0 * 4 / 3))) - 0.4).abs() < 1e-3, "and has faded a third of a frame in");
-    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    r.clip(outer, nest).time_interpolation = filmagic_project::TimeInterpolation::FrameBlending;
     for (n, want) in [(4, 0.8), (5, 0.6)] {
         let got = alpha(&r.frame(outer, f(n)));
         assert!((got - want).abs() < 2e-3, "frame {n}: {got} for {want}, between {one} and {two}");
@@ -566,7 +566,7 @@ fn a_reversed_blended_nest_renders_one_picture_on_a_frame_of_its_sequence() {
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
     let grey = |img: &Image| img.get(32, 18)[0];
     let c = r.clip(outer, nest);
-    c.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    c.time_interpolation = filmagic_project::TimeInterpolation::FrameBlending;
     c.reverse = true;
     let fifteen = grey(&r.frame(inner, f(15)));
     let count = |r: &Rig, n: i64| {
@@ -589,7 +589,7 @@ fn a_reversed_blended_nest_renders_one_picture_on_a_frame_of_its_sequence() {
 
 #[test]
 fn frame_blending_on_a_nest_follows_its_speed_and_its_frame_rate() {
-    use filmcraft_project::TimeInterpolation;
+    use filmagic_project::TimeInterpolation;
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
     let grey = |img: &Image| img.get(32, 18)[0];
     // 150 %: programme frame 1 shows the nest 1½ frames in
@@ -628,7 +628,7 @@ fn a_blended_nest_too_deep_to_render_twice_shows_the_frame_of_frame_sampling() {
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
     let grey = |img: &Image| img.get(32, 18)[0];
     let (one, two) = (grey(&r.frame(inner, f(1))), grey(&r.frame(inner, f(2))));
-    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    r.clip(outer, nest).time_interpolation = filmagic_project::TimeInterpolation::FrameBlending;
     let at = |depth: u32| {
         fetched.store(0, std::sync::atomic::Ordering::Relaxed);
         let img = render_sequence(&r.p, outer, f(4), RenderOptions { depth, ..Default::default() }, &r.map);
@@ -651,7 +651,7 @@ fn blended_nests_in_a_sequence_that_contains_itself_stay_bounded() {
     let rate = FrameRate::FPS_24;
     let mut own = r.p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
     own.speed = 1.0 / 3.0;
-    own.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    own.time_interpolation = filmagic_project::TimeInterpolation::FrameBlending;
     // a third of a frame in, so that frames 0 and 1 both fall between two frames of the nest
     own.source_in = Tick(rate.tick_of(1).0 / 3);
     own.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
@@ -675,11 +675,11 @@ fn frame_blending_on_a_slowed_multicam_clip_mixes_two_frames_of_its_angle() {
     let f = |n: i64| rate.tick_of(n);
     let grey = |img: &Image| img.get(32, 18)[0];
     let c = r.clip(outer, nest);
-    c.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 0 });
+    c.multicam = Some(filmagic_project::MulticamSel { enabled: true, angle: 0 });
     let (one, two) = (grey(&r.frame(outer, f(3))), grey(&r.frame(outer, f(6))));
     assert!(two - one > 0.01 && two < 0.5, "the angle's frames 1 and 2: {one} {two}");
     assert!((grey(&r.frame(outer, f(4))) - one).abs() < 1e-4, "frame sampling repeats frame 1");
-    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    r.clip(outer, nest).time_interpolation = filmagic_project::TimeInterpolation::FrameBlending;
     let got = r.frame(outer, f(4));
     assert!((grey(&got) - (one + (two - one) / 3.0)).abs() < 2e-3, "{} between {one} and {two}", grey(&got));
     assert!(worst(&r.planned(outer, f(4)), &got) < 1e-3, "the plan differs");

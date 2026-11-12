@@ -7,15 +7,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use filmcraft_export::{ExportSettings, Exporter, Format, FrameRenderer, GpuRendering, Progress, Step, export, gpu_render_stats, register_frame_renderer};
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{Generator, MediaSource};
-use filmcraft_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
-use filmcraft_render::{Image, RenderOptions, SourceMap, SourceProvider};
-use filmcraft_time::{FrameRate, Tick, TimeRange};
+use filmagic_export::{ExportSettings, Exporter, Format, FrameRenderer, GpuRendering, Progress, Step, export, gpu_render_stats, register_frame_renderer};
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{Generator, MediaSource};
+use filmagic_project::{ItemId, ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+use filmagic_render::{Image, RenderOptions, SourceMap, SourceProvider};
+use filmagic_time::{FrameRate, Tick, TimeRange};
 use rayon::prelude::*;
 
-const CHILD: &str = "FILMCRAFT_RENDERER_REENTRANCY_CASE";
+const CHILD: &str = "FILMAGIC_RENDERER_REENTRANCY_CASE";
 const FRAMES: i64 = 6;
 static CREATED: AtomicUsize = AtomicUsize::new(0);
 static RENDERED: AtomicUsize = AtomicUsize::new(0);
@@ -30,11 +30,11 @@ impl FrameRenderer for YieldingRenderer {
         let checksum: usize = (0..4096usize).into_par_iter().map(|x| x ^ 37).sum();
         assert!(checksum > 0);
         RENDERED.fetch_add(1, Ordering::Relaxed);
-        Some(filmcraft_render::render_sequence(project, seq, t, opts, sources))
+        Some(filmagic_render::render_sequence(project, seq, t, opts, sources))
     }
 
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
-        filmcraft_render::plan::DeviceCaps::ALL
+    fn caps(&self) -> filmagic_render::plan::DeviceCaps {
+        filmagic_render::plan::DeviceCaps::ALL
     }
 }
 

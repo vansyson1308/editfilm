@@ -1,6 +1,6 @@
 [package]
-name = "filmcraft-ui-egui"
-description = "The FilmCraft egui frontend (swappable): panels, docking, timeline, monitors, control channel"
+name = "filmagic-ui-egui"
+description = "The Filmagic egui frontend (swappable): panels, docking, timeline, monitors, control channel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,22 +11,22 @@ workspace = true
 
 [dependencies]
 craft-ui = { workspace = true }
-filmcraft-time = { workspace = true }
-filmcraft-geom = { workspace = true }
-filmcraft-color = { workspace = true }
-filmcraft-frame = { workspace = true }
-filmcraft-media = { workspace = true }
-filmcraft-project = { workspace = true }
-filmcraft-tts = { workspace = true }
-filmcraft-edit = { workspace = true }
-filmcraft-render = { workspace = true }
-filmcraft-text = { workspace = true }
-filmcraft-captions = { workspace = true }
-filmcraft-audio-dsp = { workspace = true }
-filmcraft-engine = { workspace = true }
-filmcraft-export = { workspace = true }
-filmcraft-gpu = { workspace = true }
-filmcraft-scopes = { workspace = true }
+filmagic-time = { workspace = true }
+filmagic-geom = { workspace = true }
+filmagic-color = { workspace = true }
+filmagic-frame = { workspace = true }
+filmagic-media = { workspace = true }
+filmagic-project = { workspace = true }
+filmagic-tts = { workspace = true }
+filmagic-edit = { workspace = true }
+filmagic-render = { workspace = true }
+filmagic-text = { workspace = true }
+filmagic-captions = { workspace = true }
+filmagic-audio-dsp = { workspace = true }
+filmagic-engine = { workspace = true }
+filmagic-export = { workspace = true }
+filmagic-gpu = { workspace = true }
+filmagic-scopes = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "clipboard"] }
@@ -37,7 +37,7 @@ rayon = { workspace = true }
 web-time = "1"
 # Unicode Bidirectional Algorithm for Arabic and Hebrew captions in reading order (MIT OR Apache-2.0).
 unicode-bidi = "0.3.18"
-# ArtCraft wordmark (PNG) for the About dialog and Home screen.
+# PNG: an image pasted from the clipboard is written out as a PNG file.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Thread/process CPU clocks for frame-job profiling (safe wrappers; see frames.rs).
@@ -49,12 +49,12 @@ cpu-time = "1"
 
 [dev-dependencies]
 pollster = "1"
-filmcraft-audio-dsp = { workspace = true, features = ["test-util"] }
-filmcraft-codecs = { workspace = true }
+filmagic-audio-dsp = { workspace = true, features = ["test-util"] }
+filmagic-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)
-filmcraft-platform = { workspace = true }
-filmcraft-interchange = { workspace = true }
+filmagic-platform = { workspace = true }
+filmagic-interchange = { workspace = true }
 # A dependency's dev-dependencies do not propagate through egui_kittest: name the fonts this
 # test root needs explicitly so glyph and accessibility assertions run against the bundled faces.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }

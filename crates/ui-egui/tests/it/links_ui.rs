@@ -1,20 +1,20 @@
-//! Headless UI test of the community links: Help menu commands, the header Discord button, the
-//! About dialog and the Home (Import) screen.
+//! Headless UI test of the project links: Help menu commands, the About dialog and the Home
+//! (Import) screen. None of them leaves for the upstream project's community.
 //!
-//! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
+//! Set `FILMAGIC_UI_SNAPSHOT_DIR=<dir>` to also render the window offscreen with wgpu and write
 //! `links-*.png` there; without it no GPU is needed.
 
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::links;
+use filmagic_engine::Session;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
+use filmagic_ui_egui::links;
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     snapshots: Option<std::path::PathBuf>,
 }
@@ -24,8 +24,8 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let app = FilmagicApp::new(session).with_control(rx);
+        let snapshots = std::env::var_os("FILMAGIC_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
@@ -90,16 +90,21 @@ fn community_links_everywhere() {
     for (id, label, _) in links::ALL {
         assert!(text.contains(id) && text.contains(label), "Help menu lists {id}");
     }
-    // Header: the Discord button is always there.
-    assert_eq!(d.ids("header.discord"), vec!["header.discord".to_string()]);
+    // No command, menu entry or button sends a Filmagic user to the upstream project's channels.
+    for gone in ["help.discord", "help.website", "help.appPage"] {
+        assert!(!text.contains(gone), "{gone} is still in the Help menu");
+    }
+    assert!(!text.contains("discord.gg") && !text.contains("getartcraft"), "an upstream address in the menus");
+    assert!(d.ids("header.discord").is_empty(), "the header has no community button");
     d.snapshot("header");
-    // About dialog: Discord first, then website, app page, GitHub, issues.
+    // About dialog: the repository, then its issues.
     d.ok("engine.execute", json!({"command": "app.about", "params": {}}));
     d.frames(3);
     let about = d.ids("about.");
-    for id in ["about.discord", "about.website", "about.appPage", "about.github", "about.reportIssue"] {
+    for id in ["about.github", "about.reportIssue"] {
         assert!(about.iter().any(|a| a == id), "{id} in {about:?}");
     }
+    assert!(!about.iter().any(|a| a == "about.discord" || a == "about.website" || a == "about.appPage"), "{about:?}");
     d.snapshot("about");
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(3);
@@ -108,8 +113,9 @@ fn community_links_everywhere() {
     d.ok("engine.execute", json!({"command": "mode.import", "params": {}}));
     d.frames(3);
     let home = d.ids("import.link.");
-    for id in ["import.link.discord", "import.link.website", "import.link.appPage", "import.link.github"] {
+    for id in ["import.link.github", "import.link.reportIssue"] {
         assert!(home.iter().any(|a| a == id), "{id} in {home:?}");
     }
+    assert_eq!(home.len(), 2, "{home:?}");
     d.snapshot("home");
 }

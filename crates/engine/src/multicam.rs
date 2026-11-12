@@ -27,14 +27,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use filmcraft_edit as edit;
-use filmcraft_edit::EditCtx;
-use filmcraft_edit::multicam::Cut;
-use filmcraft_project::{
+use filmagic_edit as edit;
+use filmagic_edit::EditCtx;
+use filmagic_edit::multicam::Cut;
+use filmagic_project::{
     BinEntry, Camera, ClipId, ItemId, ItemKind, Label, MergedClip, MulticamAudio, MulticamSel, MulticamSource, Project, Sequence, SequenceSettings, Track,
     TrackId, TrackItem, TrackKind, resolve_auto_points,
 };
-use filmcraft_time::{FrameRate, Tick, TimeRange};
+use filmagic_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -124,8 +124,8 @@ impl MulticamView {
         }
     }
     /// The grid page for `shown` angles.
-    pub fn page_layout(&self, shown: usize) -> filmcraft_render::multicam::PageLayout {
-        filmcraft_render::multicam::page_layout(shown, self.layout, self.page)
+    pub fn page_layout(&self, shown: usize) -> filmagic_render::multicam::PageLayout {
+        filmagic_render::multicam::page_layout(shown, self.layout, self.page)
     }
 }
 
@@ -514,7 +514,7 @@ fn settings_for(s: &Session, item: ItemId) -> SequenceSettings {
     st
 }
 
-fn processed_bin(p: &mut Project) -> filmcraft_project::BinId {
+fn processed_bin(p: &mut Project) -> filmagic_project::BinId {
     if let Some(b) = p.root.children.iter().find_map(|c| match c {
         BinEntry::Bin(b) if b.name == "Processed Clips" => Some(b.id),
         _ => None,
@@ -1132,7 +1132,7 @@ fn set_page(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => v.as_u64().ok_or_else(|| bad("multicam.page", "`page` is a 0-based number, \"next\" or \"prev\""))? as usize,
         None => return Err(bad("multicam.page", "need `page`")),
     };
-    let l = filmcraft_render::multicam::page_layout(n, s.state.multicam_view.layout, page);
+    let l = filmagic_render::multicam::page_layout(n, s.state.multicam_view.layout, page);
     s.state.multicam_view.page = l.page;
     Ok(json!({"page": l.page, "pages": l.pages}))
 }
@@ -1192,7 +1192,7 @@ fn grid_info(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(px) = p.get("cellPixels").and_then(Value::as_f64) {
         let playing = bool_p(p, "playing").unwrap_or(false);
         let pb = p.get("playbackScale").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-        out["cellScale"] = json!(filmcraft_render::multicam::grid_cell_scale(q.settings.width, px as f32, pb, playing, v.auto_quality, l.per_page));
+        out["cellScale"] = json!(filmagic_render::multicam::grid_cell_scale(q.settings.width, px as f32, pb, playing, v.auto_quality, l.per_page));
     }
     Ok(out)
 }

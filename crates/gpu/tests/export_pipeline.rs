@@ -1,47 +1,47 @@
-//! End-to-end GPU export parity: the registered `filmcraft-gpu` frame renderer drives the full
-//! export pipeline (`filmcraft_export::export` → PNG sequence) and its frames must match the
+//! End-to-end GPU export parity: the registered `filmagic-gpu` frame renderer drives the full
+//! export pipeline (`filmagic_export::export` → PNG sequence) and its frames must match the
 //! `GpuRendering::Off` (CPU reference) frames within the GPU-vs-CPU parity tolerance — p99 of the
 //! per-pixel max RGB difference over black ≤ 6 and mean < 1.5 (the golden-test criterion).
 
-use filmcraft_export::{ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, Progress, export, register_frame_renderer};
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{Generator, MediaSource};
-use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
-use filmcraft_render::SourceMap;
-use filmcraft_time::{TICKS_PER_SECOND, TimeRange};
+use filmagic_export::{ExportSettings, Format, FrameRenderer, GpuRenderStats, GpuRendering, Progress, export, register_frame_renderer};
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{Generator, MediaSource};
+use filmagic_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+use filmagic_render::SourceMap;
+use filmagic_time::{TICKS_PER_SECOND, TimeRange};
 use std::sync::Arc;
 
-/// The same wrapper the app and CLI register: `filmcraft-gpu`'s renderer behind
-/// `filmcraft_export`'s trait.
-struct GpuFrameRenderer(filmcraft_gpu::ExportRenderer);
+/// The same wrapper the app and CLI register: `filmagic-gpu`'s renderer behind
+/// `filmagic_export`'s trait.
+struct GpuFrameRenderer(filmagic_gpu::ExportRenderer);
 
 impl FrameRenderer for GpuFrameRenderer {
     fn render(
         &mut self,
-        project: &filmcraft_project::Project,
-        seq: filmcraft_project::ItemId,
-        t: filmcraft_time::Tick,
-        opts: filmcraft_render::RenderOptions,
-        sources: &dyn filmcraft_render::SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
+        project: &filmagic_project::Project,
+        seq: filmagic_project::ItemId,
+        t: filmagic_time::Tick,
+        opts: filmagic_render::RenderOptions,
+        sources: &dyn filmagic_render::SourceProvider,
+    ) -> Option<filmagic_render::Image> {
         self.0.render(project, seq, t, opts, sources)
     }
 
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+    fn caps(&self) -> filmagic_render::plan::DeviceCaps {
         self.0.caps()
     }
 }
 
 /// The colour matte on V1, and with `adjusted` an adjustment layer over it on V2 (Proc Amp and
 /// Gaussian Blur, opaque, Normal, full frame: the kind the GPU runs as a `PlanStep::Adjust`).
-fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_project::Project>, filmcraft_project::ItemId, SourceMap) {
-    let mut p = filmcraft_project::Project::new("x");
+fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmagic_project::Project>, filmagic_project::ItemId, SourceMap) {
+    let mut p = filmagic_project::Project::new("x");
     let g = GeneratorSource::new(
         Generator::ColorMatte { color: [0.2, 0.5, 0.9, 1.0] },
         320,
         180,
-        filmcraft_time::FrameRate::FPS_24,
-        filmcraft_time::Tick(2 * TICKS_PER_SECOND),
+        filmagic_time::FrameRate::FPS_24,
+        filmagic_time::Tick(2 * TICKS_PER_SECOND),
     );
     let info = g.info().clone();
     let red = p.add_item(
@@ -61,25 +61,25 @@ fn project_with(width: u32, height: u32, adjusted: bool) -> (Arc<filmcraft_proje
         None,
     );
     let tracks = if adjusted { 2 } else { 1 };
-    let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: filmcraft_time::FrameRate::FPS_24, ..Default::default() }, tracks, 1, None);
+    let seq = p.new_sequence("s", SequenceSettings { width, height, frame_rate: filmagic_time::FrameRate::FPS_24, ..Default::default() }, tracks, 1, None);
     let v = p
         .make_track_item(
             red,
             TrackKind::Video,
-            filmcraft_time::Tick::ZERO,
-            TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)),
-            filmcraft_time::FrameRate::FPS_24,
+            filmagic_time::Tick::ZERO,
+            TimeRange::new(filmagic_time::Tick::ZERO, filmagic_time::FrameRate::FPS_24.tick_of(2)),
+            filmagic_time::FrameRate::FPS_24,
         )
         .unwrap();
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
     if adjusted {
-        let rate = filmcraft_time::FrameRate::FPS_24;
+        let rate = filmagic_time::FrameRate::FPS_24;
         let a = p.add_item("Adjustment Layer", Label::Lavender, ItemKind::AdjustmentLayer { width, height, rate, duration: rate.tick_of(2) }, None);
         let mut ti =
-            p.make_track_item(a, TrackKind::Video, filmcraft_time::Tick::ZERO, TimeRange::new(filmcraft_time::Tick::ZERO, rate.tick_of(2)), rate).unwrap();
+            p.make_track_item(a, TrackKind::Video, filmagic_time::Tick::ZERO, TimeRange::new(filmagic_time::Tick::ZERO, rate.tick_of(2)), rate).unwrap();
         for (id, param, v) in [("proc_amp", "brightness", 25.0), ("gaussian_blur", "blurriness", 6.0)] {
-            let mut e = filmcraft_project::find_effect(id).unwrap().instance();
-            e.param_mut(param).unwrap().value = filmcraft_project::ParamValue::Float(v);
+            let mut e = filmagic_project::find_effect(id).unwrap().instance();
+            e.param_mut(param).unwrap().value = filmagic_project::ParamValue::Float(v);
             ti.effects.insert(0, e);
         }
         p.sequence_mut(seq).unwrap().video_tracks[1].items.push(ti);
@@ -106,7 +106,7 @@ fn export_project_png(dir: &str, gpu: GpuRendering, (w, h): (u32, u32), adjusted
         path: std::env::temp_dir().join(format!("fc-gpu-export-{dir}")).to_string_lossy().into_owned(),
         ..Default::default()
     };
-    s.range = Some(TimeRange::new(filmcraft_time::Tick::ZERO, filmcraft_time::FrameRate::FPS_24.tick_of(2)));
+    s.range = Some(TimeRange::new(filmagic_time::Tick::ZERO, filmagic_time::FrameRate::FPS_24.tick_of(2)));
     s.gpu_rendering = gpu;
     export(&p, seq, &s, &m, &Progress::default()).unwrap();
 }
@@ -133,7 +133,7 @@ fn assert_parity(cpu_png: &[u8], gpu_png: &[u8], what: &str) {
 
 #[test]
 fn gpu_export_matches_cpu_and_counts() {
-    let Some(_) = filmcraft_gpu::ExportRenderer::new() else {
+    let Some(_) = filmagic_gpu::ExportRenderer::new() else {
         eprintln!("SKIPPED (gpu export pipeline): no adapter");
         return;
     };
@@ -142,7 +142,7 @@ fn gpu_export_matches_cpu_and_counts() {
     export_png("off-auto", GpuRendering::Auto, (320, 180));
     assert_eq!(png("off-cpu", "img000.png"), png("off-auto", "img000.png"), "Auto with no registered renderer must be byte-equal to Off");
 
-    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmcraft_gpu::ExportRenderer::new().expect("adapter present")))));
+    register_frame_renderer(|| Some(Box::new(GpuFrameRenderer(filmagic_gpu::ExportRenderer::new().expect("adapter present")))));
     let sizes = [(320u32, 180u32), (17, 13), (1, 1), (257, 129)];
     for (i, size) in sizes.into_iter().enumerate() {
         export_png("cpu", GpuRendering::Off, size);
@@ -152,20 +152,20 @@ fn gpu_export_matches_cpu_and_counts() {
         }
         let _ = i;
     }
-    let GpuRenderStats { frames, .. } = filmcraft_export::gpu_render_stats();
+    let GpuRenderStats { frames, .. } = filmagic_export::gpu_render_stats();
     assert!(frames >= 8, "gpu frames counted across the parity exports: {frames}");
 
     // An adjustment layer is composited by the GPU too (a `PlanStep::Adjust`), not handed to the
     // CPU renderer, and matches the CPU export.
-    let composited = filmcraft_gpu::export_renderer::timing::get().frames;
-    let GpuRenderStats { fallbacks, .. } = filmcraft_export::gpu_render_stats();
+    let composited = filmagic_gpu::export_renderer::timing::get().frames;
+    let GpuRenderStats { fallbacks, .. } = filmagic_export::gpu_render_stats();
     export_project_png("adj-cpu", GpuRendering::Off, (320, 180), true);
     export_project_png("adj-gpu", GpuRendering::Auto, (320, 180), true);
     for f in ["000", "001"] {
         assert_parity(&png("adj-cpu", &format!("img{f}.png")), &png("adj-gpu", &format!("img{f}.png")), &format!("adjustment layer frame {f}"));
     }
     assert_ne!(png("adj-cpu", "img000.png"), png("off-cpu", "img000.png"), "the adjustment layer changes the picture");
-    let gpu = filmcraft_gpu::export_renderer::timing::get().frames - composited;
+    let gpu = filmagic_gpu::export_renderer::timing::get().frames - composited;
     assert_eq!(gpu, 2, "both frames with the adjustment layer composited on the GPU");
-    assert_eq!(filmcraft_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
+    assert_eq!(filmagic_export::gpu_render_stats().fallbacks, fallbacks, "no frame with the adjustment layer fell back to the CPU");
 }

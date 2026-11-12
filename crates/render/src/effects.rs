@@ -1,14 +1,14 @@
-//! CPU reference implementations of the video effects in `filmcraft_project::effect`.
+//! CPU reference implementations of the video effects in `filmagic_project::effect`.
 //!
 //! Effects operate in place on a layer [`Image`] (premultiplied linear f32). Spatial parameters are
 //! authored in full-resolution clip pixels; `FxCtx::px_scale` converts them to the working image
 //! (so ½/¼ playback resolution renders the same look). Colour-grading math runs on display-encoded
 //! straight colour where artists expect it (contrast, levels, posterize), linear light elsewhere.
 
-use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl, srgb_to_linear};
-use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{EffectInstance, ParamValue};
-use filmcraft_time::Tick;
+use filmagic_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl, srgb_to_linear};
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::{EffectInstance, ParamValue};
+use filmagic_time::Tick;
 use rayon::prelude::*;
 
 use crate::image::Image;
@@ -28,15 +28,15 @@ pub struct FxCtx<'a> {
     pub timecode: &'a str,
     pub clip_name: &'a str,
     /// The project (LUT library for Color Grading); `None` in isolated effect tests.
-    pub project: Option<&'a filmcraft_project::Project>,
+    pub project: Option<&'a filmagic_project::Project>,
     /// The clip's surroundings (other frames, other tracks, sequence geometry) for temporal,
     /// track-reading and reframing effects; `None` in isolated tests and adjustment layers.
     pub env: Option<&'a dyn crate::vfx::FxEnv>,
     /// Sequence frame rate (shutter-angle motion blur); also known where `env` is `None`.
     pub frame_rate: f64,
     /// The sequence's working colour space: Color Grading grades HDR (PQ / HLG) working spaces in their
-    /// own signal, normalised to HDR White ([`filmcraft_color::GradeSpace`]).
-    pub working: filmcraft_color::WorkingSpace,
+    /// own signal, normalised to HDR White ([`filmagic_color::GradeSpace`]).
+    pub working: filmagic_color::WorkingSpace,
 }
 
 pub(crate) fn f(e: &EffectInstance, id: &str, cx: &FxCtx) -> f32 {
@@ -569,7 +569,7 @@ pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f
 pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let ultra = e.effect == "ultra_key";
     let kc = if ultra { color(e, "key_color", cx) } else { color(e, "color", cx) };
-    let kycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
+    let kycc = filmagic_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmagic_color::Matrix::Bt709);
     let (tol, soft, spill, output) = if ultra {
         let tol = 0.05 + f(e, "tolerance", cx) / 100.0 * 0.25 + f(e, "transparency", cx) / 100.0 * 0.05;
         (tol, 0.05 + f(e, "soften", cx) / 100.0 * 0.2 + f(e, "pedestal", cx) / 100.0 * 0.05, f(e, "spill", cx) / 100.0, choice(e, "output"))
@@ -588,7 +588,7 @@ pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             return;
         }
         let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
-        let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+        let ycc = filmagic_color::rgb_to_ycbcr(c[0], c[1], c[2], filmagic_color::Matrix::Bt709);
         let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
         let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
         let mut o = c;
@@ -955,7 +955,7 @@ mod tests {
     }
 
     use super::*;
-    use filmcraft_project::find_effect;
+    use filmagic_project::find_effect;
 
     fn cx() -> FxCtx<'static> {
         FxCtx {
@@ -968,14 +968,14 @@ mod tests {
             project: None,
             env: None,
             frame_rate: 24.0,
-            working: filmcraft_color::WorkingSpace::Rec709,
+            working: filmagic_color::WorkingSpace::Rec709,
         }
     }
 
     #[test]
     fn every_effect_runs_and_stays_finite() {
-        for def in filmcraft_project::effect_defs() {
-            if def.kind != filmcraft_project::EffectKind::Video || def.intrinsic {
+        for def in filmagic_project::effect_defs() {
+            if def.kind != filmagic_project::EffectKind::Video || def.intrinsic {
                 continue;
             }
             let mut img = Image::filled(24, 16, [0.2, 0.4, 0.1, 1.0]);
@@ -983,7 +983,7 @@ mod tests {
             // push params away from identity so code paths run
             for (id, p) in e.params.iter_mut() {
                 if let ParamValue::Float(v) = &mut p.value
-                    && let Some(filmcraft_project::ParamKind::Float { soft_max, .. }) = def.param(id).map(|d| &d.kind)
+                    && let Some(filmagic_project::ParamKind::Float { soft_max, .. }) = def.param(id).map(|d| &d.kind)
                 {
                     *v = (*v + soft_max * 0.3).min(*soft_max);
                 }
@@ -1195,7 +1195,7 @@ mod tests {
     #[test]
     fn luma_vs_sat_highlight_point_leaves_shadows_saturated() {
         let mut e = find_effect("lumetri").unwrap().instance();
-        e.params.get_mut("luma_vs_sat").unwrap().value = filmcraft_project::ParamValue::Curve(vec![[0.5, 0.5], [0.9, 0.0]]);
+        e.params.get_mut("luma_vs_sat").unwrap().value = filmagic_project::ParamValue::Curve(vec![[0.5, 0.5], [0.9, 0.0]]);
         let dark_red = [0.02, 0.0005, 0.0005, 1.0];
         let mut img = Image::filled(1, 1, dark_red);
         apply(&mut img, &e, &cx());
@@ -1633,8 +1633,8 @@ mod curve_tests {
 mod lumetri_cpu_parity_tests {
     use super::*;
     use crate::gpufx::FxOp;
-    use filmcraft_project::{EffectInstance, ParamValue, find_effect};
-    use filmcraft_time::Tick;
+    use filmagic_project::{EffectInstance, ParamValue, find_effect};
+    use filmagic_time::Tick;
 
     fn test_picture(w: usize, h: usize) -> Image {
         let mut px = Vec::with_capacity(w * h * 4);
@@ -1648,8 +1648,8 @@ mod lumetri_cpu_parity_tests {
                     2 => [fy, fy, fy],
                     3 => [1.6 * fy, 1.2 * fy, 0.3],
                     _ => {
-                        let rgb = filmcraft_color::hsl_to_rgb(fx, 0.25 + 0.75 * ((y % 5) as f32 / 4.0), 0.1 + 0.8 * fy);
-                        rgb.map(filmcraft_color::srgb_to_linear)
+                        let rgb = filmagic_color::hsl_to_rgb(fx, 0.25 + 0.75 * ((y % 5) as f32 / 4.0), 0.1 + 0.8 * fy);
+                        rgb.map(filmagic_color::srgb_to_linear)
                     }
                 };
                 let a = match y % 7 {
@@ -1780,7 +1780,7 @@ mod lumetri_cpu_parity_tests {
             project: None,
             env: None,
             frame_rate: 24.0,
-            working: filmcraft_color::WorkingSpace::Rec709,
+            working: filmagic_color::WorkingSpace::Rec709,
         };
 
         for (name, params) in cases {
@@ -1821,7 +1821,7 @@ mod lumetri_cpu_parity_tests {
             project: None,
             env: None,
             frame_rate: 24.0,
-            working: filmcraft_color::WorkingSpace::Rec709,
+            working: filmagic_color::WorkingSpace::Rec709,
         };
         let render = |roundness: f64| {
             let e = effect(&[

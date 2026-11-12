@@ -71,7 +71,7 @@ fn export_without_wait_says_where_to_poll() {
 #[test]
 fn an_export_does_not_read_the_monitors_source() {
     let movie = crate::media_test_util::tmp_dir("export-own-source").join("a.mp4");
-    crate::media_test_util::make_movie(&movie, filmcraft_media::DemoScene::Dunes, 64, 36, 12);
+    crate::media_test_util::make_movie(&movie, filmagic_media::DemoScene::Dunes, 64, 36, 12);
     let (mut s, items, seq) = crate::media_test_util::session_with(&[&movie]);
     s.media.clear();
     let dir = Scratch::new("own-source");
@@ -87,7 +87,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let d = filmcraft_testkit::workspace_root().join("target").join("export-tests").join(format!("engine-{name}-{}", std::process::id()));
+        let d = filmagic_testkit::workspace_root().join("target").join("export-tests").join(format!("engine-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Scratch(d)
@@ -112,13 +112,13 @@ fn demo() -> Session {
 #[test]
 fn single_frame_in_out_warning_follows_the_selected_range() {
     let mut s = demo();
-    for rate in [filmcraft_time::FrameRate::FPS_25, filmcraft_time::FrameRate::FPS_23_976] {
+    for rate in [filmagic_time::FrameRate::FPS_25, filmagic_time::FrameRate::FPS_23_976] {
         let seq = s.state.active_sequence.unwrap();
         std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = rate;
         s.execute("markers.markIn", json!({"frame": 12})).unwrap();
         s.execute("markers.markOut", json!({"frame": 12})).unwrap();
         std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().work_area =
-            Some(filmcraft_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
+            Some(filmagic_time::TimeRange::new(rate.tick_of(12), rate.frame_duration()));
         for p in [json!({}), json!({"range":null}), json!({"range":"inOut"}), json!({"range":{"mode":"Sequence In/Out"}})] {
             let v = s.execute("export.resolve", p.clone()).unwrap();
             assert_eq!(v["frames"], 1, "{p}: {v}");
@@ -272,7 +272,7 @@ fn nested_camel_case_settings_are_honoured() {
 }
 
 fn probe(path: &str) -> Option<Value> {
-    let ffprobe = filmcraft_testkit::ffprobe_or_skip("export presets")?;
+    let ffprobe = filmagic_testkit::ffprobe_or_skip("export presets")?;
     let out = std::process::Command::new(ffprobe).args(["-v", "error", "-of", "json", "-show_format", "-show_streams", path]).output().unwrap();
     assert!(out.status.success(), "{path}: {}", String::from_utf8_lossy(&out.stderr));
     Some(serde_json::from_slice(&out.stdout).unwrap())
@@ -340,7 +340,7 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
 
 fn verify_builtin_preset(session: &mut Session, directory: &Scratch, preset: &Value, start: f64, end: f64) {
     let name = preset["name"].as_str().unwrap();
-    let subdirectory = directory.0.join(format!("p{}", filmcraft_export::presets::preset_key(name)));
+    let subdirectory = directory.0.join(format!("p{}", filmagic_export::presets::preset_key(name)));
     std::fs::create_dir_all(&subdirectory).unwrap();
     let path = subdirectory.join("Demo").to_string_lossy().to_string();
     let params = json!({"preset": name, "path": path, "range": "custom", "startSeconds": start, "endSeconds": end, "wait": true});
@@ -604,7 +604,7 @@ fn h264_presets_hit_their_bitrates() {
         ("YouTube 1080p Full HD", 16_000.0, 20.0 / 16.0),
         ("Vimeo 1080p Full HD", 18_000.0, 24.0 / 18.0),
     ] {
-        let path = dir.path(&format!("{}.mp4", filmcraft_export::presets::preset_key(preset)));
+        let path = dir.path(&format!("{}.mp4", filmagic_export::presets::preset_key(preset)));
         s.execute(
             "file.exportMedia",
             json!({"preset": preset, "path": path, "range": "custom", "startSeconds": 0.5, "endSeconds": 1.5, "audio": false, "wait": true}),
@@ -809,7 +809,7 @@ fn jobs_and_queue_items_report_the_time_they_have_left() {
 
 #[test]
 fn hardware_encoding_is_off_unless_asked_for() {
-    use filmcraft_export::HardwareEncoding::{Auto, Off};
+    use filmagic_export::HardwareEncoding::{Auto, Off};
     let s = demo();
     let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.hardware_encoding);
     assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), Off);
@@ -823,7 +823,7 @@ fn hardware_encoding_is_off_unless_asked_for() {
     assert!(e.contains("off | auto"), "{e}");
     // and it travels in the settings object, with the default filling in when it is missing
     assert_eq!(setting(json!({"path": "x.mp4", "settings": {"hardwareEncoding": "auto"}})).unwrap(), Auto);
-    let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
+    let old: filmagic_export::ExportSettings = serde_json::from_value(json!({"format": "h264"})).unwrap();
     assert_eq!(old.hardware_encoding, Off);
 }
 
@@ -831,9 +831,9 @@ fn hardware_encoding_is_off_unless_asked_for() {
 /// whose bitrate adapts to the frame size (every Match Source preset).
 #[test]
 fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
-    use filmcraft_export::ExportSettings;
-    use filmcraft_export::presets::DEFAULT_PRESET;
-    use filmcraft_time::FrameRate;
+    use filmagic_export::ExportSettings;
+    use filmagic_export::presets::DEFAULT_PRESET;
+    use filmagic_time::FrameRate;
     let s = demo();
     let settings = |p: &Value| crate::export_tools::settings_from_params(&s, p, "file.exportMedia").map(|(_, st)| st).unwrap();
     let target = |st: &ExportSettings| st.resolve(720, 480, FrameRate::FPS_29_97, 48_000).target_kbps;
@@ -856,7 +856,7 @@ fn settings_bitrate_replaces_a_presets_adaptive_bitrate() {
 
 #[test]
 fn crf_param_picks_constant_quality() {
-    use filmcraft_export::BitrateMode::{Cbr, Crf, Vbr1Pass};
+    use filmagic_export::BitrateMode::{Cbr, Crf, Vbr1Pass};
     let s = demo();
     let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| (st.bitrate_mode, st.crf));
     assert_eq!(setting(json!({"path": "x.mp4"})).unwrap(), (Vbr1Pass, 23.0));
@@ -870,7 +870,7 @@ fn crf_param_picks_constant_quality() {
 
 #[test]
 fn exr_compression_param_is_parsed_and_defaults_to_none() {
-    use filmcraft_export::ExrCompression::{None as Plain, Rle, Zip, Zips};
+    use filmagic_export::ExrCompression::{None as Plain, Rle, Zip, Zips};
     let s = demo();
     let setting = |p: Value| crate::export_tools::settings_from_params(&s, &p, "file.exportMedia").map(|(_, st)| st.exr_compression);
     assert_eq!(setting(json!({"path": "x.exr", "format": "exr"})).unwrap(), Plain);
@@ -879,7 +879,7 @@ fn exr_compression_param_is_parsed_and_defaults_to_none() {
     }
     let e = setting(json!({"path": "x.exr", "format": "exr", "exrCompression": "piz"})).unwrap_err().to_string();
     assert!(e.contains("none | rle | zips | zip"), "{e}");
-    let old: filmcraft_export::ExportSettings = serde_json::from_value(json!({"format": "exr"})).unwrap();
+    let old: filmagic_export::ExportSettings = serde_json::from_value(json!({"format": "exr"})).unwrap();
     assert_eq!(old.exr_compression, Plain);
 }
 
@@ -937,7 +937,7 @@ fn quick_export_uses_and_remembers_a_preset() {
     let mut s = demo();
     let dir = Scratch::new("quick");
     let r = s.execute("export.quick", json!({"path": dir.path("quick"), "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "wait": true})).unwrap();
-    assert_eq!(r["preset"], filmcraft_export::presets::DEFAULT_PRESET);
+    assert_eq!(r["preset"], filmagic_export::presets::DEFAULT_PRESET);
     assert_eq!(r["path"], dir.path("quick.mp4"));
     assert!(Path::new(&dir.path("quick.mp4")).exists());
     s.execute(
@@ -980,8 +980,8 @@ fn ranges_resolve_and_sidecar_captions_are_written() {
     let srt = std::fs::read_to_string(dir.path("cap.srt")).unwrap();
     // Timed from In at 1 s (the caption starts on frame 35), clipped to the export duration.
     let resolved = s.execute("export.resolve", json!({"preset": "Waveform Audio 48 kHz 16-bit"})).unwrap();
-    let duration = filmcraft_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
-    let timing = format!("00:00:00,460 --> {}", filmcraft_captions::format_clock(duration, ','));
+    let duration = filmagic_time::Tick(resolved["range"]["duration"].as_i64().unwrap());
+    let timing = format!("00:00:00,460 --> {}", filmagic_captions::format_clock(duration, ','));
     assert!(srt.contains("Hello sidecar") && srt.contains(&timing), "{srt}");
     s.execute("file.exportMedia", json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "captionSidecar": "vtt", "wait": true})).unwrap();
     assert!(std::fs::read_to_string(dir.path("cap.vtt")).unwrap().starts_with("WEBVTT"));
@@ -1032,9 +1032,9 @@ fn caption_sidecars_keep_only_the_exported_interval() {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use filmcraft_captions::{Document, Format};
-    use filmcraft_media::MediaSource;
-    use filmcraft_time::{TICKS_PER_SECOND, Tick};
+    use filmagic_captions::{Document, Format};
+    use filmagic_media::MediaSource;
+    use filmagic_time::{TICKS_PER_SECOND, Tick};
 
     #[derive(Default)]
     struct MemoryFiles(Mutex<BTreeMap<String, Vec<u8>>>);
@@ -1071,10 +1071,10 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         assert_eq!(result["result"]["path"], "output.wav");
         assert!(result["result"]["bytes"].as_u64().is_some_and(|n| n > 0), "{result}");
         let wav = files.0.lock().unwrap().get("output.wav").unwrap().clone();
-        let audio = filmcraft_media::wav::WavSource::parse("output.wav", wav.into()).unwrap();
+        let audio = filmagic_media::wav::WavSource::parse("output.wav", wav.into()).unwrap();
         assert_eq!(audio.info().duration, duration, "exported audio duration");
         let bytes = files.0.lock().unwrap().get(&format!("output.{ext}")).unwrap().clone();
-        let doc = filmcraft_captions::parse(&bytes, format).unwrap();
+        let doc = filmagic_captions::parse(&bytes, format).unwrap();
         assert!(doc.warnings.is_empty(), "{doc:?}");
         doc
     }
@@ -1113,7 +1113,7 @@ fn caption_sidecars_keep_only_the_exported_interval() {
         // A standalone caption export still exports the whole track even with sequence In/Out set.
         let path = format!("standalone.{}", format.extension());
         s.execute("captions.export", json!({"path":path})).unwrap();
-        let standalone = filmcraft_captions::parse(files.0.lock().unwrap().get(&path).unwrap(), format).unwrap();
+        let standalone = filmagic_captions::parse(files.0.lock().unwrap().get(&path).unwrap(), format).unwrap();
         assert_eq!(standalone, all);
     }
     assert_eq!(serde_json::to_value(&s.project).unwrap(), original, "export must not trim the project captions");

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use filmcraft_project::{ItemId, ItemKind, MediaRef, Param, ParamValue, TrackKind};
-use filmcraft_time::FrameRate;
+use filmagic_project::{ItemId, ItemKind, MediaRef, Param, ParamValue, TrackKind};
+use filmagic_time::FrameRate;
 use serde_json::json;
 
 use crate::Session;
@@ -14,8 +14,8 @@ fn setup(name: &str) -> (Session, Vec<ItemId>, ItemId, std::path::PathBuf) {
     let dir = tmp_dir(name);
     let a = dir.join("a.mov");
     let b = dir.join("b.mov");
-    make_movie(&a, filmcraft_media::DemoScene::Aurora, 64, 36, 48);
-    make_movie(&b, filmcraft_media::DemoScene::Plasma, 64, 36, 48);
+    make_movie(&a, filmagic_media::DemoScene::Aurora, 64, 36, 48);
+    make_movie(&b, filmagic_media::DemoScene::Plasma, 64, 36, 48);
     let (mut s, items, seq) = session_with(&[&a, &b]);
     // trim both clips so handles exist: A plays media 12..36, B 6..30
     let rate = FrameRate::FPS_24;
@@ -89,18 +89,18 @@ fn aaf_embedded_trimmed_audio_round_trips_sample_exact() {
 
 #[test]
 fn embedded_aaf_and_omf_import_leave_existing_media_files_intact() {
-    for (format, extension) in [(filmcraft_interchange::Format::Aaf, "aaf"), (filmcraft_interchange::Format::Omf, "omf")] {
+    for (format, extension) in [(filmagic_interchange::Format::Aaf, "aaf"), (filmagic_interchange::Format::Omf, "omf")] {
         let (mut s, _items, seq, dir) = setup(&format!("embedded-collision-{extension}"));
         let path = dir.join(format!("cut.{extension}"));
         let path_text = path.to_string_lossy().into_owned();
-        let command = if format == filmcraft_interchange::Format::Aaf { "file.exportAaf" } else { "file.exportOmf" };
+        let command = if format == filmagic_interchange::Format::Aaf { "file.exportAaf" } else { "file.exportOmf" };
         s.execute(command, json!({"path": path_text, "audio": "embedded", "sequence": seq.0})).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let opts = filmcraft_interchange::ImportOptions { base_dir: Some(dir.to_string_lossy().into_owned()), name: Some("cut".into()), ..Default::default() };
-        let (_, extracted, _) = if format == filmcraft_interchange::Format::Aaf {
-            filmcraft_interchange::aaf::import(&bytes, &opts).unwrap()
+        let opts = filmagic_interchange::ImportOptions { base_dir: Some(dir.to_string_lossy().into_owned()), name: Some("cut".into()), ..Default::default() };
+        let (_, extracted, _) = if format == filmagic_interchange::Format::Aaf {
+            filmagic_interchange::aaf::import(&bytes, &opts).unwrap()
         } else {
-            filmcraft_interchange::omf::import(&bytes, &opts).unwrap()
+            filmagic_interchange::omf::import(&bytes, &opts).unwrap()
         };
         let first = extracted.first().expect("embedded audio");
         let original = b"ORIGINAL USER DATA";
@@ -145,7 +145,7 @@ fn aaf_separate_aiff_breakout_and_linked() {
     assert_eq!(files.len(), 4, "two media × two channels: {r}");
     for f in &files {
         let b = std::fs::read(f).unwrap();
-        let (pcm, ch, sr, bits) = filmcraft_interchange::wav::parse_aiff(&b).unwrap();
+        let (pcm, ch, sr, bits) = filmagic_interchange::wav::parse_aiff(&b).unwrap();
         assert_eq!((ch, sr, bits), (1, 48_000, 24));
         assert_eq!(pcm.len(), 24 * 2000 * 3, "one second of mono 24-bit audio (no handles)");
     }
@@ -154,7 +154,7 @@ fn aaf_separate_aiff_breakout_and_linked() {
     let q = s.project.sequence(n).unwrap();
     let mono: Vec<_> = q.audio_tracks.iter().filter(|t| !t.items.is_empty()).collect();
     assert_eq!(mono.len(), 2);
-    assert!(mono.iter().all(|t| t.channels == filmcraft_project::AudioChannels::Mono));
+    assert!(mono.iter().all(|t| t.channels == filmagic_project::AudioChannels::Mono));
 
     // Avid-style consolidated OP-Atom MXF audio: our MXF reader opens every file
     let path = dir.join("mxf.aaf").to_string_lossy().into_owned();
@@ -163,9 +163,9 @@ fn aaf_separate_aiff_breakout_and_linked() {
     assert_eq!(files.len(), 4);
     for f in &files {
         let b = std::fs::read(f).unwrap();
-        let m = filmcraft_mxf::open(&b).unwrap();
+        let m = filmagic_mxf::open(&b).unwrap();
         assert_eq!(m.operational_pattern.name(), "OP-Atom");
-        let t = m.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
+        let t = m.track_of_kind(filmagic_mxf::TrackKind::Sound).unwrap();
         assert_eq!(m.tracks[t].stored_sample_frames(), 48_000);
     }
     let r = s.execute("file.importAaf", json!({"path": path})).unwrap();
@@ -375,7 +375,7 @@ fn bit_depth_as_a_string_or_a_number_and_nothing_else() {
         let files = r["mediaFiles"].as_array().unwrap();
         assert!(!files.is_empty(), "{r}");
         for f in files {
-            let (_, _, _, bits) = filmcraft_interchange::wav::parse_aiff(&std::fs::read(f.as_str().unwrap()).unwrap()).unwrap();
+            let (_, _, _, bits) = filmagic_interchange::wav::parse_aiff(&std::fs::read(f.as_str().unwrap()).unwrap()).unwrap();
             assert_eq!(bits, 24, "{cmd} with bitDepth {depth}");
         }
     }
@@ -391,10 +391,10 @@ fn bit_depth_as_a_string_or_a_number_and_nothing_else() {
 // Selected-stream essence uses only PR361 schema13 placement and decoder fields.
 mod selected_streams {
     use crate::{Services, Session};
-    use filmcraft_frame::{AudioBuffer, VideoFrame};
-    use filmcraft_media::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
-    use filmcraft_project::{ClipId, ItemId, ItemKind, Label, MediaClip, MediaRef, SequenceSettings};
-    use filmcraft_time::{FrameRate, Tick};
+    use filmagic_frame::{AudioBuffer, VideoFrame};
+    use filmagic_media::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource};
+    use filmagic_project::{ClipId, ItemId, ItemKind, Label, MediaClip, MediaRef, SequenceSettings};
+    use filmagic_time::{FrameRate, Tick};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -407,8 +407,8 @@ mod selected_streams {
 
     impl Tones {
         fn new(streams: usize) -> Self {
-            let source = filmcraft_media::generators::GeneratorSource::new(
-                filmcraft_media::Generator::BarsAndTone,
+            let source = filmagic_media::generators::GeneratorSource::new(
+                filmagic_media::Generator::BarsAndTone,
                 32,
                 18,
                 FrameRate::FPS_24,
@@ -432,13 +432,13 @@ mod selected_streams {
         fn info(&self) -> &MediaInfo {
             &self.info
         }
-        fn video_frame(&self, _: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        fn video_frame(&self, _: FrameRequest) -> filmagic_media::Result<Arc<VideoFrame>> {
             Err(MediaError::NoStream("video"))
         }
-        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        fn audio(&self, start: i64, frames: usize, sample_rate: u32) -> filmagic_media::Result<AudioBuffer> {
             self.audio_stream(0, start, frames, sample_rate)
         }
-        fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<AudioBuffer> {
+        fn audio_stream(&self, stream: usize, start: i64, frames: usize, sample_rate: u32) -> filmagic_media::Result<AudioBuffer> {
             if stream >= self.info.audio_streams.len() {
                 return Err(MediaError::NoStream("audio"));
             }
@@ -515,7 +515,7 @@ mod selected_streams {
     #[test]
     fn aaf_essence_distinguishes_streams_and_linked_refusal_precedes_writes() {
         use crate::aaf_omf::{AudioMode, AudioPlan};
-        use filmcraft_interchange::essence::{EssenceData, EssenceKey, NestNeeds};
+        use filmagic_interchange::essence::{EssenceData, EssenceKey, NestNeeds};
         let (mut s, item, sequence, calls, files) = fixture();
         place(&mut s, item, 0.0);
         let plan = AudioPlan {
@@ -543,18 +543,18 @@ mod selected_streams {
                 assert_eq!(actual, expected);
             }
         }
-        let options = filmcraft_interchange::aaf::AafOptions {
-            media: filmcraft_interchange::essence::MediaOptions { essence: essences, ..Default::default() },
+        let options = filmagic_interchange::aaf::AafOptions {
+            media: filmagic_interchange::essence::MediaOptions { essence: essences, ..Default::default() },
             ..Default::default()
         };
-        let (aaf, _) = filmcraft_interchange::aaf::export(&s.project, sequence, &options).unwrap();
-        let omf_options = filmcraft_interchange::omf::OmfOptions { media: options.media.clone(), ..Default::default() };
-        let (omf, _) = filmcraft_interchange::omf::export(&s.project, sequence, &omf_options).unwrap();
+        let (aaf, _) = filmagic_interchange::aaf::export(&s.project, sequence, &options).unwrap();
+        let omf_options = filmagic_interchange::omf::OmfOptions { media: options.media.clone(), ..Default::default() };
+        let (omf, _) = filmagic_interchange::omf::export(&s.project, sequence, &omf_options).unwrap();
         for (kind, document) in [("AAF", aaf), ("OMF", omf)] {
             let (imported, extracted, _) = if kind == "AAF" {
-                filmcraft_interchange::aaf::import(&document, &Default::default()).unwrap()
+                filmagic_interchange::aaf::import(&document, &Default::default()).unwrap()
             } else {
-                filmcraft_interchange::omf::import(&document, &Default::default()).unwrap()
+                filmagic_interchange::omf::import(&document, &Default::default()).unwrap()
             };
             assert_eq!(extracted.len(), 3, "{kind}: composition memo must retain distinct selected-stream essence");
             let tracks = &imported.project.sequence(imported.sequences[0]).unwrap().audio_tracks;

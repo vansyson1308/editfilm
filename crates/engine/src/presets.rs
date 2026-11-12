@@ -20,9 +20,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{ClipId, EffectInstance, Keyframe, Mask, MaskPath, Param, ParamValue, TrackItem, TrackKind};
-use filmcraft_time::{TICKS_PER_SECOND, Tick};
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::{ClipId, EffectInstance, Keyframe, Mask, MaskPath, Param, ParamValue, TrackItem, TrackKind};
+use filmagic_time::{TICKS_PER_SECOND, Tick};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,7 +31,7 @@ use crate::{EngineError, Result, Session};
 
 pub const FILE_FORMAT: &str = "filmcraft.effect-presets";
 const LIBRARY_FILE: &str = "effect-presets.json";
-/// Premiere `.prfpset` (and FilmCraft `.json`) files dropped in this folder are detected and
+/// Premiere `.prfpset` (and Filmagic `.json`) files dropped in this folder are detected and
 /// loaded automatically on start-up (and by `presets.scan`).
 pub const LIBRARY_DIR: &str = "Effect Presets";
 const LIBRARY_INDEX: &str = "effect-preset-library.json";
@@ -121,7 +121,7 @@ pub struct ScanReport {
     pub imported: usize,
     /// Library presets removed because their file disappeared or changed.
     pub removed: usize,
-    /// Presets inside those files that FilmCraft cannot apply (third-party plugins).
+    /// Presets inside those files that Filmagic cannot apply (third-party plugins).
     pub skipped: usize,
     /// Presets that apply but dropped parameters the built-in effect does not expose.
     pub warnings: usize,
@@ -156,7 +156,7 @@ pub struct PresetLibrary {
 
 impl PresetLibrary {
     /// Persist user presets in `data_dir`, load them, and detect the preset library
-    /// (`<data dir>/Effect Presets`, scanned recursively for `.prfpset` and FilmCraft `.json`).
+    /// (`<data dir>/Effect Presets`, scanned recursively for `.prfpset` and Filmagic `.json`).
     pub fn set_dir(&mut self, data_dir: &Path) {
         self.dir = Some(data_dir.to_path_buf());
         let path = data_dir.join(LIBRARY_FILE);
@@ -229,7 +229,7 @@ impl PresetLibrary {
         let Some(d) = &self.dir else { return Ok(()) };
         let _ = std::fs::create_dir_all(d);
         let bytes = file_bytes(&self.user);
-        filmcraft_format::atomic_write(&d.join(LIBRARY_FILE), &bytes).map_err(|e| e.to_string())
+        filmagic_format::atomic_write(&d.join(LIBRARY_FILE), &bytes).map_err(|e| e.to_string())
     }
 
     fn persist_index(&self) -> std::result::Result<(), String> {
@@ -237,7 +237,7 @@ impl PresetLibrary {
         let _ = std::fs::create_dir_all(d);
         let f = LibraryIndexFile { format: LIBRARY_INDEX_FORMAT.into(), version: 1, files: self.library.clone() };
         let bytes = serde_json::to_vec_pretty(&f).map_err(|e| e.to_string())?;
-        filmcraft_format::atomic_write(&d.join(LIBRARY_INDEX), &bytes).map_err(|e| e.to_string())
+        filmagic_format::atomic_write(&d.join(LIBRARY_INDEX), &bytes).map_err(|e| e.to_string())
     }
 
     /// The preset library folder, creating it so users can drop files into it.
@@ -507,7 +507,7 @@ fn file_bytes(presets: &[EffectPreset]) -> Vec<u8> {
     serde_json::to_vec_pretty(&f).unwrap_or_default()
 }
 
-/// Whether `path` or `bytes` represents an effect preset file (Premiere `.prfpset` XML or FilmCraft JSON).
+/// Whether `path` or `bytes` represents an effect preset file (Premiere `.prfpset` XML or Filmagic JSON).
 pub fn is_preset_file(path: &Path, bytes: &[u8]) -> bool {
     if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("prfpset")) {
         return true;
@@ -530,7 +530,7 @@ pub fn is_preset_file(path: &Path, bytes: &[u8]) -> bool {
     false
 }
 
-/// Read a preset file, detecting Premiere `.prfpset` XML and FilmCraft JSON by content (the
+/// Read a preset file, detecting Premiere `.prfpset` XML and Filmagic JSON by content (the
 /// extension is not trusted). The XML path reports presets it had to skip and parameters the
 /// target effects do not have.
 pub fn parse_file_detailed(bytes: &[u8]) -> std::result::Result<crate::prfpset::PrfpsetImport, String> {
@@ -547,7 +547,7 @@ pub fn parse_file_detailed(bytes: &[u8]) -> std::result::Result<crate::prfpset::
         return crate::prfpset::parse_prfpset(text);
     }
     if !trimmed.starts_with('{') {
-        return Err("not an effect preset file (expected Premiere XML or FilmCraft JSON)".into());
+        return Err("not an effect preset file (expected Premiere XML or Filmagic JSON)".into());
     }
     let f: PresetFile = serde_json::from_str(text).map_err(|e| format!("not an effect preset file: {e}"))?;
     if f.format != FILE_FORMAT {
@@ -579,7 +579,7 @@ fn kf(t_secs: f64, v: ParamValue) -> Keyframe {
 /// A fresh instance of a built-in effect (a bare instance named `id` if the registry lacks it,
 /// which the preset tests rule out).
 pub(crate) fn effect_instance(id: &str) -> EffectInstance {
-    filmcraft_project::find_effect(id).map(|d| d.instance()).unwrap_or_else(|| EffectInstance {
+    filmagic_project::find_effect(id).map(|d| d.instance()).unwrap_or_else(|| EffectInstance {
         effect: id.to_string(),
         enabled: true,
         params: Default::default(),
@@ -622,7 +622,7 @@ fn preset(name: &str, description: &str, keyframes: KeyframeMode, secs: f64, eff
     }
 }
 
-/// Presets that ship with FilmCraft (original work: parameter values chosen by us).
+/// Presets that ship with Filmagic (original work: parameter values chosen by us).
 pub fn builtin_presets() -> Vec<EffectPreset> {
     let f = ParamValue::Float;
     let mut blur_in = effect("gaussian_blur", &[]);
@@ -746,7 +746,7 @@ pub fn instantiate(p: &EffectPreset, target: &TrackItem, size: (u32, u32)) -> Ve
         // Point params scale only when they are positions (the def kind says so)
         let point_ids: Vec<String> = e
             .def()
-            .map(|d| d.params.iter().filter(|q| matches!(q.kind, filmcraft_project::ParamKind::Point)).map(|q| q.id.to_string()).collect())
+            .map(|d| d.params.iter().filter(|q| matches!(q.kind, filmagic_project::ParamKind::Point)).map(|q| q.id.to_string()).collect())
             .unwrap_or_default();
         for (id, prm) in e.params.iter_mut() {
             for k in &mut prm.keyframes {
@@ -888,7 +888,7 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
 
 /// Retrieve the source or sequence dimensions for a clip item.
 fn clip_size(s: &Session, it: &TrackItem) -> (u32, u32) {
-    filmcraft_render::source_size(&s.project, it.item).or_else(|| s.active_sequence().map(|q| (q.settings.width, q.settings.height))).unwrap_or(hd())
+    filmagic_render::source_size(&s.project, it.item).or_else(|| s.active_sequence().map(|q| (q.settings.width, q.settings.height))).unwrap_or(hd())
 }
 
 /// Engine command handler to save an effect preset from selected clip.
@@ -906,7 +906,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         None => (0..it.effects.len())
             .filter(|i| {
                 let e = &it.effects[*i];
-                e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e) && !e.essential
+                e.def().is_some_and(|d| !d.intrinsic) && !filmagic_project::graphic::is_layer(e) && !e.essential
             })
             .collect(),
     };
@@ -942,8 +942,8 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     if clips.is_empty() {
         return Err(bad("presets.apply", "select clips first"));
     }
-    let has_video = preset.effects.iter().any(|e| e.def().is_some_and(|d| d.kind != filmcraft_project::EffectKind::Audio));
-    let has_audio = preset.effects.iter().any(|e| e.def().is_some_and(|d| d.kind == filmcraft_project::EffectKind::Audio));
+    let has_video = preset.effects.iter().any(|e| e.def().is_some_and(|d| d.kind != filmagic_project::EffectKind::Audio));
+    let has_audio = preset.effects.iter().any(|e| e.def().is_some_and(|d| d.kind == filmagic_project::EffectKind::Audio));
     let sizes: Vec<(ClipId, (u32, u32))> = {
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
         clips.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| (*c, clip_size(s, it)))).collect()
@@ -960,7 +960,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
                 let size = sizes.iter().find(|(c, _)| *c == it.id).map(|x| x.1).unwrap_or(hd());
                 let fx: Vec<_> = instantiate(&preset, it, size)
                     .into_iter()
-                    .filter(|e| e.def().is_some_and(|d| (d.kind == filmcraft_project::EffectKind::Audio) == is_audio_track))
+                    .filter(|e| e.def().is_some_and(|d| (d.kind == filmagic_project::EffectKind::Audio) == is_audio_track))
                     .collect();
                 if !fx.is_empty() {
                     put_effects(it, fx);

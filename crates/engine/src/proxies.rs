@@ -15,10 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use filmcraft_export::{ExportSettings, Format, Progress, Report};
-use filmcraft_media::{MediaKind, SharedSource};
-use filmcraft_project::{IngestAction, ItemId, ItemKind, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
-use filmcraft_time::{Tick, TimeRange};
+use filmagic_export::{ExportSettings, Format, Progress, Report};
+use filmagic_media::{MediaKind, SharedSource};
+use filmagic_project::{IngestAction, ItemId, ItemKind, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+use filmagic_time::{Tick, TimeRange};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -138,7 +138,7 @@ fn transcode_with_file(
     let mut c = clip.clone();
     c.offline = false;
     c.proxy = None;
-    let item = p.add_item(name, filmcraft_project::Label::Iris, ItemKind::Media(Box::new(c)), None);
+    let item = p.add_item(name, filmagic_project::Label::Iris, ItemKind::Media(Box::new(c)), None);
     let has_v = info.video.is_some();
     let has_a = info.has_audio();
     let seq = p.new_sequence("transcode", st, usize::from(has_v), usize::from(has_a), None);
@@ -172,7 +172,7 @@ fn transcode_with_file(
     };
     let project = Arc::new(p);
     let provider = move |id: ItemId| (id == item).then(|| src.clone());
-    filmcraft_export::export(&project, seq, &settings, &provider, progress).map_err(|e| e.to_string())
+    filmagic_export::export(&project, seq, &settings, &provider, progress).map_err(|e| e.to_string())
 }
 
 /// An output created exclusively while choosing its name. Unless kept after a successful
@@ -201,7 +201,7 @@ impl Drop for ReservedOutput {
     fn drop(&mut self) {
         if !self.keep {
             // Only our own file goes: a replacement someone put at the path is theirs.
-            let ours = self.file.as_deref().is_none_or(|f| filmcraft_export::path_is_file(&self.path.to_string_lossy(), f));
+            let ours = self.file.as_deref().is_none_or(|f| filmagic_export::path_is_file(&self.path.to_string_lossy(), f));
             // Release our handle before removal, which is required on Windows.
             self.file.take();
             if ours {
@@ -357,7 +357,7 @@ fn start_job(s: &mut Session, label: String, work: Vec<(ItemId, ReservedOutput, 
         run();
         poll(s);
     } else {
-        std::thread::Builder::new().name("filmcraft-proxies".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        std::thread::Builder::new().name("filmagic-proxies".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     Ok(id)
 }

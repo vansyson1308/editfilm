@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use crate::Session;
-use filmcraft_project::ClipId;
-use filmcraft_time::Tick;
+use filmagic_project::ClipId;
+use filmagic_time::Tick;
 
 fn demo() -> (Session, ClipId) {
     let mut s = Session::default();
@@ -15,7 +15,7 @@ fn demo() -> (Session, ClipId) {
     (s, it.id)
 }
 
-fn px(img: &filmcraft_render::Image, fx: f32, fy: f32) -> [f32; 4] {
+fn px(img: &filmagic_render::Image, fx: f32, fy: f32) -> [f32; 4] {
     img.get(((img.w as f32 * fx) as usize).min(img.w - 1), ((img.h as f32 * fy) as usize).min(img.h - 1))
 }
 
@@ -150,8 +150,8 @@ fn merged_drag_is_one_undo_step_and_project_round_trips() {
     }
     assert_eq!(s.history.undo.len(), n + 1);
     s.execute("masks.set", json!({"mode": "subtract", "trackMethod": "position", "expansion": -4})).unwrap();
-    let bytes = filmcraft_format::encode(&s.project, false);
-    let back = filmcraft_format::decode(&bytes).unwrap().project;
+    let bytes = filmagic_format::encode(&s.project, false);
+    let back = filmagic_format::decode(&bytes).unwrap().project;
     assert_eq!(&back, &*s.project);
     let l = s.execute("masks.list", json!({})).unwrap();
     assert_eq!(l["masks"][0]["mode"], "Subtract");
@@ -164,7 +164,7 @@ fn merged_drag_is_one_undo_step_and_project_round_trips() {
 /// A 320×240 24 fps clip of a textured disc moving under a known similarity motion over a static
 /// textured background.
 struct Moving {
-    info: filmcraft_media::MediaInfo,
+    info: filmagic_media::MediaInfo,
 }
 
 fn texture(u: f64, v: f64) -> f64 {
@@ -178,21 +178,21 @@ fn texture(u: f64, v: f64) -> f64 {
 }
 
 /// Ground-truth pose of the disc at frame `k`: translation, 1.5°/frame rotation, +1 %/frame scale.
-fn truth(k: f64) -> filmcraft_geom::Affine {
-    filmcraft_geom::Affine::motion(
-        filmcraft_geom::Vec2::new(120.0 + 3.0 * k, 110.0 + 1.2 * k),
-        filmcraft_geom::Vec2::new(1.0 + 0.01 * k, 1.0 + 0.01 * k),
+fn truth(k: f64) -> filmagic_geom::Affine {
+    filmagic_geom::Affine::motion(
+        filmagic_geom::Vec2::new(120.0 + 3.0 * k, 110.0 + 1.2 * k),
+        filmagic_geom::Vec2::new(1.0 + 0.01 * k, 1.0 + 0.01 * k),
         1.5 * k,
-        filmcraft_geom::Vec2::ZERO,
+        filmagic_geom::Vec2::ZERO,
     )
 }
 
-impl filmcraft_media::MediaSource for Moving {
-    fn info(&self) -> &filmcraft_media::MediaInfo {
+impl filmagic_media::MediaSource for Moving {
+    fn info(&self) -> &filmagic_media::MediaInfo {
         &self.info
     }
-    fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
-        let rate = filmcraft_time::FrameRate::FPS_24;
+    fn video_frame(&self, req: filmagic_media::FrameRequest) -> filmagic_media::Result<std::sync::Arc<filmagic_frame::VideoFrame>> {
+        let rate = filmagic_time::FrameRate::FPS_24;
         let k = rate.frame_at(req.time) as f64;
         let inv = truth(k).inverse().unwrap();
         let (w, h) = (320usize, 240usize);
@@ -201,7 +201,7 @@ impl filmcraft_media::MediaSource for Moving {
             for x in 0..w {
                 let mut acc = 0.0;
                 for (ox, oy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
-                    let p = filmcraft_geom::Vec2::new(x as f64 + ox, y as f64 + oy);
+                    let p = filmagic_geom::Vec2::new(x as f64 + ox, y as f64 + oy);
                     let o = inv.apply(p);
                     acc += if o.length() < 70.0 { texture(o.x + 200.0, o.y + 300.0) } else { 0.25 + 0.1 * texture(p.x * 0.5 + 900.0, p.y * 0.5) };
                 }
@@ -209,10 +209,10 @@ impl filmcraft_media::MediaSource for Moving {
                 px[(y * w + x) * 4..][..4].copy_from_slice(&[v, v, v, 255]);
             }
         }
-        Ok(std::sync::Arc::new(filmcraft_frame::VideoFrame::rgba8(w as u32, h as u32, px)))
+        Ok(std::sync::Arc::new(filmagic_frame::VideoFrame::rgba8(w as u32, h as u32, px)))
     }
-    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
-        Ok(filmcraft_frame::AudioBuffer::silence(sample_rate, 2, frames))
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmagic_media::Result<filmagic_frame::AudioBuffer> {
+        Ok(filmagic_frame::AudioBuffer::silence(sample_rate, 2, frames))
     }
 }
 
@@ -248,17 +248,17 @@ impl Default for Adrift {
 }
 
 struct AdriftSource {
-    info: filmcraft_media::MediaInfo,
+    info: filmagic_media::MediaInfo,
     scene: Adrift,
 }
 
-impl filmcraft_media::MediaSource for AdriftSource {
-    fn info(&self) -> &filmcraft_media::MediaInfo {
+impl filmagic_media::MediaSource for AdriftSource {
+    fn info(&self) -> &filmagic_media::MediaInfo {
         &self.info
     }
-    fn video_frame(&self, req: filmcraft_media::FrameRequest) -> filmcraft_media::Result<std::sync::Arc<filmcraft_frame::VideoFrame>> {
+    fn video_frame(&self, req: filmagic_media::FrameRequest) -> filmagic_media::Result<std::sync::Arc<filmagic_frame::VideoFrame>> {
         let Adrift { zoom: z, at, walk, shade_from, cover_from } = self.scene;
-        let frame = filmcraft_time::FrameRate::FPS_24.frame_at(req.time);
+        let frame = filmagic_time::FrameRate::FPS_24.frame_at(req.time);
         let k = frame as f64;
         let scale = if req.scale > 0.0 && req.scale <= 1.0 { req.scale as f64 } else { 1.0 };
         let (w, h) = ((320.0 * z * scale).round() as usize, (240.0 * z * scale).round() as usize);
@@ -288,10 +288,10 @@ impl filmcraft_media::MediaSource for AdriftSource {
                 *o = (c.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         }
-        Ok(std::sync::Arc::new(filmcraft_frame::VideoFrame::rgba8(w as u32, h as u32, px)))
+        Ok(std::sync::Arc::new(filmagic_frame::VideoFrame::rgba8(w as u32, h as u32, px)))
     }
-    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
-        Ok(filmcraft_frame::AudioBuffer::silence(sample_rate, 2, frames))
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmagic_media::Result<filmagic_frame::AudioBuffer> {
+        Ok(filmagic_frame::AudioBuffer::silence(sample_rate, 2, frames))
     }
 }
 
@@ -310,18 +310,18 @@ pub(crate) fn adrift_session() -> (Session, ClipId) {
 
 /// A session with one two-second `w`×`h` clip on V1 of a sequence of that size, selected, whose
 /// frames come from `source`.
-fn session_of(w: u32, h: u32, source: impl FnOnce(filmcraft_media::MediaInfo) -> std::sync::Arc<dyn filmcraft_media::MediaSource>) -> (Session, ClipId) {
-    use filmcraft_media::MediaSource;
-    let rate = filmcraft_time::FrameRate::FPS_24;
+fn session_of(w: u32, h: u32, source: impl FnOnce(filmagic_media::MediaInfo) -> std::sync::Arc<dyn filmagic_media::MediaSource>) -> (Session, ClipId) {
+    use filmagic_media::MediaSource;
+    let rate = filmagic_time::FrameRate::FPS_24;
     let g =
-        filmcraft_media::generators::GeneratorSource::new(filmcraft_media::Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, w, h, rate, rate.tick_of(48));
+        filmagic_media::generators::GeneratorSource::new(filmagic_media::Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] }, w, h, rate, rate.tick_of(48));
     let info = g.info().clone();
-    let mut p = filmcraft_project::Project::new("track");
+    let mut p = filmagic_project::Project::new("track");
     let item = p.add_item(
         "moving",
-        filmcraft_project::Label::Iris,
-        filmcraft_project::ItemKind::Media(Box::new(filmcraft_project::MediaClip {
-            media: filmcraft_project::MediaRef::Generator(g.generator.clone()),
+        filmagic_project::Label::Iris,
+        filmagic_project::ItemKind::Media(Box::new(filmagic_project::MediaClip {
+            media: filmagic_project::MediaRef::Generator(g.generator.clone()),
             info: info.clone(),
             interpret: Default::default(),
             mark_in: None,
@@ -333,9 +333,9 @@ fn session_of(w: u32, h: u32, source: impl FnOnce(filmcraft_media::MediaInfo) ->
         })),
         None,
     );
-    let seq = p.new_sequence("s", filmcraft_project::SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
+    let seq = p.new_sequence("s", filmagic_project::SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 0, None);
     let ti =
-        p.make_track_item(item, filmcraft_project::TrackKind::Video, Tick::ZERO, filmcraft_time::TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+        p.make_track_item(item, filmagic_project::TrackKind::Video, Tick::ZERO, filmagic_time::TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
     let clip = ti.id;
     p.sequence_mut(seq).unwrap().video_tracks[0].items.push(ti);
     let mut s = Session { project: std::sync::Arc::new(p), ..Default::default() };
@@ -348,16 +348,16 @@ fn session_of(w: u32, h: u32, source: impl FnOnce(filmcraft_media::MediaInfo) ->
 #[test]
 fn tracking_follows_known_motion_forward_and_backward() {
     let (mut s, _) = tracking_session();
-    let rate = filmcraft_time::FrameRate::FPS_24;
+    let rate = filmagic_time::FrameRate::FPS_24;
     s.set_playhead(rate.tick_of(10));
     // a circle of radius 45 inside the disc at frame 10
-    let c = truth(10.0).apply(filmcraft_geom::Vec2::ZERO);
+    let c = truth(10.0).apply(filmagic_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     let path0 = s.execute("masks.list", json!({})).unwrap()["masks"][0]["path"].clone();
     let p0 = crate::masks::path_from_json(&path0).unwrap();
     // object coordinates of the mask vertices (they ride on the disc)
     let inv10 = truth(10.0).inverse().unwrap();
-    let obj: Vec<filmcraft_geom::Vec2> = p0.vertices.iter().map(|v| inv10.apply(v.p)).collect();
+    let obj: Vec<filmagic_geom::Vec2> = p0.vertices.iter().map(|v| inv10.apply(v.p)).collect();
     let r = s.execute("masks.track", json!({"direction": "forward", "frames": 12, "wait": true})).unwrap();
     assert_eq!(r["frames"], 12, "{r}");
     assert!(s.mask_jobs.is_empty());
@@ -385,9 +385,9 @@ fn tracking_follows_known_motion_forward_and_backward() {
 
 /// The corners (x0, y0, x1, y1) of the box around mask 0's path at frame `frame`.
 fn mask_box(s: &mut Session, frame: i64) -> (f64, f64, f64, f64) {
-    let m = s.execute("masks.list", json!({"time": filmcraft_time::FrameRate::FPS_24.tick_of(frame).0})).unwrap();
+    let m = s.execute("masks.list", json!({"time": filmagic_time::FrameRate::FPS_24.tick_of(frame).0})).unwrap();
     let path = crate::masks::path_from_json(&m["masks"][0]["path"]).unwrap();
-    let fold = |pick: fn(filmcraft_geom::Vec2) -> f64, f: fn(f64, f64) -> f64, from: f64| path.vertices.iter().map(|v| pick(v.p)).fold(from, f);
+    let fold = |pick: fn(filmagic_geom::Vec2) -> f64, f: fn(f64, f64) -> f64, from: f64| path.vertices.iter().map(|v| pick(v.p)).fold(from, f);
     (fold(|p| p.x, f64::min, f64::MAX), fold(|p| p.y, f64::min, f64::MAX), fold(|p| p.x, f64::max, f64::MIN), fold(|p| p.y, f64::max, f64::MIN))
 }
 
@@ -480,7 +480,7 @@ fn a_run_with_nothing_to_check_against_says_so() {
     assert!(status.starts_with("Tracked 6 frame(s)") && status.contains("not checked against the first frame"), "{status}");
     // a mask with something of its own is checked, and says nothing of the kind
     let (mut s, _) = tracking_session();
-    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    let c = truth(0.0).apply(filmagic_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [170, 170]})).unwrap();
     let r = s.execute("masks.track", json!({"direction": "forward", "frames": 6, "wait": true})).unwrap();
     let status = r["status"]["status"].as_str().unwrap();
@@ -490,7 +490,7 @@ fn a_run_with_nothing_to_check_against_says_so() {
 #[test]
 fn tracking_runs_in_the_background_and_can_be_cancelled() {
     let (mut s, _) = tracking_session();
-    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    let c = truth(0.0).apply(filmagic_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     let r = s.execute("masks.track", json!({"direction": "forward"})).unwrap();
     let job = r["job"].as_u64().unwrap();
@@ -563,7 +563,7 @@ fn rounding_an_animated_mask_rounds_every_keyframe_and_only_the_chosen_corners()
     let m = &s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
     assert_eq!(m.path.keyframes.len(), 2);
     for k in &m.path.keyframes {
-        let filmcraft_project::ParamValue::Path(p) = &k.value else { panic!("path keyframe") };
+        let filmagic_project::ParamValue::Path(p) = &k.value else { panic!("path keyframe") };
         assert_eq!(p.len(), 6, "both keyframes rounded the same corners");
         assert_eq!(p.vertices.iter().filter(|v| v.is_corner()).count(), 2, "vertices 1 and 3 stay sharp");
     }
@@ -578,8 +578,8 @@ fn rounding_an_animated_mask_rounds_every_keyframe_and_only_the_chosen_corners()
 /// a pen mask's dragged-out curves were committed as corners; #853).
 #[test]
 fn path_json_round_trip_keeps_tangents() {
-    use filmcraft_geom::Vec2;
-    use filmcraft_project::mask::{MaskPath, MaskVertex};
+    use filmagic_geom::Vec2;
+    use filmagic_project::mask::{MaskPath, MaskVertex};
     let path = MaskPath {
         vertices: vec![
             MaskVertex { p: Vec2::new(10.0, 20.0), t_in: Vec2::new(-5.0, 0.0), t_out: Vec2::new(5.0, 0.0) },
@@ -633,7 +633,7 @@ fn move_vertex_moves_a_list_of_vertices_together() {
 fn background_tracking_is_applied_without_a_ui_frame_loop() {
     // headless sessions (CLI, MCP) never call `poll_persistence`: commands alone must apply the job (#3302)
     let (mut s, _) = tracking_session();
-    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    let c = truth(0.0).apply(filmagic_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     let r = s.execute("masks.track", json!({"direction": "forward", "frames": 6})).unwrap();
     let job = r["job"].clone();
@@ -657,7 +657,7 @@ fn background_tracking_is_applied_without_a_ui_frame_loop() {
 fn replacing_the_project_drops_pending_tracking_jobs() {
     // a job started on the old project must not write into the new one
     let (mut s, _) = tracking_session();
-    let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+    let c = truth(0.0).apply(filmagic_geom::Vec2::ZERO);
     s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
     let job = s.execute("masks.track", json!({"direction": "forward"})).unwrap()["job"].clone();
     assert_eq!(s.mask_jobs.len(), 1);
@@ -685,16 +685,16 @@ fn replacing_the_project_drops_pending_tracking_jobs() {
 #[test]
 fn every_project_replacing_path_drops_pending_tracking_jobs() {
     // the epoch check covers paths that never call `discard_jobs`: recover (`install_project`), demo, close, template
-    let tpl = std::env::temp_dir().join(format!("filmcraft-mask-epoch-{}.fcproj", std::process::id())).to_string_lossy().to_string();
+    let tpl = std::env::temp_dir().join(format!("filmagic-mask-epoch-{}.fcproj", std::process::id())).to_string_lossy().to_string();
     for path in ["recover", "demo", "close", "template"] {
         let (mut s, _) = tracking_session();
         s.execute("file.saveAsTemplate", json!({"path": tpl})).unwrap();
-        let c = truth(0.0).apply(filmcraft_geom::Vec2::ZERO);
+        let c = truth(0.0).apply(filmagic_geom::Vec2::ZERO);
         s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
         s.execute("masks.track", json!({"direction": "forward"})).unwrap();
         assert_eq!(s.mask_jobs.len(), 1);
         match path {
-            "recover" => crate::commands::install_project(&mut s, filmcraft_project::Project::new("Recovered"), None, false),
+            "recover" => crate::commands::install_project(&mut s, filmagic_project::Project::new("Recovered"), None, false),
             "demo" => drop(s.execute("file.openDemoProject", json!({})).unwrap()),
             "close" => drop(s.execute("file.closeProject", json!({"force": true})).unwrap()),
             _ => drop(s.execute("file.newProjectFromTemplate", json!({"template": tpl, "force": true})).unwrap()),

@@ -439,14 +439,14 @@ pub fn levels_db(mono: &[f32], rate: u32) -> Vec<f32> {
 #[derive(Clone, Debug)]
 pub struct VoiceBand {
     rate: u32,
-    high_pass: filmcraft_audio_dsp::biquad::Coeffs,
-    low_pass: filmcraft_audio_dsp::biquad::Coeffs,
-    state: [filmcraft_audio_dsp::biquad::Biquad; 2],
+    high_pass: filmagic_audio_dsp::biquad::Coeffs,
+    low_pass: filmagic_audio_dsp::biquad::Coeffs,
+    state: [filmagic_audio_dsp::biquad::Biquad; 2],
 }
 
 impl VoiceBand {
     pub fn new(rate: u32) -> VoiceBand {
-        use filmcraft_audio_dsp::biquad::{Biquad, Coeffs, FilterType};
+        use filmagic_audio_dsp::biquad::{Biquad, Coeffs, FilterType};
         let sr = f64::from(rate);
         // below 8 kHz the band does not fit under half the sample rate: the sound is passed as it is
         let fits = rate >= 8_000;
@@ -722,7 +722,7 @@ pub fn contact_sheet(cells: &[(Image, String)], s: Sheet) -> Option<Image> {
             let px = (s.cell_h as f32 / 9.0).clamp(9.0, 28.0);
             let look = crate::vfx::TextLook {
                 family: "Inter",
-                pos: filmcraft_geom::Vec2::new(x0 as f64 + f64::from(px) * 0.5, y0 as f64 + f64::from(px) * 0.8),
+                pos: filmagic_geom::Vec2::new(x0 as f64 + f64::from(px) * 0.5, y0 as f64 + f64::from(px) * 0.8),
                 px,
                 align: 0,
                 color: [1.0, 1.0, 1.0, 1.0],

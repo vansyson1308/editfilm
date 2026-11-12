@@ -2,20 +2,20 @@
 //! switches, Interpret Footage ▸ Color Management and the sequence colour settings, driven by
 //! automation id through the control channel.
 //!
-//! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render offscreen with wgpu and write `color-*.png`.
+//! Set `FILMAGIC_UI_SNAPSHOT_DIR=<dir>` to also render offscreen with wgpu and write `color-*.png`.
 
 #![allow(dead_code)]
 
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use filmagic_engine::Session;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     snapshots: Option<std::path::PathBuf>,
 }
@@ -25,8 +25,8 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let app = FilmagicApp::new(session).with_control(rx);
+        let snapshots = std::env::var_os("FILMAGIC_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
@@ -326,7 +326,7 @@ fn apply_match_from_the_color_wheels_section() {
 }
 
 impl Driver {
-    fn app(&mut self) -> &mut FilmcraftApp {
+    fn app(&mut self) -> &mut FilmagicApp {
         self.harness.state_mut()
     }
 }
@@ -368,7 +368,7 @@ fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
     // then uses its reference frame
     d.click("lumetri.section.Color Wheels & Match");
     d.click("lumetri.match.comparisonView");
-    assert_eq!(d.app().ui.program.display_mode(), Some(filmcraft_ui_egui::state::DisplayMode::Comparison));
+    assert_eq!(d.app().ui.program.display_mode(), Some(filmagic_ui_egui::state::DisplayMode::Comparison));
     assert!(!d.ids("program.compare.reference").is_empty());
     let seq = d.exec("sequence.inspect", json!({}));
     let last = seq["video"][0]["items"].as_array().unwrap().last().unwrap().clone();
@@ -381,7 +381,7 @@ fn hdr_lumetri_controls_hsl_refine_and_comparison_view() {
     let e = lumetri(&mut d, clip);
     assert!(e["params"]["wheel_highlights"]["value"].as_str().unwrap() != "Vec2(Vec2 { x: 0.0, y: 0.0 })", "matched to the comparison reference: {e}");
     d.click("lumetri.match.comparisonView");
-    assert_ne!(d.app().ui.program.display_mode(), Some(filmcraft_ui_egui::state::DisplayMode::Comparison));
+    assert_ne!(d.app().ui.program.display_mode(), Some(filmagic_ui_egui::state::DisplayMode::Comparison));
 }
 
 #[test]
@@ -402,7 +402,7 @@ fn lumetri_presets_in_the_effects_panel() {
     assert_eq!(e["params"]["saturation"]["value"], json!("Float(0.0)"), "{e}");
     d.exec("edit.undo", json!({}));
     // maximized (wide) panel: the folder's thumbnail grid next to the tree
-    d.app().ui.keys.maximized = Some(filmcraft_ui_egui::dock::PanelKind::Effects);
+    d.app().ui.keys.maximized = Some(filmagic_ui_egui::dock::PanelKind::Effects);
     d.frames(4);
     assert!(!d.ids("effects.presetGrid").is_empty(), "no grid: {:?}", d.ids("effects."));
     let cells = d.ids("effects.presetGrid.");
@@ -466,10 +466,10 @@ fn interpret_footage_from_the_item_menu_takes_the_whole_selection() {
     let mut d = Driver::demo();
     d.ok("ui.panel.show", json!({"panel": "Project"}));
     d.exec("project.view.set", json!({"view": "list"}));
-    let wav: std::sync::Arc<[u8]> = filmcraft_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
+    let wav: std::sync::Arc<[u8]> = filmagic_engine::previews::write_wav_f32(&[0.0; 9_600], 48_000).into();
     let media: Vec<u64> = ["/takes/a.wav", "/takes/b.wav", "/takes/c.wav"]
         .iter()
-        .map(|n| filmcraft_engine::commands::import_bytes(&mut d.harness.state_mut().session, n, wav.clone(), None).unwrap().0)
+        .map(|n| filmagic_engine::commands::import_bytes(&mut d.harness.state_mut().session, n, wav.clone(), None).unwrap().0)
         .collect();
     let (a, b, c) = (media[0], media[1], media[2]);
     d.exec("project.select", json!({"items": [a, b]}));
@@ -513,7 +513,7 @@ fn a_dragged_lumetri_curve_point_undoes_and_redoes() {
     d.frames(2);
     let curve = |d: &mut Driver| {
         let q = d.app().session.active_sequence().unwrap().clone();
-        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let (_, it) = q.find_item(filmagic_project::ClipId(clip)).unwrap();
         let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
         e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.to_vec())).unwrap_or_default()
     };
@@ -556,7 +556,7 @@ fn a_click_on_the_lumetri_curve_places_a_point() {
     d.frames(2);
     let points = |d: &mut Driver| {
         let q = d.app().session.active_sequence().unwrap().clone();
-        let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+        let (_, it) = q.find_item(filmagic_project::ClipId(clip)).unwrap();
         let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
         e.param("curve_luma").and_then(|p| p.value.as_curve().map(|c| c.len())).unwrap_or_default()
     };
@@ -584,7 +584,7 @@ fn lumetri_panel_menu_offers_export_cube() {
     d.click("panel.menu.LumetriColor");
     assert!(d.element("panel.menu.LumetriColor.exportCube").is_some(), "Export .cube… is in the panel menu");
     // with a path the menu command exports straight away; without one it asks where (a save dialog)
-    let path = std::env::temp_dir().join(format!("filmcraft-ui-grade-{}.cube", std::process::id()));
+    let path = std::env::temp_dir().join(format!("filmagic-ui-grade-{}.cube", std::process::id()));
     let r = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"path": path.to_string_lossy(), "size": 9}}));
     assert_eq!(r["size"], 9, "{r}");
     let text = std::fs::read_to_string(&path).unwrap();
@@ -599,7 +599,7 @@ fn export_cube_dialog_honours_an_explicit_clip_without_a_selection() {
     let clip = select_first_clip(&mut d);
     d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
     d.harness.state_mut().session.state.selection.clear();
-    let path = std::env::temp_dir().join(format!("filmcraft-explicit-grade-{}.cube", std::process::id()));
+    let path = std::env::temp_dir().join(format!("filmagic-explicit-grade-{}.cube", std::process::id()));
     let answer = path.to_string_lossy().into_owned();
     d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
     let result = d.ok("ui.menu.invoke", json!({"id": "lumetri.exportCube", "params": {"clip": clip, "size": 9}}));
@@ -636,7 +636,7 @@ fn panel_export_cube_uses_the_shown_clip_and_names_what_is_left_out() {
     toggle(&mut d, shown);
     toggle(&mut d, other);
     d.exec("effects.setParam", json!({"clip": shown, "effect": "lumetri", "param": "vignette_amount", "value": -2.0}));
-    let path = std::env::temp_dir().join(format!("filmcraft-shown-grade-{}.cube", std::process::id()));
+    let path = std::env::temp_dir().join(format!("filmagic-shown-grade-{}.cube", std::process::id()));
     let answer = path.to_string_lossy().into_owned();
     d.harness.state_mut().hooks.pick_save_as = Some(Box::new(move |_, _, _| Some(answer.clone())));
     d.frames(3);

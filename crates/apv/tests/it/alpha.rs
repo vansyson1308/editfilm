@@ -1,8 +1,8 @@
 //! Auxiliary alpha frame PBUs (type 27): a valid one becomes the alpha plane, a damaged one is
 //! ignored without disturbing the primary picture.
 
-use filmcraft_apv::header::PBU_ALPHA_FRAME;
-use filmcraft_apv::*;
+use filmagic_apv::header::PBU_ALPHA_FRAME;
+use filmagic_apv::*;
 
 const W: u32 = 64;
 const H: u32 = 32;

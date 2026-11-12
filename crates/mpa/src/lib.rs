@@ -17,7 +17,7 @@
 
 mod tables;
 
-use filmcraft_bitstream::BitReader;
+use filmagic_bitstream::BitReader;
 use tables::AllocTable;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

@@ -1,7 +1,7 @@
-# filmcraft-mp3enc
+# filmagic-mp3enc
 
 Clean-room MPEG-1 / MPEG-2 Audio Layer III (MP3) encoder in pure Rust. Layer L0: depends only on
-`filmcraft-bitstream` and `thiserror`. Builds for `wasm32-unknown-unknown`; no `unsafe`. No
+`filmagic-bitstream` and `thiserror`. Builds for `wasm32-unknown-unknown`; no `unsafe`. No
 GPL/LGPL code (LAME, shine, FFmpeg, libmp3lame) was consulted; FFmpeg is used only as an external
 test oracle.
 
@@ -21,10 +21,10 @@ is Terhardt's approximation, as in the 11172-3 Annex D models.
 ## API
 
 ```rust
-let mut enc = filmcraft_mp3enc::Encoder::new(filmcraft_mp3enc::Config::cbr(48_000, 2, 192))?;
+let mut enc = filmagic_mp3enc::Encoder::new(filmagic_mp3enc::Config::cbr(48_000, 2, 192))?;
 let mut mp3 = enc.encode(&[&left, &right]); // whole frames as they complete
 mp3.extend(enc.flush());                     // pads with silence to the last input sample
-// a decoder's output lags the input by filmcraft_mp3enc::DELAY (1057) samples
+// a decoder's output lags the input by filmagic_mp3enc::DELAY (1057) samples
 ```
 
 `bitrates(rate)`, `nearest_bitrate(rate, kbps)` and `nearest_sample_rate(rate)` map arbitrary
@@ -60,7 +60,7 @@ tags (the delay is not signalled), CRC, free format.
 
 ## Tests
 
-`cargo test -p filmcraft-mp3enc`: filterbank reconstruction and scale, frame headers and sizes,
+`cargo test -p filmagic-mp3enc`: filterbank reconstruction and scale, frame headers and sizes,
 the reservoir limits, hostile settings and samples, chunking invariance. With ffmpeg available:
 every code of every Huffman table (and large escapes) decoded by ffmpeg against a reference
 decode of the intended lines, and full encodes at every sampling frequency checked with ffprobe

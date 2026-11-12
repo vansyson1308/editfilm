@@ -16,10 +16,10 @@
 //! track's 1-based position, as in `C<n>`), `captionExport.ok`, `captionExport.cancel`.
 
 use crate::widgets::CenteredDialog as _;
-use filmcraft_captions::Format;
+use filmagic_captions::Format;
 use serde_json::{Map, Value, json};
 
-use crate::FilmcraftApp;
+use crate::FilmagicApp;
 use crate::native_dialogs::FileDialog;
 
 #[derive(Clone, Debug)]
@@ -35,7 +35,7 @@ fn draft_id() -> egui::Id {
 
 /// Open the dialog with `captions.export`'s parameters (no `path`). A `format` among them is
 /// selected; otherwise the format chosen last, or SRT.
-pub fn open(app: &FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
+pub fn open(app: &FilmagicApp, ctx: &egui::Context, params: &Value) -> Result<Value, String> {
     let given = params.get("format").and_then(Value::as_str).and_then(Format::from_name);
     let format = given.or_else(|| app.ui.caption_export_format.as_deref().and_then(Format::from_name)).unwrap_or(Format::Srt);
     let params = params.as_object().cloned().unwrap_or_default();
@@ -43,7 +43,7 @@ pub fn open(app: &FilmcraftApp, ctx: &egui::Context, params: &Value) -> Result<V
     Ok(json!({"dialog": "captionExport"}))
 }
 
-pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub fn show(app: &mut FilmagicApp, ctx: &egui::Context) {
     let Some(Some(mut d)) = ctx.data(|m| m.get_temp::<Option<Draft>>(draft_id())) else { return };
     let mut close = false;
     let mut apply = false;
@@ -65,7 +65,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 app.session.active_sequence().map_or_else(Vec::new, |q| q.caption_tracks.iter().map(|t| (t.id.0, t.name.clone())).collect());
             if tracks.len() > 1 {
                 let params = Value::Object(d.params.clone());
-                let requested = filmcraft_engine::captions::track_param(&app.session, &params);
+                let requested = filmagic_engine::captions::track_param(&app.session, &params);
                 let chosen = requested.map_or(0, |id| tracks.iter().position(|t| t.0 == id.0).unwrap_or(0));
                 // a track that does not exist (`C9`, a deleted id) shows the first one, so OK exports that one
                 if requested.is_none() {
@@ -176,7 +176,7 @@ fn destination(path: &str, chosen: Format) -> (String, Format) {
 #[cfg(test)]
 mod tests {
     use super::destination;
-    use filmcraft_captions::Format;
+    use filmagic_captions::Format;
 
     #[test]
     fn a_saved_name_gives_the_file_and_its_format() {

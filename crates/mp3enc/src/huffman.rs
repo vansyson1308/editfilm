@@ -3,7 +3,7 @@
 //! boundaries with a table each, then the count1 region in quadruples of magnitude ≤ 1, then the
 //! zeros. The encoder picks the region split and tables that need the fewest bits.
 
-use filmcraft_bitstream::BitWriter;
+use filmagic_bitstream::BitWriter;
 
 use crate::filterbank::GRANULE;
 use crate::huffman_tables::{LINBITS, QUAD_A_CODES, QUAD_A_LENS, QUAD_B_CODES, pair_table};

@@ -1,9 +1,9 @@
 use super::*;
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{FrameRequest, Generator, MediaSource};
-use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
-use filmcraft_render::SourceMap;
-use filmcraft_time::TICKS_PER_SECOND;
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{FrameRequest, Generator, MediaSource};
+use filmagic_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+use filmagic_render::SourceMap;
+use filmagic_time::TICKS_PER_SECOND;
 
 pub(crate) fn project() -> (Arc<Project>, ItemId, SourceMap) {
     let mut p = Project::new("x");
@@ -57,7 +57,7 @@ fn mjpeg_mov_roundtrip() {
     assert_eq!(r.frames, 24);
     assert!(prog.finished.load(Ordering::Relaxed));
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-    let src = filmcraft_codecs::open_bytes("out.mov", bytes).unwrap();
+    let src = filmagic_codecs::open_bytes("out.mov", bytes).unwrap();
     let info = src.info();
     assert_eq!(info.video.as_ref().unwrap().width, 320);
     assert!((info.duration.seconds() - 1.0).abs() < 0.05, "{}", info.duration.seconds());
@@ -66,7 +66,7 @@ fn mjpeg_mov_roundtrip() {
     let a = src.audio(0, 24_000, 48_000).unwrap();
     let pk = a.peaks()[0];
     assert!((pk - 0.5).abs() < 0.05, "tone at -6 dB: {pk}");
-    if let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("export mjpeg frame count") {
+    if let Some(ffprobe) = filmagic_testkit::ffprobe_or_skip("export mjpeg frame count") {
         let out = std::process::Command::new(ffprobe)
             .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", &path])
             .output()
@@ -120,7 +120,7 @@ fn prores_export_roundtrip() {
     let path = tmp("pr.mov");
     export(&p, seq, &ExportSettings { format: Format::ProRes, path: path.clone(), ..Default::default() }, &m, &Progress::default()).unwrap();
     let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-    let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+    let src = filmagic_codecs::open_bytes("pr.mov", bytes).unwrap();
     assert!(src.info().video.as_ref().unwrap().codec.contains("ProRes 422 HQ"));
     let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
@@ -130,7 +130,7 @@ fn prores_export_roundtrip() {
 /// export's BT.709 colour: Apple's media stack reads the colour of the MOV codecs only from there.
 #[test]
 fn sdr_exports_carry_a_colr_box() {
-    use filmcraft_isobmff::ColorInfo;
+    use filmagic_isobmff::ColorInfo;
     let (p, seq, m) = project();
     let nclc = ColorInfo::Nclc { primaries: 1, transfer: 1, matrix: 1 };
     let nclx = ColorInfo::Nclx { primaries: 1, transfer: 1, matrix: 1, full_range: false };
@@ -143,8 +143,8 @@ fn sdr_exports_carry_a_colr_box() {
         let path = tmp(name);
         export(&p, seq, &ExportSettings { format, path: path.clone(), include_audio: false, ..Default::default() }, &m, &Progress::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let file = filmcraft_isobmff::open(bytes).unwrap();
-        let t = file.track_of_kind(filmcraft_isobmff::TrackKind::Video).unwrap();
+        let file = filmagic_isobmff::open(bytes).unwrap();
+        let t = file.track_of_kind(filmagic_isobmff::TrackKind::Video).unwrap();
         let v = file.tracks[t].entries[0].video.as_ref().unwrap();
         assert_eq!(v.color.as_ref(), Some(&want), "{name}");
         assert!(v.mastering_display.is_none() && v.content_light.is_none(), "{name}: no HDR metadata on SDR");
@@ -161,7 +161,7 @@ fn prores_4444_export_roundtrip() {
         let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: profile.into(), ..Default::default() };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let src = filmagic_codecs::open_bytes("pr.mov", bytes).unwrap();
         let codec = src.info().video.as_ref().unwrap().codec.clone();
         assert!(codec.contains(label), "{profile}: {codec}");
         let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
@@ -186,7 +186,7 @@ fn prores_4444_export_roundtrip() {
         assert!(s.keeps_alpha() == alpha);
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-        let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+        let src = filmagic_codecs::open_bytes("pr.mov", bytes).unwrap();
         let px = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
         if alpha {
             assert!((px[3] as i32 - 128).abs() <= 3, "alpha kept: {:?}", &px[..4]);
@@ -204,7 +204,7 @@ fn dnxhr_export_roundtrip() {
         let s = ExportSettings { format: Format::DnxHr, path: path.clone(), dnx_profile: profile.into(), ..Default::default() };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-        let src = filmcraft_codecs::open_bytes("dnx.mov", bytes).unwrap();
+        let src = filmagic_codecs::open_bytes("dnx.mov", bytes).unwrap();
         let info = src.info().video.clone().unwrap();
         assert_eq!(info.codec, label);
         let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
@@ -246,11 +246,11 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
     let r = FrameRate::FPS_24;
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: r, ..Default::default() }, 1, 0, None);
     let v = p.make_track_item(matte, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).unwrap();
-    let tid = filmcraft_project::TrackId(p.alloc_id());
-    let cid = filmcraft_project::ClipId(p.alloc_id());
-    let mut ct = filmcraft_project::CaptionTrack::new(tid, "Subtitle".into(), filmcraft_project::CaptionFormat::Subtitle);
+    let tid = filmagic_project::TrackId(p.alloc_id());
+    let cid = filmagic_project::ClipId(p.alloc_id());
+    let mut ct = filmagic_project::CaptionTrack::new(tid, "Subtitle".into(), filmagic_project::CaptionFormat::Subtitle);
     ct.style.background = false;
-    ct.captions.push(filmcraft_project::Caption {
+    ct.captions.push(filmagic_project::Caption {
         id: cid,
         start: Tick::ZERO,
         duration: r.tick_of(24),
@@ -296,7 +296,7 @@ fn caption_burn_in_h264_ffmpeg_oracle() {
 /// picture survives the round trip.
 #[test]
 fn hdr_exports_signal_pq_and_hlg() {
-    use filmcraft_color::{ColorPipeline, Transfer, WorkingSpace};
+    use filmagic_color::{ColorPipeline, Transfer, WorkingSpace};
     for (ws, fmt, ext, transfer, ff_transfer) in [
         (WorkingSpace::Rec2100Pq, Format::ProRes, "mov", Transfer::Pq, "smpte2084"),
         (WorkingSpace::Rec2100Pq, Format::H264, "mp4", Transfer::Pq, "smpte2084"),
@@ -312,11 +312,11 @@ fn hdr_exports_signal_pq_and_hlg() {
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         // our demuxer/decoder sees the signalling
         let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
-        let src = filmcraft_codecs::open_bytes(&path, bytes).unwrap();
+        let src = filmagic_codecs::open_bytes(&path, bytes).unwrap();
         let v = src.info().video.clone().unwrap();
         assert_eq!(v.color.transfer, transfer, "{path}");
-        assert_eq!(v.color.primaries, filmcraft_color::Primaries::Bt2020, "{path}");
-        assert_eq!(v.color.matrix, filmcraft_color::Matrix::Bt2020Ncl, "{path}");
+        assert_eq!(v.color.primaries, filmagic_color::Primaries::Bt2020, "{path}");
+        assert_eq!(v.color.matrix, filmagic_color::Matrix::Bt2020Ncl, "{path}");
         // PQ exports carry mastering metadata (1000 cd/m² peak; MaxCLL 0 = unknown), which sets
         // the tone-mapping peak when the file is used again
         if transfer == Transfer::Pq {
@@ -325,11 +325,11 @@ fn hdr_exports_signal_pq_and_hlg() {
         }
         // 709 red matte → BT.2020 HDR → decoded back into Rec. 709 (tone mapped) stays red
         let f = src.video_frame(FrameRequest::full(Tick::ZERO)).unwrap();
-        let back = filmcraft_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
-        let c = filmcraft_render::Image::unpremul(back.get(160, 90));
+        let back = filmagic_render::colorman::decode(&Project::new("x"), ItemId(0), &f, 1, &ColorPipeline::REC709);
+        let c = filmagic_render::Image::unpremul(back.get(160, 90));
         assert!(c[0] > 0.6 && c[1] < 0.05 && c[2] < 0.05, "{path}: {c:?}");
         // ffprobe agrees
-        let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("hdr export signalling") else { continue };
+        let Some(ffprobe) = filmagic_testkit::ffprobe_or_skip("hdr export signalling") else { continue };
         let out = std::process::Command::new(&ffprobe)
             .args([
                 "-v",
@@ -382,7 +382,7 @@ fn gpu_hook_scenarios() {
 
     // 2. Producing renderer: counters up and its picture reaches the export.
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmagic_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
     mk(&tmp("fake-gpu.png"), Some(true));
     assert!(gpu_render_stats().frames >= 2, "gpu frames counted: {:?}", gpu_render_stats());
     assert_eq!(gpu_render_stats().fallbacks, 0);
@@ -458,16 +458,16 @@ fn gpu_hook_scenarios() {
     //    pooled renderer: it counts as a fallback, and the renderer's picture reaches only the
     //    frames before it.
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmagic_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
     let (p, seq, m) = project();
     let mut p = Arc::unwrap_or_clone(p);
     let r = FrameRate::FPS_24;
     let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
     let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    over.effects.insert(0, filmcraft_project::find_effect("emboss").unwrap().instance());
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
+    over.effects.insert(0, filmagic_project::find_effect("emboss").unwrap().instance());
+    let v2 = filmagic_project::TrackId(p.alloc_id());
     let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+    q.video_tracks.push(filmagic_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
     q.video_tracks[1].items.push(over);
     let p = Arc::new(p);
     let mk24 = |path: &String, gpu: crate::GpuRendering| {
@@ -493,10 +493,10 @@ fn gpu_hook_scenarios() {
     let mut p = Arc::unwrap_or_clone(p);
     let adj = p.add_item("adj", Label::Iris, ItemKind::AdjustmentLayer { width: 320, height: 180, rate: r, duration: Tick(TICKS_PER_SECOND) }, None);
     let mut over = p.make_track_item(adj, TrackKind::Video, r.tick_of(12), TimeRange::new(Tick::ZERO, r.tick_of(12)), r).unwrap();
-    over.effects.insert(0, filmcraft_project::find_effect("invert").unwrap().instance());
-    let v2 = filmcraft_project::TrackId(p.alloc_id());
+    over.effects.insert(0, filmagic_project::find_effect("invert").unwrap().instance());
+    let v2 = filmagic_project::TrackId(p.alloc_id());
     let q = p.sequence_mut(seq).unwrap();
-    q.video_tracks.push(filmcraft_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
+    q.video_tracks.push(filmagic_project::Track::new(v2, TrackKind::Video, "Video 2".into()));
     q.video_tracks[1].items.push(over);
     let p = Arc::new(p);
     let mk24 = |path: &String, gpu: crate::GpuRendering| {
@@ -507,7 +507,7 @@ fn gpu_hook_scenarios() {
     };
     mk24(&tmp("gpu-adj-off.png"), crate::GpuRendering::Off);
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::NONE)) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmagic_render::plan::DeviceCaps::NONE)) as Box<dyn FrameRenderer>));
     mk24(&tmp("gpu-adj-nofx.png"), crate::GpuRendering::Auto);
     assert_ne!(frame("gpu-adj-off", "011"), frame("gpu-adj-nofx", "011"), "a frame without the adjustment layer goes to the renderer");
     for f in ["012", "023"] {
@@ -515,7 +515,7 @@ fn gpu_hook_scenarios() {
     }
     assert_eq!((gpu_render_stats().frames, gpu_render_stats().fallbacks), (12, 12), "{:?}", gpu_render_stats());
     crate::reset_frame_renderers_for_tests();
-    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmcraft_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
+    crate::register_frame_renderer(|| Some(Box::new(FakeRenderer(filmagic_render::plan::DeviceCaps::ALL)) as Box<dyn FrameRenderer>));
     mk24(&tmp("gpu-adj-fx.png"), crate::GpuRendering::Auto);
     for f in ["012", "023"] {
         assert_ne!(frame("gpu-adj-off", f), frame("gpu-adj-fx", f), "frame {f}: an effect stage runs the adjustment layer");
@@ -534,20 +534,20 @@ impl FrameRenderer for PanickingRenderer {
         _project: &Project,
         _seq: ItemId,
         _t: Tick,
-        _opts: filmcraft_render::RenderOptions,
+        _opts: filmagic_render::RenderOptions,
         _sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
+    ) -> Option<filmagic_render::Image> {
         PANICS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         panic!("GPU renderer failure (test)");
     }
 
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
-        filmcraft_render::plan::DeviceCaps::ALL
+    fn caps(&self) -> filmagic_render::plan::DeviceCaps {
+        filmagic_render::plan::DeviceCaps::ALL
     }
 }
 
 /// Returns a blank picture for every frame it is given, on a device that runs these caps.
-struct FakeRenderer(filmcraft_render::plan::DeviceCaps);
+struct FakeRenderer(filmagic_render::plan::DeviceCaps);
 
 impl FrameRenderer for FakeRenderer {
     fn render(
@@ -555,13 +555,13 @@ impl FrameRenderer for FakeRenderer {
         _project: &Project,
         _seq: ItemId,
         _t: Tick,
-        _opts: filmcraft_render::RenderOptions,
+        _opts: filmagic_render::RenderOptions,
         _sources: &dyn SourceProvider,
-    ) -> Option<filmcraft_render::Image> {
-        Some(filmcraft_render::Image::new(320, 180))
+    ) -> Option<filmagic_render::Image> {
+        Some(filmagic_render::Image::new(320, 180))
     }
 
-    fn caps(&self) -> filmcraft_render::plan::DeviceCaps {
+    fn caps(&self) -> filmagic_render::plan::DeviceCaps {
         self.0
     }
 }

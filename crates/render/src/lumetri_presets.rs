@@ -7,10 +7,10 @@
 //! reflection, a grey ramp down the left edge and six colour chips along the bottom, so a
 //! thumbnail shows what a look does to sky, shadows, saturated colours and neutrals.
 
-use filmcraft_color::srgb_to_linear;
-use filmcraft_geom::Vec2;
-use filmcraft_project::{EffectInstance, ParamValue, find_effect};
-use filmcraft_time::Tick;
+use filmagic_color::srgb_to_linear;
+use filmagic_geom::Vec2;
+use filmagic_project::{EffectInstance, ParamValue, find_effect};
+use filmagic_time::Tick;
 
 use crate::Image;
 use crate::effects::{FxCtx, apply};
@@ -230,7 +230,7 @@ pub fn thumbnail(preset: &LumetriPreset, w: usize, h: usize) -> Image {
         project: None,
         env: None,
         frame_rate: 24.0,
-        working: filmcraft_color::WorkingSpace::Rec709,
+        working: filmagic_color::WorkingSpace::Rec709,
     };
     apply(&mut img, &preset.instance(), &cx);
     img

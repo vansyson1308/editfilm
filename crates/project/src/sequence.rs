@@ -15,7 +15,7 @@ pub struct SequenceSettings {
     /// Video Display Format: how the monitors, timeline and ruler show time (Timecode, Feet +
     /// Frames 35mm / 16mm, Frames). Files from before this setting load as Timecode.
     #[serde(default)]
-    pub display: filmcraft_time::TimeDisplay,
+    pub display: filmagic_time::TimeDisplay,
     /// Editing mode / preset name shown in the settings dialog.
     pub preset: String,
     pub audio_master: AudioChannels,
@@ -28,11 +28,11 @@ pub struct SequenceSettings {
     /// Colour pipeline: working space (Rec. 709 / Rec. 2100 PQ / HLG), wide-gamut compositing,
     /// Auto Tone Map Media.
     #[serde(default = "default_color_pipeline")]
-    pub color: filmcraft_color::ColorPipeline,
+    pub color: filmagic_color::ColorPipeline,
 }
 
-fn default_color_pipeline() -> filmcraft_color::ColorPipeline {
-    filmcraft_color::ColorPipeline::REC709
+fn default_color_pipeline() -> filmagic_color::ColorPipeline {
+    filmagic_color::ColorPipeline::REC709
 }
 
 impl Default for SequenceSettings {
@@ -44,14 +44,14 @@ impl Default for SequenceSettings {
             par: (1, 1),
             sample_rate: 48_000,
             drop_frame: false,
-            display: filmcraft_time::TimeDisplay::Timecode,
+            display: filmagic_time::TimeDisplay::Timecode,
             preset: "HD 1080p 23.976".into(),
             audio_master: AudioChannels::Stereo,
             preview_codec: "ProRes 422".into(),
             max_bit_depth: false,
             max_render_quality: false,
             working_space: "Rec. 709".into(),
-            color: filmcraft_color::ColorPipeline::REC709,
+            color: filmagic_color::ColorPipeline::REC709,
         }
     }
 }

@@ -5,7 +5,7 @@
 # string table or product UI was consulted or copied; add entries the same way. Commands use the
 # base verb ("Simpan Sebagai…", "Tambah Penanda"), messages address the user as "Anda", and menu
 # labels keep the title case of the English source. Product, format and technology names
-# (FilmCraft, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
+# (Filmagic, ArtCraft, ProRes, LUFS, EDL, AAF…) keep their spelling, and common loanwords
 # of the trade (render, preset, mixer, gain, ripple, roll, slip, slide, snap, scrub, offline) stay
 # as they are. Decimal fractions in descriptions use a comma (29,97 fps). This catalog has the same
 # entries as `es.tsv` plus the native macOS Settings menu; strings added later show in English until
@@ -21,7 +21,7 @@
 # thumbnail = gambar mini, voice-over = sulih suara, default = bawaan, preferences (also the native
 # macOS Settings menu) = Preferensi, settings = pengaturan.
 
-	About FilmCraft	Tentang FilmCraft
+	About Filmagic	Tentang Filmagic
 	Add Audio Submix Track	Tambah Trek Submix Audio
 	Add Caption at Playhead	Tambah Takarir di Kepala Putar
 	Add Chapter Marker…	Tambah Penanda Bab…
@@ -47,7 +47,6 @@
 	Apply Default Transitions to Selection	Terapkan Transisi Bawaan ke Pilihan
 	Apply Video Transition	Terapkan Transisi Video
 	Arrange	Susun
-	ArtCraft Website	Situs Web ArtCraft
 	Assembly	Perakitan
 	Attach Proxies…	Lampirkan Proksi…
 	Audio Channels…	Kanal Audio…
@@ -144,9 +143,8 @@
 	File	Berkas
 	File…	Berkas…
 	Fill frame	Isi bingkai
-	FilmCraft Help…	Bantuan FilmCraft…
-	FilmCraft on GitHub	FilmCraft di GitHub
-	FilmCraft on getartcraft.com	FilmCraft di getartcraft.com
+	Filmagic Help…	Bantuan Filmagic…
+	Filmagic on GitHub	Filmagic di GitHub
 	Find Next	Cari Berikutnya
 	Find…	Cari…
 	Fit	Pas
@@ -190,7 +188,6 @@
 	Insert Frame Hold Segment	Sisipkan Segmen Tahan Bingkai
 	Install Motion Graphics Template…	Pasang Templat Grafis Gerak…
 	Interpret Footage…	Interpretasikan Rekaman…
-	Join the ArtCraft Discord…	Gabung ke Discord ArtCraft…
 	Keyboard Shortcuts…	Pintasan Keyboard…
 	Label	Label
 	Labels…	Label…
@@ -319,7 +316,7 @@
 	Select Previous Graphic	Pilih Grafis Sebelumnya
 	Select Previous Layer	Pilih Lapisan Sebelumnya
 	Selection Follows Playhead	Pilihan Mengikuti Kepala Putar
-	Selection as FilmCraft Project…	Pilihan sebagai Proyek FilmCraft…
+	Selection as Filmagic Project…	Pilihan sebagai Proyek Filmagic…
 	Selection…	Pilihan…
 	Send Backward	Kirim Mundur
 	Send to Back	Kirim ke Belakang
@@ -386,7 +383,6 @@
 	Master volume: use the Audio Track Mixer	Volume master: gunakan Mixer Trek Audio
 	Search	Cari
 	Quick Export	Ekspor Cepat
-	Join the ArtCraft Discord (discord.gg/artcraft)	Gabung ke Discord ArtCraft (discord.gg/artcraft)
 	Cancel	Batal
 	OK	OK
 	Interpret Footage	Interpretasikan Rekaman
@@ -429,8 +425,8 @@
 	Delete Caption Track	Hapus Trek Takarir
 	Delete Empty Caption Tracks	Hapus Trek Takarir Kosong
 	Version {version}	Versi {version}
-	A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.	Editor video non-linear clean-room berbahasa Rust murni. Bagian dari keluarga ArtCraft.
-	Join the ArtCraft Discord	Gabung ke Discord ArtCraft
+	A clean-room, pure-Rust non-linear video editor.	Editor video non-linear clean-room berbahasa Rust murni.
+	A fork of FilmCraft by the ArtCraft Team and the FilmCraft contributors.	Fork dari FilmCraft karya Tim ArtCraft dan para kontributor FilmCraft.
 	Source code on GitHub	Kode sumber di GitHub
 	Report an issue	Laporkan masalah
 	MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).	MIT OR Apache-2.0. Font: Inter, Noto Serif dan JetBrains Mono (SIL OFL 1.1).
@@ -450,8 +446,8 @@
 	No background jobs.	Tidak ada tugas latar belakang.
 	Recover Unsaved Changes	Pulihkan Perubahan yang Belum Disimpan
 	Untitled	Tanpa Judul
-	FilmCraft was closed while “{name}” had unsaved changes.	FilmCraft ditutup saat “{name}” masih memiliki perubahan yang belum disimpan.
-	FilmCraft quit unexpectedly while “{name}” had unsaved changes.	FilmCraft keluar secara tak terduga saat “{name}” masih memiliki perubahan yang belum disimpan.
+	Filmagic was closed while “{name}” had unsaved changes.	Filmagic ditutup saat “{name}” masih memiliki perubahan yang belum disimpan.
+	Filmagic quit unexpectedly while “{name}” had unsaved changes.	Filmagic keluar secara tak terduga saat “{name}” masih memiliki perubahan yang belum disimpan.
 	Recover unsaved changes from {when}?	Pulihkan perubahan yang belum disimpan dari {when}?
 	The project had not been saved yet.	Proyek ini belum pernah disimpan.
 	{n} sessions have unsaved changes:	{n} sesi memiliki perubahan yang belum disimpan:
@@ -474,7 +470,6 @@
 	Bars and Tone	Bar dan Nada
 	SMPTE HD bars with 1 kHz reference tone	Bar SMPTE HD dengan nada referensi 1 kHz
 	Community	Komunitas
-	Join us on Discord	Bergabunglah dengan kami di Discord
 	OMF Export Settings	Pengaturan Ekspor OMF
 	AAF Export Settings	Pengaturan Ekspor AAF
 	OMF Title:	Judul OMF:
@@ -979,7 +974,7 @@
 	Font family	Keluarga font
 	Label Colors	Warna Label
 	Decoded frames held for the monitors and thumbnails: {used} of {budget}.	Bingkai terdekode yang disimpan untuk monitor dan gambar mini: {used} dari {budget}.
-	FilmCraft keeps the rest of the RAM free for other applications.	FilmCraft membiarkan sisa RAM bebas untuk aplikasi lain.
+	Filmagic keeps the rest of the RAM free for other applications.	Filmagic membiarkan sisa RAM bebas untuk aplikasi lain.
 	not available in this session	tidak tersedia di sesi ini
 	Currently: {loc} — {files} file(s), {size}	Saat ini: {loc} — {files} berkas, {size}
 	 ({ch} output channels)	 ({ch} kanal output)
@@ -1090,7 +1085,7 @@
 	Video Frame	Bingkai Video
 	Pin To	Sematkan ke
 	Pinned Edges	Tepi Tersemat
-	FilmCraft Graphics Template	Templat Grafis FilmCraft
+	Filmagic Graphics Template	Templat Grafis Filmagic
 	{n} Font	Font {n}
 	{n} Size	Ukuran {n}
 	{n} Color	Warna {n}
@@ -1100,7 +1095,7 @@
 	Export As Motion Graphics Template	Ekspor sebagai Templat Grafis Gerak
 	Category:	Kategori:
 	Editable properties:	Properti yang dapat diedit:
-	Saved as a FilmCraft graphics template (.fcgt) in your templates folder.	Disimpan sebagai templat grafis FilmCraft (.fcgt) di folder templat Anda.
+	Saved as a Filmagic graphics template (.fcgt) in your templates folder.	Disimpan sebagai templat grafis Filmagic (.fcgt) di folder templat Anda.
 	Exported graphics template to {path}	Templat grafis diekspor ke {path}
 	Replace Fonts in Projects	Ganti Font di Proyek
 	Fonts used in the project:	Font yang dipakai di proyek:
@@ -1471,7 +1466,7 @@
 	Center of Sphere	Pusat Bola
 	Cents	Sen
 	Change to Color	Ubah ke Warna
-	Changes are copied in the background a moment after each edit. If FilmCraft quits unexpectedly, they are offered the next time it starts.	Perubahan disalin di latar belakang sesaat setelah setiap edit. Jika FilmCraft keluar secara tak terduga, perubahan itu ditawarkan saat FilmCraft dimulai berikutnya.
+	Changes are copied in the background a moment after each edit. If Filmagic quits unexpectedly, they are offered the next time it starts.	Perubahan disalin di latar belakang sesaat setelah setiap edit. Jika Filmagic keluar secara tak terduga, perubahan itu ditawarkan saat Filmagic dimulai berikutnya.
 	Channel	Kanal
 	Channel Blur	Buram Kanal
 	Channel Mix	Campuran Kanal
@@ -1844,7 +1839,7 @@
 	Hard Limiter	Limiter Keras
 	Hard Mix	Campuran Keras
 	Hardware decoding	Dekode perangkat keras
-	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and FilmCraft's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder FilmCraft sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
+	Hardware decoding: Auto uses the system's video decoder (VideoToolbox on macOS, Media Foundation on Windows, VA-API or NVDEC for H.264 and HEVC on Linux) for the streams it supports, and Filmagic's own decoder for everything else or if the hardware fails. Media that is already open keeps its decoder until it is reopened.	Dekode perangkat keras: Otomatis menggunakan dekoder video sistem (VideoToolbox di macOS, Media Foundation di Windows, VA-API atau NVDEC untuk H.264 dan HEVC di Linux) untuk stream yang didukungnya, dan dekoder Filmagic sendiri untuk yang lainnya atau jika perangkat keras gagal. Media yang sudah terbuka tetap memakai dekodernya sampai dibuka ulang.
 	Head Size	Ukuran Kepala
 	Heart	Hati
 	Height	Tinggi
@@ -2119,7 +2114,7 @@
 	Night	Malam
 	No Motion	Tanpa Gerak
 	No Scroll	Tanpa Gulir
-	No plugins are installed. Changes will take effect the next time you start FilmCraft.	Tidak ada plugin yang terpasang. Perubahan akan berlaku saat Anda memulai FilmCraft berikutnya.
+	No plugins are installed. Changes will take effect the next time you start Filmagic.	Tidak ada plugin yang terpasang. Perubahan akan berlaku saat Anda memulai Filmagic berikutnya.
 	Noise	Derau
 	Noise & Grain	Derau & Butiran
 	Noise (Legacy)	Derau (Lama)
@@ -2550,7 +2545,7 @@
 	Template Properties	Properti Templat
 	Text Animator	Animator Teks
 	Text Color	Warna Teks
-	The media cache holds render previews of unsaved projects and other files FilmCraft can recreate. Deleting them is always safe; FilmCraft rebuilds them as needed.	Cache media menyimpan pratinjau render dari proyek yang belum disimpan dan berkas lain yang dapat dibuat ulang oleh FilmCraft. Menghapusnya selalu aman; FilmCraft membangunnya kembali bila diperlukan.
+	The media cache holds render previews of unsaved projects and other files Filmagic can recreate. Deleting them is always safe; Filmagic rebuilds them as needed.	Cache media menyimpan pratinjau render dari proyek yang belum disimpan dan berkas lain yang dapat dibuat ulang oleh Filmagic. Menghapusnya selalu aman; Filmagic membangunnya kembali bila diperlukan.
 	Thickness	Ketebalan
 	Tile Gradient	Gradien Ubin
 	Tilt	Miringkan
@@ -2760,7 +2755,7 @@
 	System Compatibility Report	Laporan Kompatibilitas Sistem
 	no GPU adapter: the CPU compositor is used	tidak ada adaptor GPU: kompositor CPU digunakan
 	Avid Log Exchange	Avid Log Exchange
-	FilmCraft Project	Proyek FilmCraft
+	Filmagic Project	Proyek Filmagic
 	{name} Selection.fcproj	{name} Pilihan.fcproj
 	{name} (Simplified)	{name} (Disederhanakan)
 	Find in:	Cari di:
@@ -2900,7 +2895,7 @@
 	Start Queue	Mulai Antrean
 	Stop	Berhenti
 	Clear Finished	Hapus yang Selesai
-	Not supported by FilmCraft's encoders yet	Belum didukung oleh enkoder FilmCraft
+	Not supported by Filmagic's encoders yet	Belum didukung oleh enkoder Filmagic
 	Sequence name	Nama sekuens
 	Folder	Folder
 	Preset	Preset
@@ -2990,7 +2985,7 @@
 	Drag a clip to slide it between its neighbours.	Seret klip untuk menggesernya di antara klip tetangganya.
 	Drag to scroll the timeline.	Seret untuk menggulir linimasa.
 	Click to zoom in; Opt-click to zoom out.	Klik untuk memperbesar; Opt-klik untuk memperkecil.
-	FilmCraft hit an error	FilmCraft mengalami galat
+	Filmagic hit an error	Filmagic mengalami galat
 	Details: {path}	Detail: {path}
 	Opened {url}	Membuka {url}
 	(empty)	(kosong)
@@ -3243,7 +3238,7 @@
 	QuickTime, ProRes 4444 (4:4:4) with alpha channel, 24-bit 48 kHz PCM	QuickTime, ProRes 4444 (4:4:4) dengan kanal alfa, PCM 24-bit 48 kHz
 	QuickTime, ProRes 4444 XQ (4:4:4), 24-bit 48 kHz PCM	QuickTime, ProRes 4444 XQ (4:4:4), PCM 24-bit 48 kHz
 	QuickTime, ProRes 422, 24-bit 48 kHz PCM	QuickTime, ProRes 422, PCM 24-bit 48 kHz
-	Quit FilmCraft	Keluar dari FilmCraft
+	Quit Filmagic	Keluar dari Filmagic
 	Rate Stretch Tool	Alat Regang Laju
 	Razor Tool	Alat Silet
 	Rectangle Tool	Alat Persegi Panjang
@@ -3544,8 +3539,8 @@
 	Composite in Linear Color	Komposit dalam Warna Linier
 	Auto Tone Map Media (HDR and log into SDR)	Pemetaan Nada Otomatis Media (HDR dan log ke SDR)
 	Configure…	Konfigurasi…
-	Not supported in FilmCraft yet	Belum didukung di FilmCraft
-	FilmCraft always composites in linear light	FilmCraft selalu mengomposit dalam cahaya linier
+	Not supported in Filmagic yet	Belum didukung di Filmagic
+	Filmagic always composites in linear light	Filmagic selalu mengomposit dalam cahaya linier
 	Loop marked range	Ulangi rentang yang ditandai
 	Play Source	Putar Sumber
 	Source Play/Stop	Putar/Berhenti Sumber
@@ -3597,7 +3592,7 @@
 	Audio Names	Nama Audio
 
 # Control server: the status-bar notice when --control cannot serve.
-	The control server is disabled: FILMCRAFT_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMCRAFT_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
+	The control server is disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	Server kontrol dinonaktifkan: FILMAGIC_CONTROL_TOKEN harus berisi 64 karakter heksadesimal acak (lihat docs/control-protocol.md)
 
 # Markers: the Edit Marker dialog (#2416).
 	Edit Marker…	Edit Penanda…

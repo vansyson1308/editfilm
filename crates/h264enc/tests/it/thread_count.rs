@@ -2,7 +2,7 @@
 //! must produce byte-identical streams (also across the reuse of the per-picture buffers over many frames).
 
 use crate::common::synth;
-use filmcraft_h264enc::*;
+use filmagic_h264enc::*;
 
 fn encode(rate: RateControl, bframes: u8, threads: usize) -> Vec<u8> {
     let mut c = EncoderConfig::new(320, 192, 24, 1);

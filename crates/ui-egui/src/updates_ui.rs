@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::FilmcraftApp;
+use crate::FilmagicApp;
 
 #[cfg(not(target_arch = "wasm32"))]
 use craft_update::updater::{Action, Status, Updater};
@@ -39,7 +39,7 @@ impl Default for Runtime {
     }
 }
 
-impl FilmcraftApp {
+impl FilmagicApp {
     /// Whether the app asks for a newer release when it starts (off until the desktop app turns it on).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_startup_update_check(&mut self, on: bool) {
@@ -47,7 +47,7 @@ impl FilmcraftApp {
     }
 }
 
-pub(crate) fn check(app: &mut FilmcraftApp) -> Result<Value, String> {
+pub(crate) fn check(app: &mut FilmagicApp) -> Result<Value, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.updates_rt.check_requested = true;
@@ -64,7 +64,7 @@ pub(crate) fn check(app: &mut FilmcraftApp) -> Result<Value, String> {
     }
 }
 
-pub(crate) fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub(crate) fn tick(app: &mut FilmagicApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let rt = &mut app.updates_rt;
@@ -80,7 +80,7 @@ pub(crate) fn tick(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let _ = (app, ctx);
 }
 
-pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
+pub(crate) fn show(app: &mut FilmagicApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
@@ -113,7 +113,7 @@ pub(crate) fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     #[cfg(target_arch = "wasm32")]
     if app.updates_rt.manual_window_open {
         let mut open = true;
-        egui::Window::new(crate::i18n::t("FilmCraft Updates"))
+        egui::Window::new(crate::i18n::t("Filmagic Updates"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -143,7 +143,7 @@ fn result_window_open(open: bool, status: &Status, check_requested: bool) -> boo
 
 /// Starts an update that waits for the app to exit. Called from `on_exit`; dropping the updater
 /// does the same, and later calls do nothing.
-pub(crate) fn exiting(app: &mut FilmcraftApp) {
+pub(crate) fn exiting(app: &mut FilmagicApp) {
     #[cfg(not(target_arch = "wasm32"))]
     app.updates_rt.updater.start_pending_update();
     #[cfg(target_arch = "wasm32")]
@@ -169,13 +169,13 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn startup_prompt_shows_and_closes() {
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let mut app = FilmagicApp::new(filmagic_engine::Session::default());
         let ctx = egui::Context::default();
         let release = craft_update::Release {
             tag: "v99.0.0".into(),
             version: craft_update::parse_version("99.0.0"),
-            name: "FilmCraft 99.0.0".into(),
-            html_url: "https://github.com/storytold/filmcraft/releases/tag/v99.0.0".into(),
+            name: "Filmagic 99.0.0".into(),
+            html_url: "https://github.com/vansyson1308/editfilm/releases/tag/v99.0.0".into(),
             ..Default::default()
         };
         app.updates_rt.updater.offer(release);

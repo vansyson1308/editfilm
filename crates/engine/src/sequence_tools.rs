@@ -30,10 +30,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use filmcraft_edit as edit;
-use filmcraft_media::MediaKind;
-use filmcraft_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SplitMarks, TrackId, TrackItem, TrackKind};
-use filmcraft_time::{FrameRate, Tick, TimeRange};
+use filmagic_edit as edit;
+use filmagic_media::MediaKind;
+use filmagic_project::{AudioChannels, ClipId, ItemId, Label, Marker, MarkerId, MarkerKind, Project, Sequence, SplitMarks, TrackId, TrackItem, TrackKind};
+use filmagic_time::{FrameRate, Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::commands::{
@@ -543,7 +543,7 @@ fn comparable_master(project: &Project, it: &TrackItem) -> Option<(ItemId, Frame
 /// they are set. The new sequence is added to the project and selected; the original is unchanged.
 /// Give a sequence made from part of `from` (Nest…, Make Subsequence) the track names and audio
 /// channel layouts of `from`'s tracks, track for track.
-pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &filmcraft_project::Sequence) {
+pub(crate) fn lay_out_tracks_like(new: &mut filmagic_project::Sequence, from: &filmagic_project::Sequence) {
     for (tr, src) in new.video_tracks.iter_mut().zip(&from.video_tracks) {
         tr.name = src.name.clone();
     }
@@ -561,7 +561,7 @@ pub(crate) fn lay_out_tracks_like(new: &mut filmcraft_project::Sequence, from: &
 /// same loop; rustc 1.97.0 compiled that loop wrongly at the dev profile's `opt-level = 1` (the
 /// list reported its length and held nothing, so no transition was carried), while release builds
 /// were right. `nest_editing_tests` fails in a dev build if that comes back.
-fn carried_transition(trn: &filmcraft_project::Transition, ids: &std::collections::HashMap<ClipId, ClipId>) -> Option<filmcraft_project::Transition> {
+fn carried_transition(trn: &filmagic_project::Transition, ids: &std::collections::HashMap<ClipId, ClipId>) -> Option<filmagic_project::Transition> {
     let copy_of = |clip: Option<ClipId>| match clip {
         None => Some(None),
         Some(c) => ids.get(&c).map(|n| Some(*n)),
@@ -633,12 +633,12 @@ fn make_subsequence(s: &mut Session, p: &Value) -> Result<Value> {
             }
             placed.push((kind, ti, it));
         }
-        let mut transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)> = Vec::new();
+        let mut transitions: Vec<(TrackKind, usize, filmagic_project::Transition)> = Vec::new();
         for (kind, tracks) in [(TrackKind::Video, &q.video_tracks), (TrackKind::Audio, &q.audio_tracks)] {
             for (ti, tr) in tracks.iter().enumerate() {
                 for trn in tr.transitions.iter().filter(|t| range.is_none_or(|r| t.start >= r.start && t.end() <= r.end())) {
                     if let Some(mut t) = carried_transition(trn, &ids) {
-                        t.id = filmcraft_project::TransitionId(pr.alloc_id());
+                        t.id = filmagic_project::TransitionId(pr.alloc_id());
                         t.start -= offset;
                         transitions.push((kind, ti, t));
                     }
@@ -724,13 +724,13 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
             }
             placed.push((kind, lane, it));
         }
-        let mut transitions: Vec<(TrackKind, usize, filmcraft_project::Transition)> = Vec::new();
+        let mut transitions: Vec<(TrackKind, usize, filmagic_project::Transition)> = Vec::new();
         for (kind, tracks) in [(TrackKind::Video, &src.video_tracks), (TrackKind::Audio, &src.audio_tracks)] {
             for (ti, tr) in tracks.iter().enumerate() {
                 let Some(lane) = lanes.get(&(audio(kind), ti)).copied() else { continue };
                 for trn in tr.transitions.iter().filter(|t| t.start >= range.start && t.end() <= range.end()) {
                     if let Some(mut t) = carried_transition(trn, &ids) {
-                        t.id = filmcraft_project::TransitionId(p.alloc_id());
+                        t.id = filmagic_project::TransitionId(p.alloc_id());
                         t.start = at + (t.start - range.start);
                         transitions.push((kind, lane, t));
                     }
@@ -746,7 +746,7 @@ pub(crate) fn place_sequence_clips(s: &mut Session, placement: crate::commands::
                 let id = TrackId(p.alloc_id());
                 let tracks = p.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?.tracks_mut(kind);
                 let (word, n) = (if kind == TrackKind::Video { "Video" } else { "Audio" }, tracks.len() + 1);
-                tracks.push(filmcraft_project::Track::new(id, kind, format!("{word} {n}")));
+                tracks.push(filmagic_project::Track::new(id, kind, format!("{word} {n}")));
             }
             let id = p.sequence(seq_id).and_then(|q| q.tracks(kind).get(index)).map(|t| t.id).ok_or(EngineError::NoSequence)?;
             dest.insert((is_audio, lane), id);
@@ -816,7 +816,7 @@ fn placement(p: &Value, key: &str, letter: char, len: usize) -> Result<usize> {
 
 /// Give the tracks that still carry a default name (`<prefix> <number>`) the number of their
 /// place, as Premiere numbers its tracks; a track the user named keeps its name.
-fn renumber(tracks: &mut [filmcraft_project::Track], prefix: &str) {
+fn renumber(tracks: &mut [filmagic_project::Track], prefix: &str) {
     for (i, t) in tracks.iter_mut().enumerate() {
         let default = t.name.strip_prefix(prefix).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
         if default {
@@ -862,7 +862,7 @@ pub(crate) fn add_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let added = s.edit_sequence("Add Tracks", |q, ctx, _| {
         let mut new = |kind: TrackKind, prefix: &str, channels: Option<AudioChannels>| {
-            let mut t = filmcraft_project::Track::new(TrackId(ctx.alloc()), kind, format!("{prefix} 0"));
+            let mut t = filmagic_project::Track::new(TrackId(ctx.alloc()), kind, format!("{prefix} 0"));
             if let Some(c) = channels {
                 t.channels = c;
             }
@@ -1045,8 +1045,8 @@ impl Side {
 
 fn source_marks(s: &Session, item: ItemId) -> (Option<Tick>, Option<Tick>) {
     match s.project.item(item).map(|i| &i.kind) {
-        Some(filmcraft_project::ItemKind::Media(m)) => (m.mark_in, m.mark_out),
-        Some(filmcraft_project::ItemKind::Sequence(q)) => (q.mark_in, q.mark_out),
+        Some(filmagic_project::ItemKind::Media(m)) => (m.mark_in, m.mark_out),
+        Some(filmagic_project::ItemKind::Sequence(q)) => (q.mark_in, q.mark_out),
         _ => (None, None),
     }
 }
@@ -1180,7 +1180,7 @@ fn add_range_marker_in_out(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn filter_colors(s: &mut Session, p: &Value) -> Result<Value> {
     let id = "markers.filterColors";
-    let parse = |v: &Value| -> Result<(Label, Option<filmcraft_project::HexColor>)> {
+    let parse = |v: &Value| -> Result<(Label, Option<filmagic_project::HexColor>)> {
         crate::commands::marker_color_p(&json!({"color":v}), id)?.ok_or_else(|| bad(id, "need a color"))
     };
     if let Some(value) = p.get("hidden") {

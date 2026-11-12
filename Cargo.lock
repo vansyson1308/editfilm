@@ -1883,7 +1883,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft"
+name = "filmagic"
 version = "0.20.0"
 dependencies = [
  "arboard",
@@ -1892,14 +1892,14 @@ dependencies = [
  "craft-update",
  "eframe",
  "egui",
- "filmcraft-engine",
- "filmcraft-export",
- "filmcraft-gpu",
- "filmcraft-platform",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-time",
- "filmcraft-ui-egui",
+ "filmagic-engine",
+ "filmagic-export",
+ "filmagic-gpu",
+ "filmagic-platform",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-time",
+ "filmagic-ui-egui",
  "glob",
  "log",
  "muda",
@@ -1919,48 +1919,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-aac"
+name = "filmagic-aac"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-ac3"
+name = "filmagic-ac3"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-apv"
+name = "filmagic-apv"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-audio-dsp"
+name = "filmagic-audio-dsp"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
 ]
 
 [[package]]
-name = "filmcraft-automation"
+name = "filmagic-automation"
 version = "0.20.0"
 dependencies = [
  "base64",
- "filmcraft-engine",
- "filmcraft-time",
+ "filmagic-engine",
+ "filmagic-time",
  "image",
  "rmcp",
  "schemars",
@@ -1972,97 +1972,97 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-av1"
+name = "filmagic-av1"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
  "rayon",
  "rustix 1.1.5",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-avi"
+name = "filmagic-avi"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
 ]
 
 [[package]]
-name = "filmcraft-bitstream"
+name = "filmagic-bitstream"
 version = "0.20.0"
 dependencies = [
  "craft-media",
 ]
 
 [[package]]
-name = "filmcraft-captions"
+name = "filmagic-captions"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-project",
- "filmcraft-text",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-project",
+ "filmagic-text",
+ "filmagic-time",
  "proptest",
  "roxmltree",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-cfb"
+name = "filmagic-cfb"
 version = "0.20.0"
 
 [[package]]
-name = "filmcraft-cli"
+name = "filmagic-cli"
 version = "0.20.0"
 dependencies = [
- "filmcraft-automation",
- "filmcraft-codecs",
- "filmcraft-engine",
- "filmcraft-export",
- "filmcraft-gpu",
- "filmcraft-media",
- "filmcraft-mpegts",
- "filmcraft-mxf",
- "filmcraft-ogg",
- "filmcraft-platform",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-testkit",
- "filmcraft-time",
+ "filmagic-automation",
+ "filmagic-codecs",
+ "filmagic-engine",
+ "filmagic-export",
+ "filmagic-gpu",
+ "filmagic-media",
+ "filmagic-mpegts",
+ "filmagic-mxf",
+ "filmagic-ogg",
+ "filmagic-platform",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-testkit",
+ "filmagic-time",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "filmcraft-codecs"
+name = "filmagic-codecs"
 version = "0.20.0"
 dependencies = [
- "filmcraft-aac",
- "filmcraft-ac3",
- "filmcraft-apv",
- "filmcraft-av1",
- "filmcraft-avi",
- "filmcraft-bitstream",
- "filmcraft-color",
- "filmcraft-dnx",
- "filmcraft-frame",
- "filmcraft-h264",
- "filmcraft-hevc",
- "filmcraft-isobmff",
- "filmcraft-matroska",
- "filmcraft-media",
- "filmcraft-mpa",
- "filmcraft-mpeg2v",
- "filmcraft-mpegts",
- "filmcraft-mxf",
- "filmcraft-ogg",
- "filmcraft-opus",
- "filmcraft-prores",
- "filmcraft-testkit",
- "filmcraft-time",
- "filmcraft-vp8",
- "filmcraft-vp9",
+ "filmagic-aac",
+ "filmagic-ac3",
+ "filmagic-apv",
+ "filmagic-av1",
+ "filmagic-avi",
+ "filmagic-bitstream",
+ "filmagic-color",
+ "filmagic-dnx",
+ "filmagic-frame",
+ "filmagic-h264",
+ "filmagic-hevc",
+ "filmagic-isobmff",
+ "filmagic-matroska",
+ "filmagic-media",
+ "filmagic-mpa",
+ "filmagic-mpeg2v",
+ "filmagic-mpegts",
+ "filmagic-mxf",
+ "filmagic-ogg",
+ "filmagic-opus",
+ "filmagic-prores",
+ "filmagic-testkit",
+ "filmagic-time",
+ "filmagic-vp8",
+ "filmagic-vp9",
  "image",
  "log",
  "rayon",
@@ -2073,7 +2073,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-color"
+name = "filmagic-color"
 version = "0.20.0"
 dependencies = [
  "proptest",
@@ -2081,10 +2081,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-dng"
+name = "filmagic-dng"
 version = "0.20.0"
 dependencies = [
- "filmcraft-dng",
+ "filmagic-dng",
  "image",
  "rayon",
  "serde",
@@ -2093,56 +2093,56 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-dnx"
+name = "filmagic-dnx"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-edit"
+name = "filmagic-edit"
 version = "0.20.0"
 dependencies = [
- "filmcraft-geom",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-time",
+ "filmagic-geom",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-time",
  "proptest",
  "serde_json",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-engine"
+name = "filmagic-engine"
 version = "0.20.0"
 dependencies = [
  "chrono",
  "craft-docpath",
- "filmcraft-audio-dsp",
- "filmcraft-captions",
- "filmcraft-codecs",
- "filmcraft-color",
- "filmcraft-dng",
- "filmcraft-edit",
- "filmcraft-export",
- "filmcraft-format",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-interchange",
- "filmcraft-isobmff",
- "filmcraft-media",
- "filmcraft-mxf",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-scopes",
- "filmcraft-speech",
- "filmcraft-testkit",
- "filmcraft-text",
- "filmcraft-time",
- "filmcraft-tts",
+ "filmagic-audio-dsp",
+ "filmagic-captions",
+ "filmagic-codecs",
+ "filmagic-color",
+ "filmagic-dng",
+ "filmagic-edit",
+ "filmagic-export",
+ "filmagic-format",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-interchange",
+ "filmagic-isobmff",
+ "filmagic-media",
+ "filmagic-mxf",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-scopes",
+ "filmagic-speech",
+ "filmagic-testkit",
+ "filmagic-text",
+ "filmagic-time",
+ "filmagic-tts",
  "image",
  "log",
  "roxmltree",
@@ -2153,29 +2153,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-export"
+name = "filmagic-export"
 version = "0.20.0"
 dependencies = [
- "filmcraft-aac",
- "filmcraft-apv",
- "filmcraft-audio-dsp",
- "filmcraft-codecs",
- "filmcraft-color",
- "filmcraft-dnx",
- "filmcraft-flac",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-h264enc",
- "filmcraft-isobmff",
- "filmcraft-media",
- "filmcraft-mp3enc",
- "filmcraft-mxf",
- "filmcraft-project",
- "filmcraft-prores",
- "filmcraft-render",
- "filmcraft-testkit",
- "filmcraft-text",
- "filmcraft-time",
+ "filmagic-aac",
+ "filmagic-apv",
+ "filmagic-audio-dsp",
+ "filmagic-codecs",
+ "filmagic-color",
+ "filmagic-dnx",
+ "filmagic-flac",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-h264enc",
+ "filmagic-isobmff",
+ "filmagic-media",
+ "filmagic-mp3enc",
+ "filmagic-mxf",
+ "filmagic-project",
+ "filmagic-prores",
+ "filmagic-render",
+ "filmagic-testkit",
+ "filmagic-text",
+ "filmagic-time",
  "image",
  "rayon",
  "serde",
@@ -2185,22 +2185,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-flac"
+name = "filmagic-flac"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-format"
+name = "filmagic-format"
 version = "0.20.0"
 dependencies = [
  "chrono",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-time",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-time",
  "log",
  "serde",
  "serde_json",
@@ -2209,17 +2209,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-frame"
+name = "filmagic-frame"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-time",
  "rayon",
  "serde",
 ]
 
 [[package]]
-name = "filmcraft-geom"
+name = "filmagic-geom"
 version = "0.20.0"
 dependencies = [
  "proptest",
@@ -2227,34 +2227,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-golden"
+name = "filmagic-golden"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-gpu",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-testkit",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-gpu",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-testkit",
+ "filmagic-time",
  "pollster 1.0.1",
  "wgpu",
 ]
 
 [[package]]
-name = "filmcraft-gpu"
+name = "filmagic-gpu"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-export",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-export",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-time",
  "image",
  "log",
  "pollster 1.0.1",
@@ -2263,45 +2263,45 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-h264"
+name = "filmagic-h264"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-h264enc"
+name = "filmagic-h264enc"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-hevc"
+name = "filmagic-hevc"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-interchange"
+name = "filmagic-interchange"
 version = "0.20.0"
 dependencies = [
- "filmcraft-cfb",
- "filmcraft-color",
- "filmcraft-geom",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-time",
+ "filmagic-cfb",
+ "filmagic-color",
+ "filmagic-geom",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-time",
  "proptest",
  "roxmltree",
  "serde",
@@ -2310,33 +2310,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-isobmff"
+name = "filmagic-isobmff"
 version = "0.20.0"
 dependencies = [
  "craft-media",
- "filmcraft-testkit",
+ "filmagic-testkit",
  "proptest",
  "serde_json",
 ]
 
 [[package]]
-name = "filmcraft-matroska"
+name = "filmagic-matroska"
 version = "0.20.0"
 dependencies = [
  "craft-media",
- "filmcraft-testkit",
+ "filmagic-testkit",
  "serde_json",
 ]
 
 [[package]]
-name = "filmcraft-media"
+name = "filmagic-media"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-dng",
- "filmcraft-frame",
- "filmcraft-testkit",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-dng",
+ "filmagic-frame",
+ "filmagic-testkit",
+ "filmagic-time",
  "image",
  "png",
  "rayon",
@@ -2345,79 +2345,79 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-mp3enc"
+name = "filmagic-mp3enc"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-mpa"
+name = "filmagic-mpa"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-mpeg2v"
+name = "filmagic-mpeg2v"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-mpegts"
+name = "filmagic-mpegts"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-mxf"
+name = "filmagic-mxf"
 version = "0.20.0"
 dependencies = [
  "chrono",
- "filmcraft-testkit",
+ "filmagic-testkit",
 ]
 
 [[package]]
-name = "filmcraft-ogg"
+name = "filmagic-ogg"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
 ]
 
 [[package]]
-name = "filmcraft-opus"
+name = "filmagic-opus"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
 ]
 
 [[package]]
-name = "filmcraft-platform"
+name = "filmagic-platform"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-codecs",
- "filmcraft-color",
- "filmcraft-export",
- "filmcraft-frame",
- "filmcraft-h264",
- "filmcraft-hevc",
- "filmcraft-isobmff",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-testkit",
- "filmcraft-time",
+ "filmagic-bitstream",
+ "filmagic-codecs",
+ "filmagic-color",
+ "filmagic-export",
+ "filmagic-frame",
+ "filmagic-h264",
+ "filmagic-hevc",
+ "filmagic-isobmff",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-testkit",
+ "filmagic-time",
  "libloading",
  "log",
  "objc2-core-foundation",
@@ -2428,13 +2428,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-project"
+name = "filmagic-project"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
- "filmcraft-geom",
- "filmcraft-media",
- "filmcraft-time",
+ "filmagic-color",
+ "filmagic-geom",
+ "filmagic-media",
+ "filmagic-time",
  "proptest",
  "serde",
  "serde_json",
@@ -2443,28 +2443,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-prores"
+name = "filmagic-prores"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-render"
+name = "filmagic-render"
 version = "0.20.0"
 dependencies = [
- "filmcraft-audio-dsp",
- "filmcraft-captions",
- "filmcraft-color",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-media",
- "filmcraft-project",
- "filmcraft-text",
- "filmcraft-time",
+ "filmagic-audio-dsp",
+ "filmagic-captions",
+ "filmagic-color",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-media",
+ "filmagic-project",
+ "filmagic-text",
+ "filmagic-time",
  "image",
  "rayon",
  "rustix 1.1.5",
@@ -2473,22 +2473,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-scopes"
+name = "filmagic-scopes"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
+ "filmagic-color",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "filmcraft-speech"
+name = "filmagic-speech"
 version = "0.20.0"
 dependencies = [
  "candle-core",
  "candle-nn",
- "filmcraft-project",
- "filmcraft-time",
+ "filmagic-project",
+ "filmagic-time",
  "rayon",
  "rustls",
  "rustls-rustcrypto",
@@ -2501,7 +2501,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-testkit"
+name = "filmagic-testkit"
 version = "0.20.0"
 dependencies = [
  "chrono",
@@ -2510,10 +2510,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-text"
+name = "filmagic-text"
 version = "0.20.0"
 dependencies = [
- "filmcraft-color",
+ "filmagic-color",
  "harfrust",
  "skrifa",
  "tempfile",
@@ -2523,7 +2523,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-time"
+name = "filmagic-time"
 version = "0.20.0"
 dependencies = [
  "proptest",
@@ -2531,13 +2531,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-tts"
+name = "filmagic-tts"
 version = "0.20.0"
 dependencies = [
  "candle-core",
  "candle-nn",
- "filmcraft-audio-dsp",
- "filmcraft-tts-text",
+ "filmagic-audio-dsp",
+ "filmagic-tts-text",
  "serde",
  "serde_json",
  "sha2",
@@ -2546,7 +2546,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-tts-text"
+name = "filmagic-tts-text"
 version = "0.20.0"
 dependencies = [
  "serde",
@@ -2554,7 +2554,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-ui-egui"
+name = "filmagic-ui-egui"
 version = "0.20.0"
 dependencies = [
  "cpu-time",
@@ -2564,25 +2564,25 @@ dependencies = [
  "egui",
  "egui_extras",
  "egui_kittest",
- "filmcraft-audio-dsp",
- "filmcraft-captions",
- "filmcraft-codecs",
- "filmcraft-color",
- "filmcraft-edit",
- "filmcraft-engine",
- "filmcraft-export",
- "filmcraft-frame",
- "filmcraft-geom",
- "filmcraft-gpu",
- "filmcraft-interchange",
- "filmcraft-media",
- "filmcraft-platform",
- "filmcraft-project",
- "filmcraft-render",
- "filmcraft-scopes",
- "filmcraft-text",
- "filmcraft-time",
- "filmcraft-tts",
+ "filmagic-audio-dsp",
+ "filmagic-captions",
+ "filmagic-codecs",
+ "filmagic-color",
+ "filmagic-edit",
+ "filmagic-engine",
+ "filmagic-export",
+ "filmagic-frame",
+ "filmagic-geom",
+ "filmagic-gpu",
+ "filmagic-interchange",
+ "filmagic-media",
+ "filmagic-platform",
+ "filmagic-project",
+ "filmagic-render",
+ "filmagic-scopes",
+ "filmagic-text",
+ "filmagic-time",
+ "filmagic-tts",
  "image",
  "log",
  "pollster 1.0.1",
@@ -2597,40 +2597,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "filmcraft-vp8"
+name = "filmagic-vp8"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-vp9"
+name = "filmagic-vp9"
 version = "0.20.0"
 dependencies = [
- "filmcraft-bitstream",
- "filmcraft-testkit",
+ "filmagic-bitstream",
+ "filmagic-testkit",
  "rayon",
  "thiserror 2.0.21",
 ]
 
 [[package]]
-name = "filmcraft-web"
+name = "filmagic-web"
 version = "0.20.0"
 dependencies = [
  "craft-web-api",
  "craft-web-host",
  "eframe",
  "egui",
- "filmcraft-codecs",
- "filmcraft-color",
- "filmcraft-engine",
- "filmcraft-format",
- "filmcraft-frame",
- "filmcraft-isobmff",
- "filmcraft-media",
- "filmcraft-time",
- "filmcraft-ui-egui",
+ "filmagic-codecs",
+ "filmagic-color",
+ "filmagic-engine",
+ "filmagic-format",
+ "filmagic-frame",
+ "filmagic-isobmff",
+ "filmagic-media",
+ "filmagic-time",
+ "filmagic-ui-egui",
  "js-sys",
  "log",
  "serde_json",
@@ -8118,7 +8118,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 name = "xtask"
 version = "0.20.0"
 dependencies = [
- "filmcraft-testkit",
+ "filmagic-testkit",
  "serde_json",
 ]
 

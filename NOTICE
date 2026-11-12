@@ -1,11 +1,14 @@
-FilmCraft
-Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors.
+Filmagic
+A modified version (a fork) of FilmCraft, https://github.com/storytold/filmcraft.
+
+FilmCraft: Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors.
+Changes made in Filmagic: Copyright (c) 2026 the Filmagic contributors.
 Licensed under the MIT License or the Apache License, Version 2.0, at your option
 (LICENSE-MIT, LICENSE-APACHE).
 
-The ArtCraft name, wordmark and logos in docs/brand/ are trademarks of the ArtCraft Team. They are
-not open source and are not covered by the license above; their terms are in
-docs/brand/LICENSE-brand.txt.
+Filmagic is not affiliated with, endorsed by or supported by the ArtCraft Team. The ArtCraft name,
+wordmark and logos are trademarks of the ArtCraft Team; they are not open source and are not in this
+repository.
 
 Third-party material
 

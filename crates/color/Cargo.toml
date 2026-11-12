@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-color"
+name = "filmagic-color"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

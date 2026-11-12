@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use filmcraft_color::ColorInfo;
-use filmcraft_media::{AudioStreamInfo, Generator, MediaInfo, MediaKind, VideoStreamInfo};
-use filmcraft_project::{
+use filmagic_color::ColorInfo;
+use filmagic_media::{AudioStreamInfo, Generator, MediaInfo, MediaKind, VideoStreamInfo};
+use filmagic_project::{
     BinId, ClipId, EffectInstance, EffectKind, Interpretation, ItemId, ItemKind, Label, MediaClip, MediaRef, Param, Project, Sequence, SequenceSettings, Track,
     TrackId, TrackItem, TrackKind, effect, effect::find_effect_by_name, find_effect,
 };
-use filmcraft_time::{FrameRate, Tick};
+use filmagic_time::{FrameRate, Tick};
 
 use crate::{Imported, Report};
 
@@ -693,7 +693,7 @@ pub(crate) fn param_modified(ti: &TrackItem, effect: &str, param_id: &str) -> bo
     }
     let def = find_effect(effect).and_then(|d| d.param(param_id)).map(|d| d.default.clone());
     match (&p.value, def) {
-        (filmcraft_project::ParamValue::Vec2(v), Some(filmcraft_project::ParamValue::Vec2(_))) => !(v.x.is_nan() && v.y.is_nan()),
+        (filmagic_project::ParamValue::Vec2(v), Some(filmagic_project::ParamValue::Vec2(_))) => !(v.x.is_nan() && v.y.is_nan()),
         (v, Some(d)) => *v != d,
         _ => false,
     }
@@ -741,7 +741,7 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
 /// Name of a transition in a document (the name an export has always written, so a UI rename does
 /// not change the file).
 pub(crate) fn transition_name(e: &EffectInstance) -> String {
-    e.def().map(|d| filmcraft_project::interchange_name(d).to_string()).unwrap_or_else(|| e.effect.clone())
+    e.def().map(|d| filmagic_project::interchange_name(d).to_string()).unwrap_or_else(|| e.effect.clone())
 }
 
 /// Label from a document label name (Premiere label names; FCP7 names like "Good Take" ignored).
@@ -766,7 +766,7 @@ pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filmcraft_time::TimeRange;
+    use filmagic_time::TimeRange;
 
     #[test]
     fn percent_decode_requires_hex_digits() {

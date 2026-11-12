@@ -2,7 +2,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use filmcraft_apv::*;
+use filmagic_apv::*;
 
 struct Rng(u64);
 impl Rng {

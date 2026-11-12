@@ -24,7 +24,7 @@ pub trait AudioOut {
     /// Apply Settings ▸ Audio Hardware (device class/output, buffer size, sample rate). Takes
     /// effect at the next `start`; `document_rate` is the sequence sample rate for "Attempt to
     /// force hardware to document sample rate".
-    fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
+    fn configure(&mut self, _hw: &filmagic_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
     /// A hardware note for the status bar — e.g. the default output device could not be opened
     /// and a fallback device is in use, or no output device was found — or None.
     fn note(&self) -> Option<String> {
@@ -46,7 +46,7 @@ pub struct AudioDevices {
 /// Host hooks for native file dialogs etc.
 #[derive(Default)]
 pub struct HostHooks {
-    /// Optional native custom-color editor; presets and project palette stay in FilmCraft.
+    /// Optional native custom-color editor; presets and project palette stay in Filmagic.
     pub pick_color: Option<crate::widgets::color_picker::NativeColorPicker>,
     pub pick_files: Option<Box<dyn FnMut(&[&str]) -> Vec<String>>>,
     /// The cursor in physical screen pixels. Where the windowing layer reports no pointer while files are dragged in from the OS (Windows), a drop is placed where this says it landed.
@@ -81,11 +81,11 @@ pub struct HostHooks {
     /// Edit Original, Help ▸ Reveal Log Files).
     pub open_path: Option<Box<dyn FnMut(&str, bool) -> Result<(), String>>>,
     /// Show a file dialog without blocking the UI thread and answer on the returned channel with
-    /// the chosen paths (none: cancelled). With it, [`FilmcraftApp::pick`] keeps the frame loop
+    /// the chosen paths (none: cancelled). With it, [`FilmagicApp::pick`] keeps the frame loop
     /// running while the dialog is open (the desktop app on Linux, #260); without it the
     /// synchronous pickers above are used.
     pub run_dialog: Option<Box<dyn FnMut(native_dialogs::FileDialog) -> Receiver<Vec<String>>>>,
-    /// Open a URL in the system browser (Help menu links, About dialog, Discord button, Import
+    /// Open a URL in the system browser (Help menu links, About dialog, Import
     /// screen). Without it, or when it fails, links go through `egui::Context::open_url`, which
     /// opens a new tab on the web (the native egui backend is built without its `links` feature).
     pub open_url: Option<Box<dyn FnMut(&str) -> Result<(), String>>>,
@@ -94,7 +94,7 @@ pub struct HostHooks {
     /// uses `egui::Context::system_theme`.
     pub system_theme: Option<SystemThemeFn>,
     /// Files or an image on the system clipboard, for Paste in the Timeline and the Project panel
-    /// (#611). Without it Paste only pastes clips copied in FilmCraft.
+    /// (#611). Without it Paste only pastes clips copied in Filmagic.
     pub clipboard_media: Option<Box<dyn FnMut() -> Option<ClipboardMedia>>>,
 }
 

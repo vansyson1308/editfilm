@@ -4,12 +4,12 @@
 //! Regression test for https://github.com/storytold/filmcraft/issues/2788.
 
 use super::support::*;
-use filmcraft_interchange::aaf::{self, AafOptions};
-use filmcraft_interchange::ale::export_items;
-use filmcraft_interchange::omf::{self, OmfOptions};
-use filmcraft_interchange::{ExportOptions, Format, export, export_edl_per_track};
-use filmcraft_project::{ItemId, ItemKind, Label, Project, TrackKind};
-use filmcraft_time::{FrameRate, Tick, TimeRange};
+use filmagic_interchange::aaf::{self, AafOptions};
+use filmagic_interchange::ale::export_items;
+use filmagic_interchange::omf::{self, OmfOptions};
+use filmagic_interchange::{ExportOptions, Format, export, export_edl_per_track};
+use filmagic_project::{ItemId, ItemKind, Label, Project, TrackKind};
+use filmagic_time::{FrameRate, Tick, TimeRange};
 
 #[test]
 fn cyclic_subclips_do_not_stack_overflow_on_any_interchange_export() {

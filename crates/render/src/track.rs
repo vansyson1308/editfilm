@@ -24,8 +24,8 @@
 //! is the check that it is still the subject: what set the inside of the mask apart from its
 //! surroundings in the first frame has to stay inside it ([`LOST_BELOW`]).
 
-use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::TrackMethod;
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::TrackMethod;
 use rayon::prelude::*;
 
 /// Most features tracked per frame.

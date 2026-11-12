@@ -22,10 +22,10 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use filmcraft_audio_dsp::stretch::Wsola;
-use filmcraft_frame::AudioBuffer;
-use filmcraft_project::TrackItem;
-use filmcraft_time::Tick;
+use filmagic_audio_dsp::stretch::Wsola;
+use filmagic_frame::AudioBuffer;
+use filmagic_project::TrackItem;
+use filmagic_time::Tick;
 
 use crate::audio::SourceAudio;
 
