@@ -25,7 +25,7 @@ prefix="$(realpath -m -- "$prefix")"
 [[ "$prefix" != / ]] || fail 'use /usr/local or a user directory, not /'
 source_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 case "$prefix/" in "$source_dir/"*) fail 'choose an installation prefix outside the extracted tarball' ;; *) ;; esac
-app_id=ai.storyteller.filmagic
+app_id=io.github.vansyson1308.editfilm
 for binary in filmagic filmagic-cli; do
   [[ -f "$source_dir/bin/$binary" ]] || fail "missing bin/$binary; extract the complete tarball first"
 done

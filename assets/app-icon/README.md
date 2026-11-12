@@ -36,7 +36,7 @@ the drawing to the three-colour palette and traces the ink. Licence: [LICENSE.tx
 | `filmagic-macos-512.png` | runtime Dock icon on macOS (embedded by `apps/filmagic/src/main.rs`) |
 | `filmagic.icns` | macOS bundle icon (`CFBundleIconFile`) |
 | `filmagic.ico` | Windows icon, 16–256 px (embedded in `filmagic.exe` by `apps/filmagic/build.rs`) |
-| `hicolor/<size>/apps/ai.storyteller.filmagic.png`, `hicolor/scalable/…svg` | Linux icon theme, used by `packaging/linux/ai.storyteller.filmagic.desktop` |
+| `hicolor/<size>/apps/io.github.vansyson1308.editfilm.png`, `hicolor/scalable/…svg` | Linux icon theme, used by `packaging/linux/io.github.vansyson1308.editfilm.desktop` |
 
 The web app's `apps/filmagic-web/web/favicon.png` (128 px) comes from the same artwork.
 
@@ -46,7 +46,7 @@ The web app's `apps/filmagic-web/web/favicon.png` (128 px) comes from the same a
   icon when the app runs unbundled. A future `.app` bundle points `CFBundleIconFile` at `filmagic.icns`.
 - **Windows:** `build.rs` embeds `filmagic.ico` as the exe's resource icon (Explorer, Start menu,
   pinned taskbar), and the runtime icon covers the window, taskbar and Alt-Tab.
-- **Linux:** the runtime icon plus `with_app_id("ai.storyteller.filmcraft")`, which Wayland matches to
+- **Linux:** the runtime icon plus `with_app_id(APP_ID)` (`io.github.vansyson1308.editfilm`, in `apps/filmagic/src/main.rs`), which Wayland matches to
   the `.desktop` file. Install the `hicolor/` tree under `/usr/share/icons/hicolor/` and the desktop
   file under `/usr/share/applications/`.
 

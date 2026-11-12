@@ -3,7 +3,7 @@
 //! The Linux shell (Wayland *and* X11) resolves the window to a `.desktop` file by app id (set in
 //! `main.rs` via `eframe`'s `with_app_id`) and takes the taskbar / window-list icon from its
 //! `Icon=` entry in the hicolor theme. Packaging installs both
-//! (`packaging/linux/ai.storyteller.filmagic.desktop` and the hicolor PNGs) — but a source-tree
+//! (`packaging/linux/io.github.vansyson1308.editfilm.desktop` and the hicolor PNGs) — but a source-tree
 //! run has neither, so KDE/GNOME fall back to the generic Wayland icon. The fix is to ensure a
 //! user-level entry for those runs: when no entry for the app id exists in any XDG data dir,
 //! install one (plus the hicolor icon PNGs, read from this checkout's `assets/app-icon`, so
@@ -199,7 +199,7 @@ fn unescape_string_value(value: &str) -> String {
     out
 }
 
-/// The `.desktop` body: same fields as `packaging/linux/ai.storyteller.filmagic.desktop`, with
+/// The `.desktop` body: same fields as `packaging/linux/io.github.vansyson1308.editfilm.desktop`, with
 /// `Exec` pointing at this exact binary (a dev build isn't on `$PATH`, so `TryExec` is left out)
 /// and the icon by theme name.
 fn desktop_file_content(app_id: &str, name: &str, exe: &str) -> String {
@@ -265,14 +265,14 @@ mod tests {
     #[test]
     fn icon_sources_exist_in_the_checkout() {
         for size in ICON_SIZES {
-            let p = std::path::Path::new(ICON_DIR).join(format!("hicolor/{size}x{size}/apps/ai.storyteller.filmagic.png"));
+            let p = std::path::Path::new(ICON_DIR).join(format!("hicolor/{size}x{size}/apps/io.github.vansyson1308.editfilm.png"));
             assert!(p.is_file(), "{}", p.display());
         }
     }
 
     #[test]
     fn desktop_file_matches_the_packaged_fields() {
-        let packaged = include_str!("../../../packaging/linux/ai.storyteller.filmagic.desktop");
+        let packaged = include_str!("../../../packaging/linux/io.github.vansyson1308.editfilm.desktop");
         let expected = packaged
             .lines()
             .filter(|l| !l.starts_with("TryExec="))
@@ -280,7 +280,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        let body = desktop_file_content("ai.storyteller.filmagic", "Filmagic", "/target/debug/filmagic");
+        let body = desktop_file_content("io.github.vansyson1308.editfilm", "Filmagic", "/target/debug/filmagic");
         assert_eq!(body, expected);
     }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn exec_round_trips_through_both_layers() {
         for exe in ["/home/dev/Projects/filmagic/target/debug/filmagic", "/opt/film craft/filmagic", "/a$b\"c`d\\e"] {
-            let body = desktop_file_content("ai.storyteller.filmagic", "Filmagic", exe);
+            let body = desktop_file_content("io.github.vansyson1308.editfilm", "Filmagic", exe);
             assert_eq!(exec_line(&body).as_deref(), Some(exe));
             assert!(desktop_file_exec_is_ours(&body, exe));
         }
@@ -310,7 +310,7 @@ mod tests {
     /// prefix, and a packaged `Exec=filmagic` are all someone else's entry.
     #[test]
     fn desktop_file_exec_is_ours_matches_only_our_binary() {
-        let body = desktop_file_content("ai.storyteller.filmagic", "Filmagic", "/a/filmagic");
+        let body = desktop_file_content("io.github.vansyson1308.editfilm", "Filmagic", "/a/filmagic");
         assert!(!desktop_file_exec_is_ours(&body, "/a/filmagic-old"));
         assert!(!desktop_file_exec_is_ours(&body, "/b/filmagic"));
         assert!(!desktop_file_exec_is_ours("Exec=filmagic %F\n", "/a/filmagic"));

@@ -4,16 +4,16 @@
 #
 #   curl -fsSLO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
 #   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/linux/flatpak/cargo-sources.json
-#   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/ai.storyteller.filmagic.yml
-#   flatpak run ai.storyteller.filmagic
+#   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/io.github.vansyson1308.editfilm.yml
+#   flatpak run io.github.vansyson1308.editfilm
 #
 # The command-line tool and its MCP server run in the same sandbox, without opening a window:
 #
-#   flatpak run --command=filmagic-cli ai.storyteller.filmagic --version
-#   flatpak run --command=filmagic-cli ai.storyteller.filmagic mcp
+#   flatpak run --command=filmagic-cli io.github.vansyson1308.editfilm --version
+#   flatpak run --command=filmagic-cli io.github.vansyson1308.editfilm mcp
 #
 # For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
-id: ai.storyteller.filmagic
+id: io.github.vansyson1308.editfilm
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
@@ -59,14 +59,14 @@ modules:
       - install -Dm644 NOTICE /app/share/doc/filmagic/NOTICE
       # The headless CLI and its stdio MCP server, as in the release bundle (#346).
       - install -Dm755 target/release/filmagic-cli /app/bin/filmagic-cli
-      - install -Dm644 packaging/linux/ai.storyteller.filmagic.desktop /app/share/applications/ai.storyteller.filmagic.desktop
-      - install -Dm644 packaging/linux/ai.storyteller.filmagic.mime.xml /app/share/mime/packages/ai.storyteller.filmagic.xml
+      - install -Dm644 packaging/linux/io.github.vansyson1308.editfilm.desktop /app/share/applications/io.github.vansyson1308.editfilm.desktop
+      - install -Dm644 packaging/linux/io.github.vansyson1308.editfilm.mime.xml /app/share/mime/packages/io.github.vansyson1308.editfilm.xml
       - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
       - >-
         version=$(awk '/^\[/{p=($0=="[workspace.package]");next} p&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml);
         install -d /app/share/metainfo;
         sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%Y-%m-%d)/"
-        packaging/linux/ai.storyteller.filmagic.metainfo.xml.in > /app/share/metainfo/ai.storyteller.filmagic.metainfo.xml
+        packaging/linux/io.github.vansyson1308.editfilm.metainfo.xml.in > /app/share/metainfo/io.github.vansyson1308.editfilm.metainfo.xml
     sources:
       - type: dir
         path: ../../..

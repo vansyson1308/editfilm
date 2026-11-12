@@ -11,12 +11,12 @@
 # `appstreamcli compose`; the freedesktop runtime and SDK named in the manifest are
 # installed per-user from Flathub. Unless --no-test, the bundle is then installed per-user and
 # `filmagic-cli --version` is run inside the sandbox as a smoke test.
-# Manifest: packaging/linux/flatpak/ai.storyteller.filmagic.bundle.yml.
+# Manifest: packaging/linux/flatpak/io.github.vansyson1308.editfilm.bundle.yml.
 set -euo pipefail
 # shellcheck source=../env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 HERE="$ROOT/packaging/linux"
-APP_ID=ai.storyteller.filmagic
+APP_ID=io.github.vansyson1308.editfilm
 FLATHUB=https://dl.flathub.org/repo/flathub.flatpakrepo
 
 TEST=1

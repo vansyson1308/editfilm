@@ -46,6 +46,8 @@ pollster = "1"
 
 [dev-dependencies]
 glob = "0.3"
+# app_id_tests.rs: the menu entry the updater writes beside an AppImage (a Windows-only dependency otherwise).
+craft-update = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21"
