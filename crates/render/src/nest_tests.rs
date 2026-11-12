@@ -431,3 +431,164 @@ fn a_wrong_stored_media_width_does_not_blow_up_effect_sizes() {
     let _ = r.frame(s, Tick::ZERO);
     assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
 }
+
+// ---- Frame Blending / Optical Flow on a slowed nest
+
+/// A 24 fps movie whose frame `k` is one flat grey, a step brighter than frame `k - 1`. It counts
+/// the frames it hands out.
+struct Steps {
+    info: filmcraft_media::MediaInfo,
+    fetched: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Steps {
+    /// The grey (sRGB code) of frame `k`.
+    fn code(k: i64) -> u8 {
+        (40 + k.clamp(0, 20) * 10) as u8
+    }
+}
+
+impl MediaSource for Steps {
+    fn info(&self) -> &filmcraft_media::MediaInfo {
+        &self.info
+    }
+    fn video_frame(&self, req: FrameRequest) -> filmcraft_media::Result<Arc<VideoFrame>> {
+        self.fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (w, h) = self.info.video.as_ref().map_or((1, 1), |v| (v.width, v.height));
+        let v = Steps::code(FrameRate::FPS_24.frame_at(req.time));
+        Ok(Arc::new(VideoFrame::rgba8(w, h, [v, v, v, 255].repeat((w * h) as usize))))
+    }
+    fn audio(&self, _start: i64, frames: usize, sample_rate: u32) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+        Ok(filmcraft_frame::AudioBuffer::silence(sample_rate, 2, frames))
+    }
+}
+
+/// `inner` holds 48 frames of [`Steps`]; `outer` holds 48 frames of `inner` at a third of its
+/// speed (16 frames of the nest). Returns (inner, outer, nest clip, frames fetched).
+fn slowed_steps(r: &mut Rig) -> (ItemId, ItemId, ClipId, Arc<std::sync::atomic::AtomicUsize>) {
+    let steps = r.matte(RED, 64, 36);
+    let fetched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let info = r.map.0[&steps].info().clone();
+    r.map.0.insert(steps, Arc::new(Steps { info, fetched: fetched.clone() }) as SharedSource);
+    let inner = r.seq("inner", 64, 36, FrameRate::FPS_24);
+    r.put(inner, steps, 48);
+    let outer = r.seq("outer", 64, 36, FrameRate::FPS_24);
+    let nest = r.put(outer, inner, 48);
+    r.clip(outer, nest).speed = 1.0 / 3.0;
+    (inner, outer, nest, fetched)
+}
+
+#[test]
+fn frame_blending_on_a_slowed_nest_mixes_the_two_neighbouring_frames_of_its_sequence() {
+    use filmcraft_project::TimeInterpolation;
+    let mut r = Rig::new();
+    let (inner, outer, nest, _) = slowed_steps(&mut r);
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    let grey = |img: &Image| img.get(32, 18)[0];
+    let (one, two) = (grey(&r.frame(inner, f(1))), grey(&r.frame(inner, f(2))));
+    assert!(two - one > 0.01, "the nest's frames differ: {one} {two}");
+    // programme frames 3, 4 and 5 show the nest 1, 1⅓ and 1⅔ frames in
+    // Frame Sampling repeats frame 1 of the nest
+    for n in [3, 4, 5] {
+        assert!((grey(&r.frame(outer, f(n))) - one).abs() < 1e-4, "frame sampling, frame {n}");
+    }
+    for mode in [TimeInterpolation::FrameBlending, TimeInterpolation::OpticalFlow] {
+        r.clip(outer, nest).time_interpolation = mode;
+        for (n, w) in [(4, 1.0 / 3.0), (5, 2.0 / 3.0)] {
+            let t = f(n);
+            let got = r.frame(outer, t);
+            let want = one + (two - one) * w;
+            assert!(grey(&got) > one + 0.003 && grey(&got) < two - 0.003, "{mode:?}, frame {n}: {} is not between {one} and {two}", grey(&got));
+            assert!((grey(&got) - want).abs() < 2e-3, "{mode:?}, frame {n}: {} for {want}", grey(&got));
+            // every pixel is that mix, opaque
+            assert!(got.px.as_chunks::<4>().0.iter().all(|p| (p[0] - want).abs() < 2e-3 && (p[3] - 1.0).abs() < 1e-4), "{mode:?}, frame {n}");
+            // and the frame plan (what the GPU compositor is given) draws the same picture
+            assert!(worst(&r.planned(outer, t), &got) < 1e-3, "{mode:?}, frame {n}: the plan differs");
+        }
+        // on a frame of the nest there is nothing to mix
+        assert!((grey(&r.frame(outer, f(3))) - one).abs() < 1e-4, "{mode:?}: frame 3 is frame 1 of the nest");
+        assert!(worst(&r.planned(outer, f(3)), &r.frame(inner, f(1))) < 1e-3, "{mode:?}: planned frame 3");
+        // the nest's last frame (15) is shown alone: frame 16 was trimmed away
+        let last = grey(&r.frame(inner, f(15)));
+        for n in [45, 46, 47] {
+            assert!((grey(&r.frame(outer, f(n))) - last).abs() < 1e-4, "{mode:?}, frame {n}: the last frame alone");
+        }
+    }
+    // reversed, the same pair is mixed: 1⅓ frames back from frame 16 lies between frames 14 and 15
+    let c = r.clip(outer, nest);
+    c.time_interpolation = TimeInterpolation::FrameBlending;
+    c.reverse = true;
+    let (a, b) = (grey(&r.frame(inner, f(14))), grey(&r.frame(inner, f(15))));
+    let got = grey(&r.frame(outer, f(4)));
+    assert!((got - (a + (b - a) * 2.0 / 3.0)).abs() < 2e-3, "reversed: {got} between {a} and {b}");
+    // a frame hold shows its one frame whatever the interpolation
+    let c = r.clip(outer, nest);
+    c.reverse = false;
+    c.frame_hold = Some(f(7));
+    let held = grey(&r.frame(inner, f(7)));
+    for n in [4, 5, 20] {
+        assert!((grey(&r.frame(outer, f(n))) - held).abs() < 1e-4, "held, frame {n}");
+        assert!(worst(&r.planned(outer, f(n)), &r.frame(inner, f(7))) < 1e-3, "held, planned frame {n}");
+    }
+}
+
+#[test]
+fn frame_blending_mixes_whole_frames_of_a_nest_that_animates_between_them() {
+    // Opacity keyframes inside the nest are evaluated at any time asked for, so the two pictures
+    // mixed must be the nest's frames, not the nest at the in-between time and its next frame
+    let mut r = Rig::new();
+    let (inner, outer, nest, _) = slowed_steps(&mut r);
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    let inside = r.p.sequence(inner).unwrap().video_tracks[0].items[0].id;
+    let opacity = r.clip(inner, inside).effect_mut("opacity").unwrap().param_mut("opacity").unwrap();
+    opacity.keyframes = vec![filmcraft_project::Keyframe::new(f(0), ParamValue::Float(100.0)), filmcraft_project::Keyframe::new(f(10), ParamValue::Float(0.0))];
+    let alpha = |img: &Image| img.get(32, 18)[3];
+    let (one, two) = (alpha(&r.frame(inner, f(1))), alpha(&r.frame(inner, f(2))));
+    assert!(one - two > 0.05, "the nest fades: {one} {two}");
+    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    let got = alpha(&r.frame(outer, f(4)));
+    assert!((got - (one + (two - one) / 3.0)).abs() < 2e-3, "{got} is a third of the way from {one} to {two}");
+}
+
+#[test]
+fn blended_nests_in_a_sequence_that_contains_itself_stay_bounded() {
+    // Only a damaged project has a sequence nested in itself. Each blended nest renders two frames
+    // of its sequence, so the renders would double at every level down to `MAX_NEST_DEPTH`.
+    let mut r = Rig::new();
+    let (inner, _, _, fetched) = slowed_steps(&mut r);
+    let rate = FrameRate::FPS_24;
+    let mut own = r.p.make_track_item(inner, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+    own.speed = 1.0 / 3.0;
+    own.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    // a third of a frame in, so that frames 0 and 1 both fall between two frames of the nest
+    own.source_in = Tick(rate.tick_of(1).0 / 3);
+    own.effect_mut("opacity").unwrap().params.get_mut("opacity").unwrap().value = ParamValue::Float(50.0);
+    r.p.sequence_mut(inner).unwrap().video_tracks[1].items.push(own);
+    fetched.store(0, std::sync::atomic::Ordering::Relaxed);
+    let img = r.frame(inner, Tick::ZERO);
+    assert_eq!((img.w, img.h), (64, 36));
+    let n = fetched.load(std::sync::atomic::Ordering::Relaxed);
+    assert!((2..=40).contains(&n), "{n} frames fetched for one frame");
+}
+
+#[test]
+fn frame_blending_on_a_slowed_multicam_clip_mixes_two_frames_of_its_angle() {
+    let mut r = Rig::new();
+    let (inner, outer, nest, _) = slowed_steps(&mut r);
+    // a brighter matte on the angle that is not shown
+    let other = r.matte([1.0, 1.0, 1.0, 1.0], 64, 36);
+    let rate = FrameRate::FPS_24;
+    let top = r.p.make_track_item(other, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, rate.tick_of(48)), rate).unwrap();
+    r.p.sequence_mut(inner).unwrap().video_tracks[1].items.push(top);
+    let f = |n: i64| rate.tick_of(n);
+    let grey = |img: &Image| img.get(32, 18)[0];
+    let c = r.clip(outer, nest);
+    c.multicam = Some(filmcraft_project::MulticamSel { enabled: true, angle: 0 });
+    let (one, two) = (grey(&r.frame(outer, f(3))), grey(&r.frame(outer, f(6))));
+    assert!(two - one > 0.01 && two < 0.5, "the angle's frames 1 and 2: {one} {two}");
+    assert!((grey(&r.frame(outer, f(4))) - one).abs() < 1e-4, "frame sampling repeats frame 1");
+    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    let got = r.frame(outer, f(4));
+    assert!((grey(&got) - (one + (two - one) / 3.0)).abs() < 2e-3, "{} between {one} and {two}", grey(&got));
+    assert!(worst(&r.planned(outer, f(4)), &got) < 1e-3, "the plan differs");
+}

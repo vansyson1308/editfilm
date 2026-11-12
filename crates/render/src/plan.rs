@@ -524,6 +524,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         && !(opts.effects && item.has_standard_effects())
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
+        // an in-between frame (Frame Blending / Optical Flow) is mixed on the CPU (`base_layer`)
+        && crate::nest_interpolation(item, t, nested, seq.settings.frame_rate).is_none()
         && let Some(tr) = nested.angle_video_track_index(angle).and_then(|i| nested.video_tracks.get(i))
         && !tr.transitions.iter().any(|x| x.range().contains(ft))
         && tr.item_at(ft).is_none_or(|i| crate::opacity_blend(i, i.effect_time_at(ft)).1 != Blend::Dissolve)
@@ -546,6 +548,8 @@ fn push_item(sc: Scene, item: &TrackItem, extra_opacity: f32, blend: Option<Blen
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
+        // one frame of the nest, not the mix of two (as for the multi-camera clip above)
+        && crate::nest_interpolation(item, t, nested, seq.settings.frame_rate).is_none()
         && nest_is_plain(project, seq, nested, ft, opts.scale, caps)
     {
         push_tracks(Scene { seq: nested, t: ft, nest: nest + 1, ..sc }, out);

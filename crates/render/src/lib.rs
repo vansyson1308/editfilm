@@ -65,6 +65,14 @@ impl<F: Fn(ItemId) -> Option<SharedSource> + Sync> SourceProvider for F {
 /// has one: the editor refuses the edit).
 pub const MAX_NEST_DEPTH: u32 = 8;
 
+/// How many levels of [`MAX_NEST_DEPTH`] a nest with Frame Blending or Optical Flow uses up when
+/// it mixes two frames of its sequence. Each such nest renders its sequence twice, so a chain of
+/// them (or a damaged project's sequence that contains itself) would double the renders at every
+/// level: 2^`MAX_NEST_DEPTH` of them for one frame. Counting double keeps that to
+/// 2^(`MAX_NEST_DEPTH` / 2). A nest with too few levels left for it shows the one frame of Frame
+/// Sampling instead.
+const BLENDED_NEST_DEPTH: u32 = 2;
+
 /// Largest factor effect sizes (blur radii, median windows…) are scaled up by for a layer decoded
 /// larger than its stored media size. Real layers are decoded at or below the source size.
 pub(crate) const MAX_EFFECT_PX_SCALE: f32 = 16.0;
@@ -729,19 +737,43 @@ pub(crate) fn base_layer(
             media_image(project, seq, item, t, MediaFrame { src: &src, frame: &frame, n }, want)
         }
         ItemKind::Sequence(nested) => {
-            let sub = RenderOptions { scale: want, effects: opts.effects, depth: opts.depth + 1, captions: false, working_output: true };
-            match item.multicam_angle(nested) {
-                // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
-                Some(angle) => match nested.angle_video_track_index(angle) {
-                    Some(ti) => render_seq_tracks(project, nested, ft, sub, sources, Some(ti)),
-                    None => {
-                        let (nw, nh) = output_size(nested, want);
-                        Image::new(nw, nh)
+            let angle = item.multicam_angle(nested);
+            // the nest's picture at its own time `at`, rendered `depth` nests down
+            let picture = |at: Tick, depth: u32| {
+                let sub = RenderOptions { scale: want, effects: opts.effects, depth, captions: false, working_output: true };
+                match angle {
+                    // a multi-camera clip shows its angle's track only (nothing for an audio-only angle)
+                    Some(angle) => match nested.angle_video_track_index(angle) {
+                        Some(ti) => render_seq_tracks(project, nested, at, sub, sources, Some(ti)),
+                        None => {
+                            let (nw, nh) = output_size(nested, want);
+                            Image::new(nw, nh)
+                        }
+                    },
+                    // A nested sequence shows its captions wherever it is nested, as part of its
+                    // picture (Premiere does the same), whether or not the outer sequence shows its own.
+                    None => render_seq(project, nested, at, RenderOptions { captions: true, ..sub }, sources),
+                }
+            };
+            let blended_depth = opts.depth.saturating_add(BLENDED_NEST_DEPTH);
+            match nest_interpolation(item, t, nested, seq.settings.frame_rate).filter(|_| blended_depth <= MAX_NEST_DEPTH) {
+                // Frame Blending / Optical Flow: the nest's two frames around the exact time, mixed
+                // as a media clip's are
+                Some((first, next, wgt)) => {
+                    let a = picture(first, blended_depth);
+                    // a cancelled frame job is discarded: skip the second picture
+                    if filmcraft_media::cancel::cancelled() {
+                        a
+                    } else {
+                        let b = picture(next, blended_depth);
+                        if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow {
+                            flow::interpolate(&a, &b, wgt)
+                        } else {
+                            a.lerp(&b, wgt)
+                        }
                     }
-                },
-                // A nested sequence shows its captions wherever it is nested, as part of its
-                // picture (Premiere does the same), whether or not the outer sequence shows its own.
-                None => render_seq(project, nested, ft, RenderOptions { captions: true, ..sub }, sources),
+                }
+                None => picture(ft, opts.depth.saturating_add(1)),
             }
         }
         ItemKind::AdjustmentLayer { .. } => return None,
@@ -804,6 +836,18 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmcraft_time::
     }
     // the mix depends only on the media position, so reversed clips blend the same pair
     Some((next, frac.clamp(0.0, 1.0) as f32))
+}
+
+/// [`interpolation_blend`] for a clip whose item is the sequence `nested`, which counts as footage
+/// at that sequence's frame rate: the two frames of the nest to mix at timeline `t` (the times of
+/// the frame the clip shows and of the next one) and the later one's weight, or None when the clip
+/// shows one frame of the nest alone. The earlier picture is taken at the start of its frame, not
+/// at the exact time in between: a sequence renders at any time asked for (keyframes inside it
+/// move between its frames), and mixing that with the next frame would add the motion twice.
+pub(crate) fn nest_interpolation(item: &TrackItem, t: Tick, nested: &Sequence, seq_rate: filmcraft_time::FrameRate) -> Option<(Tick, Tick, f32)> {
+    let rate = nested.settings.frame_rate;
+    let (next, wgt) = interpolation_blend(item, t, rate, seq_rate)?;
+    Some((rate.snap(item.source_time_at(t)), next, wgt))
 }
 
 /// [`interpolation_blend`] for a clip showing `src`. A still image has one picture (it reports
