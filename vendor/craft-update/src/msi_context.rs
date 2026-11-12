@@ -77,7 +77,7 @@ pub fn single_scope(scopes: impl IntoIterator<Item = MsiScope>) -> Option<MsiSco
 }
 
 /// The context to install in. An update keeps `updated`, the context of the copy it replaces. A fresh
-/// install (no copy at all) is machine-wide, so every app lands in `C:\Program Files\ArtCraft\<App>`
+/// install (no copy at all) is machine-wide, so every app lands in `C:\Program Files\<App>`
 /// (or the folder the person chose) and not in one account's profile; a dual-scope package would
 /// otherwise take its own default, which is per-user. Windows asks for permission once, for that
 /// install. Anything else (a copy that is not an MSI) takes the package's own default.

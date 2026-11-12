@@ -262,7 +262,7 @@ fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
     }
     if writable {
         let probe = path.join(format!(
-            ".artcraft-launcher-write-test-{}-{}",
+            ".craft-update-write-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
         ));
@@ -620,7 +620,7 @@ fn prepare_home(home: &Path) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn staging_dir(dir: &Path) -> Result<tempfile::TempDir, String> {
     tempfile::Builder::new()
-        .prefix(".artcraft-launcher-")
+        .prefix(".craft-update-")
         .tempdir_in(dir)
         .map_err(|e| format!("couldn't create a staging folder in {} ({e})", dir.display()))
 }
@@ -637,7 +637,7 @@ fn swap_into_place_via(staged: &Path, dest: &Path, rename: impl Fn(&Path, &Path)
     let backup = if dest.exists() {
         let parent = dest.parent().ok_or("the installed app has no parent folder")?;
         let backup = tempfile::Builder::new()
-            .prefix(".artcraft-launcher-backup-")
+            .prefix(".craft-update-backup-")
             .tempdir_in(parent)
             .map_err(|e| format!("couldn't create a backup folder in {} ({e})", parent.display()))?;
         rename(dest, &backup.path().join("old")).map_err(|e| format!("couldn't move the old copy aside ({e})"))?;
@@ -1139,7 +1139,7 @@ pub(crate) mod linux {
         let dest = dir.join(name);
         let ours = previous.is_some_and(|r| r.kind == PackageKind::AppImage && r.path == dest);
         if std::fs::symlink_metadata(&dest).is_ok_and(|m| m.is_dir() || !(replace || ours && m.is_file())) {
-            return Err(format!("{} already exists and wasn't installed by ArtCraft Launcher", dest.display()));
+            return Err(format!("{} already exists and wasn't installed by this updater", dest.display()));
         }
         let staging = super::staging_dir(&dir)?;
         let partial = staging.path().join(name);
@@ -1363,7 +1363,7 @@ pub mod macos {
             return Ok(dir.to_path_buf());
         }
         let system = PathBuf::from("/Applications");
-        let probe = system.join(".artcraft-launcher-write-test");
+        let probe = system.join(".craft-update-write-test");
         if std::fs::write(&probe, b"").is_ok() {
             let _ = std::fs::remove_file(&probe);
             return Ok(system);
@@ -1474,7 +1474,7 @@ pub mod macos {
             && std::fs::symlink_metadata(&dest).is_ok()
             && (std::fs::symlink_metadata(&dest).is_ok_and(|m| m.file_type().is_symlink()) || crate::detect::macos::read_bundle(app, &dest).is_none())
         {
-            return Err(format!("{} already exists and wasn't installed by ArtCraft Launcher", dest.display()));
+            return Err(format!("{} already exists and wasn't installed by this updater", dest.display()));
         }
         let staging = super::staging_dir(&dir)?;
         let staged = staging.path().join(&bundle);

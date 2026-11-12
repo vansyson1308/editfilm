@@ -78,7 +78,7 @@ impl Install {
 
 /// Makes an installed copy believe it's this version, to try the self-update against the current
 /// release. The restart helper drops it, so it lasts one run.
-pub const PRETEND_VAR: &str = "ARTCRAFT_LAUNCHER_PRETEND_VERSION";
+pub const PRETEND_VAR: &str = "CRAFT_UPDATE_PRETEND_VERSION";
 
 /// Makes a development build believe it's an installed copy, to try the self-update.
 pub const DEV_VAR: &str = "CRAFT_UPDATE_DEV";

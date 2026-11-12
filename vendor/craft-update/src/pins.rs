@@ -4,12 +4,10 @@
 //! own update check reads it, so an app kept on an older release, or on nightlies, is not offered
 //! the latest stable release every time it starts. Only the launcher writes the file; apps read.
 //!
-//! The file sits in a folder of its own, `ArtCraft/versions` in the host's per-user data folder
-//! (`%LOCALAPPDATA%`, `~/Library/Application Support`, `$XDG_DATA_HOME` or `~/.local/share`),
-//! never in the launcher's own folder: a Flatpak launcher's own folder is inside its sandbox, and a
-//! Flatpak app can be given read access to this one folder alone
-//! (`--filesystem=xdg-data/ArtCraft/versions:ro`) without seeing the launcher's settings.
-//! Inside a Flatpak, the host's folder is used (see [`crate::folders::host_data_local_dir`]).
+//! Filmagic change: Filmagic has no launcher, so there is no default file. Upstream reads
+//! `<per-user data>/ArtCraft/versions/versions.json`, the ArtCraft Launcher's file, which Flatpak
+//! apps were granted with `--filesystem=xdg-data/ArtCraft/versions:ro`; that path and grant are gone.
+//! Only a file named by [`PATH_ENV`] is read, so without it every check follows stable releases.
 //!
 //! Invariants:
 //! - A missing, unreadable or damaged file means every app follows stable releases, as before.
@@ -25,10 +23,6 @@ use serde::{Deserialize, Serialize};
 /// Names a file to use in place of the default (absolute paths only). The launcher sets it for an
 /// app whose home it redirects (tarball installs on Linux), so the app still finds the real file.
 pub const PATH_ENV: &str = "CRAFT_VERSIONS_FILE";
-
-/// The line a Flatpak app's manifest adds to its `finish-args` so it can read the file. It names
-/// the folder [`Pins::default_path`] uses; the two change together or Flatpak apps lose the file.
-pub const FLATPAK_GRANT: &str = "--filesystem=xdg-data/ArtCraft/versions:ro";
 
 /// Which published build an app follows. A pinned version never changes on its own.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,12 +58,9 @@ pub enum Choice {
 }
 
 impl Pins {
-    /// The shared file (see the module notes), or the one [`PATH_ENV`] names.
+    /// The file [`PATH_ENV`] names, if any (see the module notes).
     pub fn default_path() -> Option<PathBuf> {
-        if let Some(path) = std::env::var_os(PATH_ENV).map(PathBuf::from).filter(|p| p.is_absolute()) {
-            return Some(path);
-        }
-        crate::folders::host_data_local_dir().map(|d| d.join("ArtCraft").join("versions").join("versions.json"))
+        std::env::var_os(PATH_ENV).map(PathBuf::from).filter(|p| p.is_absolute())
     }
 
     /// Reads `path`. A missing or damaged file reads as empty: every app follows stable releases.
@@ -220,18 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn the_default_file_sits_in_its_own_folder_outside_the_launchers() {
+    fn without_the_environment_override_there_is_no_default_file() {
         // The environment override is read by the same function; it is not set in tests.
         if std::env::var_os(PATH_ENV).is_some() {
             return;
         }
-        if let Some(path) = Pins::default_path() {
-            assert!(path.is_absolute());
-            assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("versions.json"));
-            // The folder is the one the Flatpak grant names, under the host's data folder.
-            let granted = FLATPAK_GRANT.strip_prefix("--filesystem=xdg-data/").and_then(|g| g.strip_suffix(":ro")).unwrap_or_default();
-            let expected = granted.split('/').fold(crate::folders::host_data_local_dir().unwrap_or_default(), |p, part| p.join(part));
-            assert_eq!(path.parent(), Some(expected.as_path()), "{FLATPAK_GRANT}");
-        }
+        assert_eq!(Pins::default_path(), None, "no launcher folder is read");
+        assert_eq!(Pins::load_default(), Pins::default());
     }
 }

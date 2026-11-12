@@ -11,7 +11,7 @@
 //!    the folder it had. The person always keeps a working app; settings and documents live
 //!    outside the program folder and are never touched.
 //!
-//! Which copies move: one in a per-user default folder goes to `Program Files\ArtCraft\<App>`; one
+//! Which copies move: one in a per-user default folder goes to `Program Files\<App>`; one
 //! in a folder the person chose outside their profile moves in place; one in a chosen folder
 //! inside the profile keeps updating for the account, since program files for everyone must not
 //! live in one person's profile. The launcher's own package never moves.
@@ -42,11 +42,10 @@ pub(crate) struct Profile {
     pub defaults: Vec<PathBuf>,
 }
 
-/// The per-user default folders of `app_name` under `local_app_data`: the suite folder
-/// `Programs\ArtCraft\<App>`, then the older `Programs\<App>`.
-pub(crate) fn default_folders(local_app_data: &Path, app_name: &str) -> [PathBuf; 2] {
-    let programs = local_app_data.join("Programs");
-    [programs.join("ArtCraft").join(app_name), programs.join(app_name)]
+/// The per-user default folders of `app_name` under `local_app_data`: `Programs\<App>`. Filmagic
+/// change: no `Programs\ArtCraft\<App>` suite folder.
+pub(crate) fn default_folders(local_app_data: &Path, app_name: &str) -> [PathBuf; 1] {
+    [local_app_data.join("Programs").join(app_name)]
 }
 
 /// The step for a copy whose exe is in `dir`. `resolved` is its confirmed context and product
@@ -60,7 +59,7 @@ pub(crate) fn plan(resolved: Option<(MsiScope, String)>, dir: &Path, app_name: &
     let stay = Step::Update(scope_arguments(MsiScope::PerUser));
     let folder = if profile.defaults.iter().any(|default| same_path(default, dir)) {
         match program_files {
-            Some(root) => root.join("ArtCraft").join(app_name),
+            Some(root) => root.join(app_name),
             None => return stay,
         }
     } else if profile.roots.iter().any(|root| is_within(dir, root)) {
@@ -173,24 +172,24 @@ mod tests {
     fn profile() -> Profile {
         Profile {
             roots: vec![p(r"C:\Users\Ann"), p(r"C:\Users\Ann\AppData\Local"), p(r"C:\Users\Ann\AppData\Roaming")],
-            defaults: [r"C:\Users\Ann\AppData\Local\Programs\ArtCraft\GridCraft", r"C:\Users\Ann\AppData\Local\Programs\GridCraft"].map(p).to_vec(),
+            defaults: vec![p(r"C:\Users\Ann\AppData\Local\Programs\GridCraft")],
         }
     }
 
     #[test]
-    fn the_default_folders_are_the_suite_folder_then_the_older_one() {
+    fn the_default_folder_is_the_app_folder_under_programs() {
         let local = p(r"C:\Users\Ann\AppData\Local");
-        let expected = [local.join("Programs").join("ArtCraft").join("GridCraft"), local.join("Programs").join("GridCraft")];
+        let expected = [local.join("Programs").join("GridCraft")];
         assert_eq!(default_folders(&local, "GridCraft"), expected);
     }
 
     #[test]
-    fn a_default_folder_reached_through_a_link_still_moves_to_the_suite_folder() {
+    fn a_default_folder_reached_through_a_link_still_moves_to_program_files() {
         // The Windows layer resolves each default folder whole, so a linked `Programs` arrives
         // here as the real path the exe's folder also resolves to.
-        let old = r"D:\Redirected\Programs\ArtCraft\GridCraft";
+        let old = r"D:\Redirected\Programs\GridCraft";
         let linked = Profile { defaults: vec![p(old)], ..profile() };
-        let suite = pf().map(|root| root.join("ArtCraft").join("GridCraft")).unwrap();
+        let suite = pf().map(|root| root.join("GridCraft")).unwrap();
         let expected = Step::Move { product_code: CODE.to_string(), folder: suite, old_folder: p(old) };
         assert_eq!(plan(user(), &p(old), "GridCraft", &linked, pf()), expected);
     }
@@ -211,17 +210,14 @@ mod tests {
     fn a_copy_for_everyone_and_the_launcher_update_in_place() {
         let machine = Some((MsiScope::PerMachine, CODE.to_string()));
         assert_eq!(plan(machine, &p(r"C:\Program Files\GridCraft"), "GridCraft", &profile(), pf()), Step::Update(&["ALLUSERS=1"]));
-        assert_eq!(
-            plan(None, &p(r"C:\Users\Ann\AppData\Local\Programs\ArtCraft\Launcher"), "ArtCraft Launcher", &profile(), pf()),
-            Step::Update(&[])
-        );
+        assert_eq!(plan(None, &p(r"C:\Users\Ann\AppData\Local\Programs\Launcher"), "Launcher", &profile(), pf()), Step::Update(&[]));
     }
 
     #[test]
-    fn a_per_user_copy_in_a_default_folder_moves_to_the_suite_folder() {
-        for old in [r"C:\Users\Ann\AppData\Local\Programs\ArtCraft\GridCraft", r"c:\users\ann\appdata\local\programs\gridcraft\"] {
+    fn a_per_user_copy_in_the_default_folder_moves_to_program_files() {
+        for old in [r"C:\Users\Ann\AppData\Local\Programs\GridCraft", r"c:\users\ann\appdata\local\programs\gridcraft\"] {
             // Joined like the plan joins it: `\` on Windows, `/` where these tests also run.
-            let suite = pf().map(|root| root.join("ArtCraft").join("GridCraft")).unwrap();
+            let suite = pf().map(|root| root.join("GridCraft")).unwrap();
             let expected = Step::Move { product_code: CODE.to_string(), folder: suite, old_folder: p(old) };
             assert_eq!(plan(user(), &p(old), "GridCraft", &profile(), pf()), expected);
         }
@@ -248,7 +244,7 @@ mod tests {
 
     #[test]
     fn without_a_program_files_folder_a_default_copy_stays_for_the_account() {
-        let dir = p(r"C:\Users\Ann\AppData\Local\Programs\ArtCraft\GridCraft");
+        let dir = p(r"C:\Users\Ann\AppData\Local\Programs\GridCraft");
         assert_eq!(plan(user(), &dir, "GridCraft", &profile(), None), Step::Update(&["ALLUSERS=2", "MSIINSTALLPERUSER=1"]));
     }
 

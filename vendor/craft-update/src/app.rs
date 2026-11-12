@@ -23,6 +23,9 @@ pub struct App {
     /// Who makes it, shown as "by <developer>" in the update prompt. [`DEVELOPER`] unless the app
     /// says otherwise.
     pub developer: &'static str,
+    /// Its own reverse-DNS identifier, for an app outside the suite's `ai.storyteller.` namespace
+    /// (Filmagic: `io.github.vansyson1308.editfilm`). `None`: `ai.storyteller.<id>`. Filmagic change.
+    pub bundle_id_override: Option<&'static str>,
 }
 
 /// The developer of every app in the storytold organisation.
@@ -31,12 +34,27 @@ pub const DEVELOPER: &str = "ArtCraft";
 impl App {
     /// An app with no former names and no icon.
     pub const fn new(id: &'static str, name: &'static str, tagline: &'static str, repo: &'static str) -> Self {
-        Self { id, name, tagline, repo, former_ids: &[], former_names: &[], icon_png: None, accent: None, developer: DEVELOPER }
+        Self {
+            id,
+            name,
+            tagline,
+            repo,
+            former_ids: &[],
+            former_names: &[],
+            icon_png: None,
+            accent: None,
+            developer: DEVELOPER,
+            bundle_id_override: None,
+        }
     }
 
-    /// `ai.storyteller.<id>`: macOS bundle id, Flatpak id and Linux desktop-file id.
+    /// The macOS bundle id, Flatpak id and Linux desktop-file id: [`App::bundle_id_override`] when
+    /// the app names one, else `ai.storyteller.<id>`.
     pub fn bundle_id(&self) -> String {
-        format!("ai.storyteller.{}", self.id)
+        match self.bundle_id_override {
+            Some(id) => id.to_string(),
+            None => format!("ai.storyteller.{}", self.id),
+        }
     }
 
     pub fn releases_url(&self) -> String {
@@ -45,11 +63,6 @@ impl App {
 
     pub fn repo_url(&self) -> String {
         format!("https://github.com/{}", self.repo)
-    }
-
-    /// The app's page on getartcraft.com.
-    pub fn website(&self) -> String {
-        format!("https://getartcraft.com/apps/{}", self.id)
     }
 
     /// Asset stems this app's releases may use, current first.
@@ -80,5 +93,12 @@ mod tests {
         assert_eq!(pdf.names().collect::<Vec<_>>(), ["PdfCraft", "PrintCraft"]);
         assert_eq!(pdf.bundle_id(), "ai.storyteller.pdfcraft");
         assert_eq!(pdf.releases_url(), "https://github.com/storytold/pdfcraft/releases");
+    }
+
+    #[test]
+    fn an_app_can_name_its_own_bundle_id() {
+        let own = App { bundle_id_override: Some("io.github.example.editor"), ..App::new("editor", "Editor", "Editing", "example/editor") };
+        assert_eq!(own.bundle_id(), "io.github.example.editor");
+        assert_eq!(own.stems().collect::<Vec<_>>(), ["editor"], "the asset stem stays the machine name");
     }
 }

@@ -6,7 +6,17 @@
   "license": "MIT OR Apache-2.0",
   "local_changes": "README.filmagic.md",
   "changed_files": [
-    "Cargo.toml"
+    "Cargo.toml",
+    "src/app.rs",
+    "src/desktop_entry.rs",
+    "src/install.rs",
+    "src/msi_context.rs",
+    "src/msi_copy.rs",
+    "src/msi_migrate.rs",
+    "src/pins.rs",
+    "src/protocol.rs",
+    "src/self_update.rs",
+    "src/status.rs"
   ],
   "added_files": [
     "README.filmagic.md",
@@ -42,18 +52,25 @@
       "sha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26"
     },
     {
+      "path": "rustfmt.toml",
+      "source_path": "rustfmt.toml",
+      "source_sha256": "1b51e53edb3571229e84540b9b08514fb23d8c8d3225e8b984773f5c36eaa906",
+      "source_git_blob": "3121924d651ded44b389c1f699ab9d1152ecbfb1",
+      "sha256": "1b51e53edb3571229e84540b9b08514fb23d8c8d3225e8b984773f5c36eaa906"
+    },
+    {
       "path": "src/app.rs",
       "source_path": "crates/update/src/app.rs",
       "source_sha256": "f5bc5c29dd3dcab82fea5c129965a38ef1dcb822768504701be8f95e0c132a4a",
       "source_git_blob": "59146cf41148f210e271acf7e51cd4f1aa4ab1fd",
-      "sha256": "f5bc5c29dd3dcab82fea5c129965a38ef1dcb822768504701be8f95e0c132a4a"
+      "sha256": "1bcf940ad65c4275ab5dd208f48c76284c297b2929072fffc912ec4b4a65f732"
     },
     {
       "path": "src/desktop_entry.rs",
       "source_path": "crates/update/src/desktop_entry.rs",
       "source_sha256": "35cba3a10e624e5bf78bee4ede07b5f6141ef575735c4615143f709b3cf3ce99",
       "source_git_blob": "d6639bef9431197f42b9f66b6a5e1756daa6eea8",
-      "sha256": "35cba3a10e624e5bf78bee4ede07b5f6141ef575735c4615143f709b3cf3ce99"
+      "sha256": "ee237d74a045f276cbc1adeb577a3c31213624d8737d12c7d425262c361d954d"
     },
     {
       "path": "src/detect.rs",
@@ -95,7 +112,7 @@
       "source_path": "crates/update/src/install.rs",
       "source_sha256": "3d9354ab2731d2b7d083f42ea44f554745fa35830d74914119b5055a32cf47a3",
       "source_git_blob": "bd674163eddfcc4855a13b09bc591cd27c316e39",
-      "sha256": "3d9354ab2731d2b7d083f42ea44f554745fa35830d74914119b5055a32cf47a3"
+      "sha256": "2cef924053f1c3994b8f76373ee895ee77732e5727893d7e1ef35371c48b1af3"
     },
     {
       "path": "src/lib.rs",
@@ -116,21 +133,21 @@
       "source_path": "crates/update/src/msi_context.rs",
       "source_sha256": "41cc889e2e0c9f9d2ad5cc4ccf4acb476017fdf4c85cb6c4a7b542e946281ab4",
       "source_git_blob": "08bae4c9b27dabed88a886df4fe9411b56f15bd2",
-      "sha256": "41cc889e2e0c9f9d2ad5cc4ccf4acb476017fdf4c85cb6c4a7b542e946281ab4"
+      "sha256": "de95d3b11a890da2231d8ada371bc3831a19a587498457e00c0889443ce6d2a4"
     },
     {
       "path": "src/msi_copy.rs",
       "source_path": "crates/update/src/msi_copy.rs",
       "source_sha256": "bef1f3e0084dac1a993b40b41657f0c6a5d99404edcbf6592c6cabd537bd5212",
       "source_git_blob": "42f16e5c97fe14e975007bc8e0764e1abb2f8691",
-      "sha256": "bef1f3e0084dac1a993b40b41657f0c6a5d99404edcbf6592c6cabd537bd5212"
+      "sha256": "19854b8ab45bc7d2085d00b2f97f03e696df1588e760dc8238dbb10d9231a1d5"
     },
     {
       "path": "src/msi_migrate.rs",
       "source_path": "crates/update/src/msi_migrate.rs",
       "source_sha256": "94f47b4c30932a80b51c1e759e722c6ce7ec2cba8cd9caf9832964de3078e81d",
       "source_git_blob": "5ceb90020c3f22d8e80e549f16809d98f8e13eef",
-      "sha256": "94f47b4c30932a80b51c1e759e722c6ce7ec2cba8cd9caf9832964de3078e81d"
+      "sha256": "441aee681a8f0ac81b2738d4cc6f92fe2c67b32ef4ea281efca74dc9f49e9898"
     },
     {
       "path": "src/packages.rs",
@@ -151,7 +168,7 @@
       "source_path": "crates/update/src/pins.rs",
       "source_sha256": "1ade4387ec9d29a09f7c223dac9090221154b94e2dcc1c3f118a44289fa63f4c",
       "source_git_blob": "c0921d0f3d0e8cd3f1341a182e67f94aba5d9182",
-      "sha256": "1ade4387ec9d29a09f7c223dac9090221154b94e2dcc1c3f118a44289fa63f4c"
+      "sha256": "3bd6dfb050dd15e08672e93c970eb637b269d18a9b8fb09f7a3b3bf88176df50"
     },
     {
       "path": "src/platform.rs",
@@ -179,7 +196,7 @@
       "source_path": "crates/update/src/protocol.rs",
       "source_sha256": "969cd68df4c7ddfb43b262d2ffca5b22329d5e98832e61a4f153cb47c82ccfbb",
       "source_git_blob": "e52dbb940db9f8460904a112abc9361c2baa84d6",
-      "sha256": "969cd68df4c7ddfb43b262d2ffca5b22329d5e98832e61a4f153cb47c82ccfbb"
+      "sha256": "e39e56134b2cd8384e474900835bc4c543d0bd2c654653a16b17c1bd90ad3140"
     },
     {
       "path": "src/proxy.rs",
@@ -207,7 +224,7 @@
       "source_path": "crates/update/src/self_update.rs",
       "source_sha256": "7fa72e8c38d247303ea13c1b345d0ff0dbabe3f28948bf4f547d21461dbe7243",
       "source_git_blob": "01ec41dae25de9998b7582cf5d8f64428e8379c8",
-      "sha256": "7fa72e8c38d247303ea13c1b345d0ff0dbabe3f28948bf4f547d21461dbe7243"
+      "sha256": "281c0498617e84422cec610107198db37b6cc5ae884e3d1a05bc5914f521091b"
     },
     {
       "path": "src/source.rs",
@@ -221,7 +238,7 @@
       "source_path": "crates/update/src/status.rs",
       "source_sha256": "f808532b202b98327f5d3f7bb0c924d05b52a9caf534e88092c7aab1a599b507",
       "source_git_blob": "1cd0cf76cb5c74f8388d3a9e6d8a6315a4114481",
-      "sha256": "f808532b202b98327f5d3f7bb0c924d05b52a9caf534e88092c7aab1a599b507"
+      "sha256": "dad1843f5a839a7dc80543bd75bcaeade16a197a88f79192d538780524a508ce"
     },
     {
       "path": "src/suite.rs",

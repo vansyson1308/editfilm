@@ -3,7 +3,7 @@
 //!
 //! Every Craft App MSI registers its exe under `App Paths` (HKLM when installed for everyone,
 //! HKCU for one account). A copy whose exe one of those entries names is an MSI copy, wherever its
-//! folder is: `Program Files\ArtCraft\<App>`, the older `Program Files\<App>`, a folder the person
+//! folder is: `Program Files\<App>`, a folder the person
 //! chose. Recognising it only reads the registry, so it is cheap enough for any status check.
 //!
 //! Which context to update in is a separate, slower question that only an update asks. Windows
@@ -244,14 +244,14 @@ mod tests {
 
     #[test]
     fn an_exe_no_registration_names_is_not_an_msi_copy() {
-        let registered = [(MsiScope::PerMachine, p(r"C:\Program Files\ArtCraft\GridCraft\gridcraft.exe"))];
+        let registered = [(MsiScope::PerMachine, p(r"C:\Program Files\GridCraft\gridcraft.exe"))];
         assert_eq!(match_registration(&p(r"D:\Tools\GridCraft\gridcraft.exe"), &registered), None);
         assert_eq!(match_registration(&p(r"D:\Tools\GridCraft\gridcraft.exe"), &[]), None);
     }
 
     #[test]
     fn a_copy_registered_in_both_hives_stops_before_any_lookup() {
-        let exe = p(r"C:\Program Files\ArtCraft\GridCraft\gridcraft.exe");
+        let exe = p(r"C:\Program Files\GridCraft\gridcraft.exe");
         let copy = match_registration(&exe, &[(MsiScope::PerMachine, exe.clone()), (MsiScope::PerUser, exe.clone())]).unwrap();
         assert_eq!(copy, MsiCopy::Conflicting);
         assert!(update_arguments(copy, &codes(&[CODE]), |_| panic!("must not look up"), |_| panic!("must not read the records")).is_err());
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn the_helper_restarts_the_one_exe_the_registrations_name() {
-        let moved = p(r"C:\Program Files\ArtCraft\GridCraft\gridcraft.exe");
+        let moved = p(r"C:\Program Files\GridCraft\gridcraft.exe");
         assert_eq!(registered_exe(&[(MsiScope::PerMachine, moved.clone())]), Some(moved.clone()));
         assert_eq!(registered_exe(&[(MsiScope::PerMachine, moved.clone()), (MsiScope::PerUser, moved.clone())]), Some(moved));
         assert_eq!(registered_exe(&[]), None);
@@ -342,10 +342,7 @@ mod tests {
 
     #[test]
     fn app_paths_values_may_be_quoted() {
-        assert_eq!(
-            app_path_value(r#""C:\Program Files\ArtCraft\GridCraft\gridcraft.exe""#),
-            Some(p(r"C:\Program Files\ArtCraft\GridCraft\gridcraft.exe"))
-        );
+        assert_eq!(app_path_value(r#""C:\Program Files\GridCraft\gridcraft.exe""#), Some(p(r"C:\Program Files\GridCraft\gridcraft.exe")));
         assert_eq!(app_path_value("  "), None);
     }
 }

@@ -14,7 +14,7 @@ use std::path::Path;
 use crate::App;
 
 /// The key that marks an entry as written by the launcher.
-pub const MARKER: &str = "X-ArtCraft-Launcher=true";
+pub const MARKER: &str = "X-Craft-Update=true";
 
 /// The menu categories and the window class each app's own `.desktop` file declares.
 pub fn meta(app: &App) -> (&'static str, Option<&'static str>) {
@@ -23,6 +23,8 @@ pub fn meta(app: &App) -> (&'static str, Option<&'static str>) {
         "pdfcraft" => ("Office;Viewer;", Some("pdfcraft")),
         "lightcraft" => ("Graphics;2DGraphics;RasterGraphics;Photography;", None),
         "filmcraft" => ("AudioVideo;Video;AudioVideoEditing;", None),
+        // Filmagic change: its packaged menu entry's categories.
+        "filmagic" => ("AudioVideo;Video;AudioVideoEditing;", None),
         "designcraft" => ("Graphics;Publishing;", None),
         "vectorcraft" => ("Graphics;2DGraphics;VectorGraphics;", None),
         "effectcraft" => ("AudioVideo;Video;Graphics;2DGraphics;", None),
@@ -148,7 +150,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=PhotoCraft\nComment={}\n\
              Exec=\"/home/ana/Applications/photocraft-0.6.0-linux-x86_64.AppImage\" %F\n\
              Icon=ai.storyteller.photocraft\nTerminal=false\nCategories=Graphics;2DGraphics;RasterGraphics;Photography;\n\
-             StartupWMClass=photocraft\nX-ArtCraft-Launcher=true\n",
+             StartupWMClass=photocraft\nX-Craft-Update=true\n",
             app("photocraft").tagline
         );
         assert_eq!(text, expected);
@@ -157,6 +159,15 @@ mod tests {
         assert!(!no_icon.contains("Icon="));
         assert!(no_icon.contains("StartupWMClass=ai.storyteller.wordcraft\n"));
         assert!(no_icon.contains("Categories=Office;WordProcessor;\n"));
+    }
+
+    #[test]
+    fn an_app_with_its_own_bundle_id_names_it_in_the_entry() {
+        let own = App { bundle_id_override: Some("io.github.example.editor"), ..App::new("editor", "Editor", "Editing", "example/editor") };
+        let text = render(&own, Path::new("/x/editor.AppImage"), true).unwrap();
+        assert!(text.contains("Icon=io.github.example.editor\n") && text.contains("StartupWMClass=io.github.example.editor\n"), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("artcraft") && !text.contains("storyteller"), "{text}");
+        assert!(is_ours(&text));
     }
 
     #[test]
