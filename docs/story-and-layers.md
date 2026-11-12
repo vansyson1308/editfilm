@@ -231,6 +231,7 @@ editable afterwards.
 | `layers.lift` | `clip`, `region`, `path`, `feather`=12, `samples`=15, `follow`=false | A plate over the region, then the region as a layer above it: the layer can be moved, scaled, re-timed or switched off without a double underneath. |
 | `layers.retime` | `clip`, `region`, `speed` (per cent), `feather`=12, `interpolation`? | Extracts the region and plays it at `speed`. Slower, the layer is trimmed to end with the shot; faster, it runs out before the shot does (`untilShotEnd` false, `seconds` says how long it covers). |
 | `layers.adjust` | `clip`, `region`, `effect`, `params`?, `feather`=12, `follow`=false | Applies an effect with a mask of the region. |
+| `layers.transform` | `layer`, `scale`? (per cent), `offset`? (`[dx, dy]`), `anchor`=`"bottom"`, `mask`? | Makes a layer larger or smaller, or shifts it, in place: sets the layer's Motion Scale and keys its Position so that the anchor of its mask's bounds stays where it is in the frame. |
 
 Every one of them returns `warnings` (a list, empty when there is nothing to watch) and
 `pictureChange` (`layers.cleanPlate` with `place` false changes no picture and reports none).
@@ -258,6 +259,41 @@ What to expect:
   inside the region and the camera holds still. A subject that crosses the region's edge is cut
   by it; lift the subject first and re-time the lifted layer. A reversed shot's layer plays
   reversed too.
+- **`layers.transform` scales a subject where it stands.** Motion scales a clip about its Anchor
+  Point, which for a layer is the middle of the whole picture, not the subject: scaled there, a
+  subject that crosses the frame crosses it faster and leaves the place it was cut from. This
+  command reads the layer's opacity mask instead. At each keyframe of the mask path (one per frame
+  after `follow`; a path that does not move gives one position and no keyframes) it takes the
+  `anchor` of the path's bounds and writes a Motion Position that keeps it where it is:
+  `"bottom"` (the default: bottom centre, where a standing subject meets the ground), `"center"`,
+  `"top"`, or `[fx, fy]` in fractions (0 to 1) of the bounds from their top-left corner.
+
+  ```json
+  {"layer": 21, "scale": 150}
+  {"layer": 21, "scale": 60, "anchor": "center", "offset": [0, -40]}
+  ```
+
+  - `scale` is the layer's Motion Scale (0.1 to 10000), as Effect Controls shows it: a layer cut
+    from a clip at 100 is half as large again at 150, and 100 puts it back. Asked twice for the
+    same scale, the second call changes nothing. `offset` moves the subject by `[dx, dy]`
+    sequence pixels from where it is now, so asking twice moves it twice. Give either or both.
+  - For a layer that fills the frame unturned, the position at each keyframe is
+    `(1 - s) * anchor + s * A + offset`, with `s` the scale as a factor and `A` the Motion Anchor
+    Point. In general the bounds are the ones seen in the frame, through the layer's own Motion:
+    the bottom of a layer that is turned is its bottom as it shows.
+  - A Position keyframe is also written at each of the layer's own Position, Rotation and Anchor
+    Point keyframes, so a layer that already moves keeps its anchor as well. Between keyframes
+    the Position moves as the mask path does. A Scale that is keyframed is refused when `scale`
+    is given: take the keyframes off, or give only `offset`.
+  - A subject made smaller, or shifted, uncovers the place it stood: the clip under the layer
+    shows the subject there a second time, or the hole it was cut from. `warnings` says so unless
+    a plate lies under the layer, which is what `layers.lift` makes. A still of other footage
+    under the layer for as long as the layer runs counts as its plate.
+  - It returns `scale` and `was`, the `position` and `anchorAt` (where the anchor is in the
+    frame) at the layer's first frame, and the number of Position `keyframes` it holds. `mask`
+    picks one of several opacity masks by index; the default is the last that keeps a region.
+  - It is one undo step. A clip with no opacity mask is refused, as are a clip on a locked track
+    and one whose Motion is switched off.
 - **`follow` uses the mask tracker**, which needs media of its own (not a nested sequence) and
   enough detail inside the region. It tracks every frame before the command returns, so it is
   refused on a clip longer than 3000 frames: cut the clip down to the stretch that matters, or add
