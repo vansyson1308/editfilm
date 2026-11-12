@@ -1,0 +1,316 @@
+{
+  "crate": "craft-update",
+  "source_repository": "https://github.com/storytold/craft-libs",
+  "source_revision": "1b34eba41e62138fc2438d2734523b302840b45d",
+  "source_directory": "crates/update",
+  "license": "MIT OR Apache-2.0",
+  "local_changes": "README.filmagic.md",
+  "changed_files": [
+    "Cargo.toml",
+    "src/app.rs",
+    "src/desktop_entry.rs",
+    "src/detect.rs",
+    "src/folders.rs",
+    "src/install.rs",
+    "src/msi_context.rs",
+    "src/msi_copy.rs",
+    "src/msi_migrate.rs",
+    "src/pins.rs",
+    "src/protocol.rs",
+    "src/self_update.rs",
+    "src/status.rs"
+  ],
+  "added_files": [
+    "README.filmagic.md",
+    "SOURCE.json"
+  ],
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "source_path": "crates/update/Cargo.toml",
+      "source_sha256": "b7cc99a9ba3e76c5313e47bce84e146d2220bcb7207fd59adb364d7f7ccd623c",
+      "source_git_blob": "8d37527571c4e44dca1b72a22d2ce49fe5a62675",
+      "sha256": "747bc41d2cd2fb99f3569be12447d84c3f941437d5e6c8aca80327d32be97820"
+    },
+    {
+      "path": "Cargo.toml.orig",
+      "source_path": "crates/update/Cargo.toml",
+      "source_sha256": "b7cc99a9ba3e76c5313e47bce84e146d2220bcb7207fd59adb364d7f7ccd623c",
+      "source_git_blob": "8d37527571c4e44dca1b72a22d2ce49fe5a62675",
+      "sha256": "b7cc99a9ba3e76c5313e47bce84e146d2220bcb7207fd59adb364d7f7ccd623c"
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "source_path": "LICENSE-APACHE",
+      "source_sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "source_git_blob": "f433b1a53f5b830a205fd2df78e2b34974656c7b",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "source_path": "LICENSE-MIT",
+      "source_sha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26",
+      "source_git_blob": "e1450bdf57b9c0577e8b947db77ec77f4fea9d38",
+      "sha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26"
+    },
+    {
+      "path": "rustfmt.toml",
+      "source_path": "rustfmt.toml",
+      "source_sha256": "1b51e53edb3571229e84540b9b08514fb23d8c8d3225e8b984773f5c36eaa906",
+      "source_git_blob": "3121924d651ded44b389c1f699ab9d1152ecbfb1",
+      "sha256": "1b51e53edb3571229e84540b9b08514fb23d8c8d3225e8b984773f5c36eaa906"
+    },
+    {
+      "path": "src/app.rs",
+      "source_path": "crates/update/src/app.rs",
+      "source_sha256": "f5bc5c29dd3dcab82fea5c129965a38ef1dcb822768504701be8f95e0c132a4a",
+      "source_git_blob": "59146cf41148f210e271acf7e51cd4f1aa4ab1fd",
+      "sha256": "4dcf7500a9f98fa9c14f7f1541a5e38c6845f561c67881591a53326a30a1708f"
+    },
+    {
+      "path": "src/desktop_entry.rs",
+      "source_path": "crates/update/src/desktop_entry.rs",
+      "source_sha256": "35cba3a10e624e5bf78bee4ede07b5f6141ef575735c4615143f709b3cf3ce99",
+      "source_git_blob": "d6639bef9431197f42b9f66b6a5e1756daa6eea8",
+      "sha256": "ee237d74a045f276cbc1adeb577a3c31213624d8737d12c7d425262c361d954d"
+    },
+    {
+      "path": "src/detect.rs",
+      "source_path": "crates/update/src/detect.rs",
+      "source_sha256": "74ec77059c8c1867618ea22719b449d5d5f72dcbc11143b31fe5d5c40eaba736",
+      "source_git_blob": "437e315d72e19621b99d41edd8848938dfb96d41",
+      "sha256": "e9c9250bb9dfd85387e15e375e34ec47844e3fa9a5eb7bff33b50e85c292f90d"
+    },
+    {
+      "path": "src/dialog.rs",
+      "source_path": "crates/update/src/dialog.rs",
+      "source_sha256": "2c15aaae935ff756a785123ca5ad1f4e4ae7d5a60436b0ad4962485183f79196",
+      "source_git_blob": "5db9e1c82d461139781647d91bb9de264fa5050e",
+      "sha256": "2c15aaae935ff756a785123ca5ad1f4e4ae7d5a60436b0ad4962485183f79196"
+    },
+    {
+      "path": "src/distro.rs",
+      "source_path": "crates/update/src/distro.rs",
+      "source_sha256": "def61fdb1341bb7a6a799dbf51aaf85072694e5eed2687e44e36846dbbc91c2b",
+      "source_git_blob": "89080522662887a77942c3fe79e70a292acea13b",
+      "sha256": "def61fdb1341bb7a6a799dbf51aaf85072694e5eed2687e44e36846dbbc91c2b"
+    },
+    {
+      "path": "src/folders.rs",
+      "source_path": "crates/update/src/folders.rs",
+      "source_sha256": "686fb65c1959f1358af83d79be9d4085a54f435b8f67406301e38b3db5fc5f39",
+      "source_git_blob": "0fc6da8c5d18e6a6faeb84f775e66392d42aa6b1",
+      "sha256": "f9a48ff588ae52edd4d74a926e7a5b1d18b699691f4be55c446bdde8d58daacd"
+    },
+    {
+      "path": "src/http.rs",
+      "source_path": "crates/update/src/http.rs",
+      "source_sha256": "51bf073e986622f8e194e1d949ed390e36e4847882a0c058f609c710aa0d4d03",
+      "source_git_blob": "55e5cf96fcf1c0b4b58ee71347cc57c81cdacbdf",
+      "sha256": "51bf073e986622f8e194e1d949ed390e36e4847882a0c058f609c710aa0d4d03"
+    },
+    {
+      "path": "src/install.rs",
+      "source_path": "crates/update/src/install.rs",
+      "source_sha256": "3d9354ab2731d2b7d083f42ea44f554745fa35830d74914119b5055a32cf47a3",
+      "source_git_blob": "bd674163eddfcc4855a13b09bc591cd27c316e39",
+      "sha256": "f4d66b25a6a7c2a0200b37b395e0fd152f5045461b26cee92b9c66fa82466efb"
+    },
+    {
+      "path": "src/lib.rs",
+      "source_path": "crates/update/src/lib.rs",
+      "source_sha256": "d83ce300f53ba13feac661e3520b16642841e93930539b4b88d3536a9b3577a5",
+      "source_git_blob": "18d31607971a6bf8df7770fc2e39219403530824",
+      "sha256": "d83ce300f53ba13feac661e3520b16642841e93930539b4b88d3536a9b3577a5"
+    },
+    {
+      "path": "src/manifest.rs",
+      "source_path": "crates/update/src/manifest.rs",
+      "source_sha256": "421b51c9b5c60b782ffe93d04d37729a83bc5c18403f8ea15279f13479b92e38",
+      "source_git_blob": "bcf9b06cc15b45a5b59158f8cb8a6a51e7c1e32e",
+      "sha256": "421b51c9b5c60b782ffe93d04d37729a83bc5c18403f8ea15279f13479b92e38"
+    },
+    {
+      "path": "src/msi_context.rs",
+      "source_path": "crates/update/src/msi_context.rs",
+      "source_sha256": "41cc889e2e0c9f9d2ad5cc4ccf4acb476017fdf4c85cb6c4a7b542e946281ab4",
+      "source_git_blob": "08bae4c9b27dabed88a886df4fe9411b56f15bd2",
+      "sha256": "de95d3b11a890da2231d8ada371bc3831a19a587498457e00c0889443ce6d2a4"
+    },
+    {
+      "path": "src/msi_copy.rs",
+      "source_path": "crates/update/src/msi_copy.rs",
+      "source_sha256": "bef1f3e0084dac1a993b40b41657f0c6a5d99404edcbf6592c6cabd537bd5212",
+      "source_git_blob": "42f16e5c97fe14e975007bc8e0764e1abb2f8691",
+      "sha256": "423dc8a66f824a864ca37fe87e389beb8c22b993e0c9db89d2bd725478f933e4"
+    },
+    {
+      "path": "src/msi_migrate.rs",
+      "source_path": "crates/update/src/msi_migrate.rs",
+      "source_sha256": "94f47b4c30932a80b51c1e759e722c6ce7ec2cba8cd9caf9832964de3078e81d",
+      "source_git_blob": "5ceb90020c3f22d8e80e549f16809d98f8e13eef",
+      "sha256": "441aee681a8f0ac81b2738d4cc6f92fe2c67b32ef4ea281efca74dc9f49e9898"
+    },
+    {
+      "path": "src/packages.rs",
+      "source_path": "crates/update/src/packages.rs",
+      "source_sha256": "83b69c331a082f2c14b8cef6d90d0a0612a0ab37c5e842a3651bbf47a80336ea",
+      "source_git_blob": "1820c2f1502ff091e8c11e2ec5d00ace9aed22c1",
+      "sha256": "83b69c331a082f2c14b8cef6d90d0a0612a0ab37c5e842a3651bbf47a80336ea"
+    },
+    {
+      "path": "src/paths.rs",
+      "source_path": "crates/update/src/paths.rs",
+      "source_sha256": "a1842d553b4dd49faf14ec047703ec050bffacc0e9fd9894db6d03e44785f0f3",
+      "source_git_blob": "7dab89e12a09b781ba852bda8bc25ae38df12e50",
+      "sha256": "a1842d553b4dd49faf14ec047703ec050bffacc0e9fd9894db6d03e44785f0f3"
+    },
+    {
+      "path": "src/pins.rs",
+      "source_path": "crates/update/src/pins.rs",
+      "source_sha256": "1ade4387ec9d29a09f7c223dac9090221154b94e2dcc1c3f118a44289fa63f4c",
+      "source_git_blob": "c0921d0f3d0e8cd3f1341a182e67f94aba5d9182",
+      "sha256": "3bd6dfb050dd15e08672e93c970eb637b269d18a9b8fb09f7a3b3bf88176df50"
+    },
+    {
+      "path": "src/platform.rs",
+      "source_path": "crates/update/src/platform.rs",
+      "source_sha256": "68686de6aa9a4c8c311ecdb76ba145606d9ca403d755ffed5607f66cf1f2dc7a",
+      "source_git_blob": "a16a852d5002cd516a30b1ce4255aea29d08cf75",
+      "sha256": "68686de6aa9a4c8c311ecdb76ba145606d9ca403d755ffed5607f66cf1f2dc7a"
+    },
+    {
+      "path": "src/portable.rs",
+      "source_path": "crates/update/src/portable.rs",
+      "source_sha256": "537159f43578967d3890437ed9cbe6b3021ecadf50b6402c926ee4e528b50667",
+      "source_git_blob": "027411df495cde55f3e9d17d60764362db210d9e",
+      "sha256": "537159f43578967d3890437ed9cbe6b3021ecadf50b6402c926ee4e528b50667"
+    },
+    {
+      "path": "src/process.rs",
+      "source_path": "crates/update/src/process.rs",
+      "source_sha256": "57d3f15533c871c055a4000b33ca8df4d8e2fc143eba9cdcf33e180a2be563ab",
+      "source_git_blob": "e39eb378df853cd5d6a746539af006ccf5dc2ee2",
+      "sha256": "57d3f15533c871c055a4000b33ca8df4d8e2fc143eba9cdcf33e180a2be563ab"
+    },
+    {
+      "path": "src/protocol.rs",
+      "source_path": "crates/update/src/protocol.rs",
+      "source_sha256": "969cd68df4c7ddfb43b262d2ffca5b22329d5e98832e61a4f153cb47c82ccfbb",
+      "source_git_blob": "e52dbb940db9f8460904a112abc9361c2baa84d6",
+      "sha256": "e39e56134b2cd8384e474900835bc4c543d0bd2c654653a16b17c1bd90ad3140"
+    },
+    {
+      "path": "src/proxy.rs",
+      "source_path": "crates/update/src/proxy.rs",
+      "source_sha256": "c659833523adc426277f7ecb55c64c770cd3cef74654a42c3c7bbca3f7332bd4",
+      "source_git_blob": "87aa35246896451dd5e686c554d8a5c8a745312c",
+      "sha256": "c659833523adc426277f7ecb55c64c770cd3cef74654a42c3c7bbca3f7332bd4"
+    },
+    {
+      "path": "src/queue.rs",
+      "source_path": "crates/update/src/queue.rs",
+      "source_sha256": "087358f0a7a291ca40ee8eba4a0ffd2ea2e13378c15eb0433009948350f89198",
+      "source_git_blob": "b30713a0f4d85c05d5d6174b50a26281f957d307",
+      "sha256": "087358f0a7a291ca40ee8eba4a0ffd2ea2e13378c15eb0433009948350f89198"
+    },
+    {
+      "path": "src/release.rs",
+      "source_path": "crates/update/src/release.rs",
+      "source_sha256": "5dad7d8cba8ec62c9feba8a345968669b557625ce2ac1338e9d23e3669be6341",
+      "source_git_blob": "ef725f486cba6f9d32b55a815f20286d4e097337",
+      "sha256": "5dad7d8cba8ec62c9feba8a345968669b557625ce2ac1338e9d23e3669be6341"
+    },
+    {
+      "path": "src/self_update.rs",
+      "source_path": "crates/update/src/self_update.rs",
+      "source_sha256": "7fa72e8c38d247303ea13c1b345d0ff0dbabe3f28948bf4f547d21461dbe7243",
+      "source_git_blob": "01ec41dae25de9998b7582cf5d8f64428e8379c8",
+      "sha256": "dbf0abe0e77bf9fd8d5471d690a0e017d32a8d63dc571c959e900e44b6cd2e87"
+    },
+    {
+      "path": "src/source.rs",
+      "source_path": "crates/update/src/source.rs",
+      "source_sha256": "521d59af552c5d38b82a8317cc0b1e7d8bae667b339d281c7286fadd0d46ecd0",
+      "source_git_blob": "75a46fd26f49f2c7565aa976ca0008b28246bf2d",
+      "sha256": "521d59af552c5d38b82a8317cc0b1e7d8bae667b339d281c7286fadd0d46ecd0"
+    },
+    {
+      "path": "src/status.rs",
+      "source_path": "crates/update/src/status.rs",
+      "source_sha256": "f808532b202b98327f5d3f7bb0c924d05b52a9caf534e88092c7aab1a599b507",
+      "source_git_blob": "1cd0cf76cb5c74f8388d3a9e6d8a6315a4114481",
+      "sha256": "dad1843f5a839a7dc80543bd75bcaeade16a197a88f79192d538780524a508ce"
+    },
+    {
+      "path": "src/suite.rs",
+      "source_path": "crates/update/src/suite.rs",
+      "source_sha256": "c414367072c87d876fa7ff8220bb560439f848e40e4aa66372d887a0d0af8372",
+      "source_git_blob": "57e2e2a317f9ea1f70d37a66e3df422426a36fe3",
+      "sha256": "c414367072c87d876fa7ff8220bb560439f848e40e4aa66372d887a0d0af8372"
+    },
+    {
+      "path": "src/time.rs",
+      "source_path": "crates/update/src/time.rs",
+      "source_sha256": "f9778fd52a5998b60b3aa7d1b7a2ce603f8142066795d7c3cb1bf811dceaeebf",
+      "source_git_blob": "3d91a93057efb81d56ad2b89048caeb98e2bb075",
+      "sha256": "f9778fd52a5998b60b3aa7d1b7a2ce603f8142066795d7c3cb1bf811dceaeebf"
+    },
+    {
+      "path": "src/translate.rs",
+      "source_path": "crates/update/src/translate.rs",
+      "source_sha256": "68a4786c28f8c6179ced78c91c658f18abf73d65cc7aca724c25f737add9dca8",
+      "source_git_blob": "58a24e2999033a247d9522215c3961f110a7afae",
+      "sha256": "68a4786c28f8c6179ced78c91c658f18abf73d65cc7aca724c25f737add9dca8"
+    },
+    {
+      "path": "src/updater.rs",
+      "source_path": "crates/update/src/updater.rs",
+      "source_sha256": "172a3b9032104ce8ec8ddbf08cf2af5543c78540e7da5f52831eb1eb22602282",
+      "source_git_blob": "c45da32ccf6e51e4c59b7a18af47b81553c7ad30",
+      "sha256": "172a3b9032104ce8ec8ddbf08cf2af5543c78540e7da5f52831eb1eb22602282"
+    },
+    {
+      "path": "src/updater_pin_tests.rs",
+      "source_path": "crates/update/src/updater_pin_tests.rs",
+      "source_sha256": "1eed3b4d5ef7ece167e6195a2efa683e65d4f34797f5237b83c9ebe87fb66246",
+      "source_git_blob": "8a4b73d722ee26c20594bb6f154c5dab95174a39",
+      "sha256": "1eed3b4d5ef7ece167e6195a2efa683e65d4f34797f5237b83c9ebe87fb66246"
+    },
+    {
+      "path": "src/version.rs",
+      "source_path": "crates/update/src/version.rs",
+      "source_sha256": "6531a71a8152291b66291bf2cca0c4c34f367806fe0164eb2d279fe7729e19a5",
+      "source_git_blob": "1915f7b37edd3f43f7431aca9be833834526a793",
+      "sha256": "6531a71a8152291b66291bf2cca0c4c34f367806fe0164eb2d279fe7729e19a5"
+    },
+    {
+      "path": "tests/dialog_screenshots.rs",
+      "source_path": "crates/update/tests/dialog_screenshots.rs",
+      "source_sha256": "ca9662bab2ea94b192b183169455baf0d029064eae387736af5b5ef09dd390ae",
+      "source_git_blob": "19123b82f542fc3b22407e4319678ce0128bb026",
+      "sha256": "ca9662bab2ea94b192b183169455baf0d029064eae387736af5b5ef09dd390ae"
+    },
+    {
+      "path": "tests/fixtures/photocraft-release.json",
+      "source_path": "crates/update/tests/fixtures/photocraft-release.json",
+      "source_sha256": "945ca777cd869e451d587565e098f88616fc0702c2d4ac7c41529ee96647aacf",
+      "source_git_blob": "d9969318e3cfb96460f1ac158c6efb9dcb9d3c53",
+      "sha256": "945ca777cd869e451d587565e098f88616fc0702c2d4ac7c41529ee96647aacf"
+    },
+    {
+      "path": "tests/fixtures/soundcraft-release.json",
+      "source_path": "crates/update/tests/fixtures/soundcraft-release.json",
+      "source_sha256": "5639dee92c0b5d1abd6ba9a05d5a5a16d07d7b65dfae891b05aa0e40135878b6",
+      "source_git_blob": "ca81aa4e125647e3627f12c5e53c70fc92e4639b",
+      "sha256": "5639dee92c0b5d1abd6ba9a05d5a5a16d07d7b65dfae891b05aa0e40135878b6"
+    },
+    {
+      "path": "tests/https_only.rs",
+      "source_path": "crates/update/tests/https_only.rs",
+      "source_sha256": "fbd64005100d6972930a6ba3c93b50cbcf81d5df8a3f11e73953a5613daa30e5",
+      "source_git_blob": "059433f07335a367e7ed21816b3fec42b013ca6e",
+      "sha256": "fbd64005100d6972930a6ba3c93b50cbcf81d5df8a3f11e73953a5613daa30e5"
+    }
+  ]
+}

@@ -21,6 +21,10 @@ JetBrains Mono font (assets/fonts/JetBrainsMono-Regular.ttf) — OFL-1.1. See as
 Builds made with craft-fonts (CRAFT_FONTS_DIR; all official releases) also embed the fonts listed in
 https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, Shippori Mincho,
 BIZ UDMincho, Noto Sans CJK SC, Noto Sans Arabic, Noto Sans Thai, Noto Sans Georgian) — OFL-1.1. Their licence texts ship with the packages as OFL-<family>.txt.
+craft-update (vendor/craft-update), the updater library from https://github.com/storytold/craft-libs
+  at revision 1b34eba41e62138fc2438d2734523b302840b45d, with Filmagic's changes listed in
+  vendor/craft-update/README.filmagic.md: Copyright (c) 2026 ArtCraft Team and the craft-libs
+  contributors, MIT OR Apache-2.0 (vendor/craft-update/LICENSE-MIT, LICENSE-APACHE).
 Public-domain film and NASA frames and CC0 music shown in README screenshots (docs/images/) — public domain / CC0-1.0. See ATTRIBUTION.md.
 
 

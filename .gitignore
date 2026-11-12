@@ -7,3 +7,7 @@ plan/
 .DS_Store
 .claude/worktrees/
 __pycache__/
+
+# Built only when its tests run on their own (vendor/craft-update/README.filmagic.md).
+/vendor/craft-update/Cargo.lock
+/vendor/craft-update/target/

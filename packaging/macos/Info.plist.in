@@ -30,7 +30,7 @@
   <key>CFBundleExecutable</key>
   <string>Filmagic</string>
   <key>CFBundleIdentifier</key>
-  <string>ai.storyteller.filmagic</string>
+  <string>io.github.vansyson1308.editfilm</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>
@@ -79,7 +79,7 @@
       <string>Owner</string>
       <key>LSItemContentTypes</key>
       <array>
-        <string>ai.storyteller.filmagic.project</string>
+        <string>io.github.vansyson1308.editfilm.project</string>
       </array>
     </dict>
   </array>
@@ -89,7 +89,7 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.filmagic.project</string>
+      <string>io.github.vansyson1308.editfilm.project</string>
       <key>UTTypeDescription</key>
       <string>Filmagic Project</string>
       <key>UTTypeConformsTo</key>

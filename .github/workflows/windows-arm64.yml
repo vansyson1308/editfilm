@@ -32,5 +32,5 @@ jobs:
     with:
       app-name: filmagic
       app-dir: Filmagic
-      install-relative-path: Programs/ArtCraft/Filmagic
+      install-relative-path: Programs/Filmagic
       install-scope: perUser

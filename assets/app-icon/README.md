@@ -57,7 +57,7 @@ conventions; the drawing is not traced from or modelled on any other product's i
 | `filmagic-macos-512.png` | runtime Dock icon on macOS (embedded by `apps/filmagic/src/main.rs`) |
 | `filmagic.icns` | macOS bundle icon (`CFBundleIconFile`): 16, 32, 64, 128, 256, 512 and 1024 px, the larger ones also as the @2x images |
 | `filmagic.ico` | Windows icon, 16–256 px (embedded in `filmagic.exe` by `apps/filmagic/build.rs`) |
-| `hicolor/<size>/apps/ai.storyteller.filmagic.png`, `hicolor/scalable/…svg` | Linux icon theme, used by `packaging/linux/ai.storyteller.filmagic.desktop` |
+| `hicolor/<size>/apps/io.github.vansyson1308.editfilm.png`, `hicolor/scalable/…svg` | Linux icon theme, used by `packaging/linux/io.github.vansyson1308.editfilm.desktop` |
 
 The web app's `apps/filmagic-web/web/favicon.png` (128 px) comes from the same artwork, and the
 macOS DMG window (`packaging/macos/dmg/background.svg`) redraws the motif in its left panel.
