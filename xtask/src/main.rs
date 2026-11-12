@@ -16,11 +16,14 @@
 //!   lists, against a reference list (default: the local `plan/premiere/<area>.json`), presence and
 //!   placement reported separately (`parity.rs`, docs/gaps.md G7).
 //! - `ico <out.ico> <in.png>…`: pack PNGs into a Windows `.ico` (used by `packaging/icons.sh`).
+//! - `icns <out.icns> <in.png>…`: pack PNGs into a macOS `.icns` on any OS (used by
+//!   `packaging/icons.sh`).
 //! - `i18n-report`: print the interface strings each language's catalog lacks (they show in
 //!   English). It never fails.
 //! - `ci`: fmt check, clippy -D warnings, tests (`cargo nextest run` when installed) and doctests,
 //!   the i18n report, layers, assets, wasm.
 
+mod icns;
 mod ico;
 mod parity;
 mod version;
@@ -600,8 +603,12 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
+        "icns" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            icns::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|parity [--area menus|effects|transitions] [--reference FILE] [--out FILE] [--min PERCENT]|ico OUT IN…|icns OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };
