@@ -763,11 +763,11 @@ pub(crate) fn base_layer(
                 NestPicture::Mix(first, next, wgt) if blended_depth <= MAX_NEST_DEPTH => {
                     let a = picture(first, blended_depth);
                     // a cancelled frame job is discarded: skip the second picture
-                    if filmcraft_media::cancel::cancelled() {
+                    if filmagic_media::cancel::cancelled() {
                         a
                     } else {
                         let b = picture(next, blended_depth);
-                        if item.time_interpolation == filmcraft_project::TimeInterpolation::OpticalFlow {
+                        if item.time_interpolation == filmagic_project::TimeInterpolation::OpticalFlow {
                             flow::interpolate(&a, &b, wgt)
                         } else {
                             a.lerp(&b, wgt)
@@ -859,7 +859,7 @@ pub(crate) enum NestPicture {
 /// frames), and mixing that with the next frame would add the motion twice. So what is animated
 /// inside such a nest cross-fades from one frame of the nest to the next; with Frame Sampling it is
 /// rendered at the exact time.
-pub(crate) fn nest_picture(item: &TrackItem, t: Tick, nested: &Sequence, seq_rate: filmcraft_time::FrameRate) -> NestPicture {
+pub(crate) fn nest_picture(item: &TrackItem, t: Tick, nested: &Sequence, seq_rate: filmagic_time::FrameRate) -> NestPicture {
     let ft = item.source_time_at(t);
     let rate = nested.settings.frame_rate;
     match interpolation_blend(item, t, rate, seq_rate) {
