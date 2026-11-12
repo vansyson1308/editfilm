@@ -577,8 +577,10 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   Each step fits the dominant motion inside the mask, which around a small plain subject is the
   background's; `track::Appearance` keeps the colours that set the inside of the mask apart from
   a band around it in the first frame. Under half of them still inside (`LOST_BELOW`), the job
-  stops with `lost track after N frame(s)`; frames under four fifths (`SURE_ABOVE`) are held back
-  and written only if a later frame is above it again or the run ends without losing the subject.
+  stops with `lost track after N frame(s)`. Frames under four fifths (`SURE_ABOVE`) on which the
+  share is still falling are held back (`masks::Doubt`), and dropped only by that stop; they are
+  written once the share is above four fifths again or has stayed level for six frames, and by
+  every other end of the run, "not enough detail inside the mask" included.
 
 ### 5.4 Colour management
 

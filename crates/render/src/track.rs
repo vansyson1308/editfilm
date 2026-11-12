@@ -457,8 +457,8 @@ pub const LOST_BELOW: f32 = 0.5;
 /// [`Appearance::kept`] from which a tracked region is plainly still on what it started on.
 /// Between [`LOST_BELOW`] and this it may be on its way off: in the tests a mask sliding off a
 /// plain subject has over 70 % of the subject under it on every frame at or above this, and
-/// never comes back above it. Tracking holds the frames in between back until one says which
-/// way it went.
+/// never comes back above it. Tracking holds the frames in between back while the share is
+/// still falling, until one says which way it went.
 pub const SURE_ABOVE: f32 = 0.8;
 
 #[derive(Clone, Copy)]
@@ -608,7 +608,8 @@ impl Appearance {
         if !(seen > 0.0 && seen >= 0.5 * all && self.own_total > 0.0) {
             return None;
         }
-        // the band where it is now (all zero where it has left the frame: nothing is discounted)
+        // the band where it is now, over the part of it still in the frame (all zero once none
+        // of it is: nothing is discounted then)
         let (around_now, _) = look_at(&self.band, w, h, rgba, to_frame);
         let kept: f32 = now.iter().zip(self.around.iter().zip(&around_now)).zip(&self.own).map(|((n, (a0, a1)), o)| (n - a0.min(*a1)).max(0.0).min(*o)).sum();
         Some((kept / self.own_total).clamp(0.0, 1.0))
@@ -836,12 +837,13 @@ mod tests {
         }
     }
 
-    /// A 28×80 figure in a white shirt and beige trousers, its middle at (`x`, 120) of a 320×240
-    /// shot: a white wall on the left, a green hedge on the right, a dark floor under both.
-    fn figure_by_wall_and_hedge(x: f64) -> Vec<u8> {
+    /// A 28×80 figure in a white shirt and beige trousers (or `all_white`), its middle at
+    /// (`x`, 120) of a 320×240 shot: a white wall on the left, a green hedge on the right, a dark
+    /// floor under both.
+    fn figure_by_wall_and_hedge(x: f64, all_white: bool) -> Vec<u8> {
         rgba(320, 240, |px, py| {
             if (px - x).abs() < 14.0 && (py - 120.0).abs() < 40.0 {
-                if py < 120.0 { [0.95, 0.95, 0.94] } else { [0.76, 0.66, 0.5] }
+                if py < 120.0 || all_white { [0.95, 0.95, 0.94] } else { [0.76, 0.66, 0.5] }
             } else if py >= 150.0 {
                 [0.15, 0.14, 0.13]
             } else if px < 140.0 {
@@ -855,16 +857,21 @@ mod tests {
 
     /// A subject that shares a colour with what is behind it keeps its look when it walks in
     /// front of something else, either way, under a mask that stays exactly on it and has
-    /// background inside it.
+    /// background inside it. With the first frame's surroundings taken off every later frame, the
+    /// all-white figure walking from the wall to the hedge kept nothing at all (and the other
+    /// 0.76); with the surroundings of the frame itself taken off, the walk back fails instead.
     #[test]
     fn a_followed_subject_keeps_its_look_in_front_of_another_background() {
         let (w, h) = (320usize, 240usize);
-        for (from, step) in [(60.0, 4.0), (260.0, -4.0)] {
-            let look = Appearance::capture(w, h, &figure_by_wall_and_hedge(from), &rect(Vec2::new(from, 120.0), 60.0, 110.0)).expect("the figure has a look");
-            for k in 1..=50 {
-                let moved = step * k as f64;
-                let kept = look.kept(w, h, &figure_by_wall_and_hedge(from + moved), &Affine::translate(moved, 0.0)).expect("in frame");
-                assert!(kept > 0.8, "from x = {from}, frame {k}: kept {kept}");
+        for all_white in [true, false] {
+            for (from, step) in [(60.0, 4.0), (260.0, -4.0)] {
+                let first = figure_by_wall_and_hedge(from, all_white);
+                let look = Appearance::capture(w, h, &first, &rect(Vec2::new(from, 120.0), 60.0, 110.0)).expect("the figure has a look");
+                for k in 1..=50 {
+                    let moved = step * k as f64;
+                    let kept = look.kept(w, h, &figure_by_wall_and_hedge(from + moved, all_white), &Affine::translate(moved, 0.0)).expect("in frame");
+                    assert!(kept > 0.8, "all white: {all_white}, from x = {from}, frame {k}: kept {kept}");
+                }
             }
         }
     }
