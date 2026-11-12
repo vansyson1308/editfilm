@@ -57,6 +57,8 @@ change migrates anything a user already has.
    by `CRAFT_VERSIONS_FILE` is read and every check otherwise follows stable releases.
    `FLATPAK_GRANT` (`--filesystem=xdg-data/ArtCraft/versions:ro`) is removed, and so is that grant
    in Filmagic's two Flatpak manifests. The test of the default path now checks there is none.
+   `folders::host_data_local_dir`, now used only by the Linux installer, is allowed to be unused
+   elsewhere (`cfg_attr(not(target_os = "linux"), allow(dead_code))`).
 7. `msi_migrate.rs`, `msi_context.rs`, `msi_copy.rs`: Windows installs have no `ArtCraft` suite
    folder. The per-user default is `%LOCALAPPDATA%\Programs\<App>` (upstream also listed
    `Programs\ArtCraft\<App>` first), and a per-user copy moving to everyone goes to
@@ -69,23 +71,36 @@ change migrates anything a user already has.
    "release feed" and "Launcher" instead of naming ArtCraft. Filmagic never produces either, but
    both are display strings.
 
+10. `app.rs`, `detect.rs`, `msi_copy.rs`: the Windows publisher and install key are part of `App`.
+    `App::publisher` (default `SUITE_PUBLISHER`, "Learning Machines LLC") is what an uninstall
+    entry's `Publisher` must say for `detect::windows::msi_installs` to count it, and
+    `App::install_key()` (default `Software\<publisher>\<name>`, or `install_key_override`) is the
+    key `msi_copy` reads the recorded install folder from. Upstream hard-coded both to the suite's
+    publisher, so a Filmagic MSI (Manufacturer "Filmagic contributors", key `Software\Filmagic`)
+    was never found and its self-update stopped. Filmagic sets both to what
+    `packaging/windows/filmagic.wxs` writes. Tests added for both defaults and overrides.
+11. `app.rs`, `install.rs`, `self_update.rs`: the Apple Developer team is part of `App`
+    (`App::apple_team`, default `SUITE_APPLE_TEAM`, upstream's `DJ6XS33FX8`; `install::macos::TEAM_ID`
+    is now that constant). `install::macos::Expect::release` takes the app and fails when it has no
+    team, and `self_update::prepare_update` refuses a macOS `.app` update for such an app before
+    downloading anything, with a message that points to the releases page. The signature check
+    itself is unchanged: an update is never installed unverified. Filmagic has no team yet
+    (`apple_team: None`); once its releases are signed with the owner's Developer ID, set the
+    certificate's Team ID in `UPDATE_APP` (see `docs/releasing.md`). Tests: the refusal (no phase
+    starts and nothing is downloaded), and that suite apps keep their team.
+
 ## Left as upstream has it, and why
 
 - `suite.rs` (the catalog of the upstream apps and the ArtCraft Launcher), `app::DEVELOPER`
-  ("ArtCraft", the default developer of those catalog entries) and the `ai.storyteller.<id>`
-  default of `bundle_id()`: they describe upstream's apps. Filmagic's `UPDATE_APP` names its own
-  developer and bundle id, is not in the catalog, and nothing Filmagic runs passes a catalog entry.
+  ("ArtCraft", the default developer of those catalog entries), the `ai.storyteller.<id>`
+  default of `bundle_id()` and the `SUITE_PUBLISHER` and `SUITE_APPLE_TEAM` defaults: they describe
+  upstream's apps. Filmagic's `UPDATE_APP` names its own developer, bundle id, publisher, install
+  key and (lack of) Apple team, is not in the catalog, and nothing Filmagic runs passes a catalog entry.
   The many tests that use catalog entries as sample apps keep working unchanged.
 - `detect::linux::packages()` asks Flatpak for the version of `ai.storyteller.*` bundles. It belongs
   to `detect::Snapshot::take`, the launcher's scan of every suite app, which Filmagic never calls.
 - Doc comments and test data that mention the launcher or ArtCraft paths: not shown and not
   written by Filmagic.
-- Upstream identity that is not a name and is not changed here: `detect.rs` recognises Windows
-  Installer entries by the publisher `Learning Machines LLC`, `msi_copy.rs` reads the launcher's
-  `HKCU\Software\Learning Machines LLC\<App>` folder, and `install::macos::TEAM_ID` is upstream's
-  Apple Developer team. Filmagic's MSI names "Filmagic contributors" as its publisher, so a
-  self-update of an MSI copy stops with "Windows lists this app's installation more than once or not
-  at all" until these become settings of `App` as well; see the pull request that added this file.
 
 ## Tests
 

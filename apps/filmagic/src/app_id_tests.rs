@@ -2,7 +2,10 @@
 //! the `.desktop` file by it, Flatpak and AppStream key the app by it, the macOS bundle and project
 //! type carry it, and the updater (`UPDATE_APP.bundle_id()`) uses it to recognise its own Flatpak,
 //! the menu entry beside an AppImage and the running `.app`. If any of them drifts, the app loses
-//! its icon, its file type or its updates without an error, so these tests fail instead.
+//! its icon, its file type or its updates without an error, so these tests fail instead. The same
+//! goes for the rest of the app's identity the updater relies on: the Windows publisher and install
+//! key, and the Apple Developer team. Nothing outside `vendor/` may name the upstream company
+//! except the notes listed in [`UPSTREAM_NOTES`].
 
 use std::path::{Path, PathBuf};
 
@@ -15,6 +18,9 @@ const FLATPAK: &str = include_str!("../../../packaging/linux/flatpak/io.github.v
 const FLATPAK_BUNDLE: &str = include_str!("../../../packaging/linux/flatpak/io.github.vansyson1308.editfilm.bundle.yml");
 const INFO_PLIST: &str = include_str!("../../../packaging/macos/Info.plist.in");
 const OMASTORE: &str = include_str!("../../../omastore.toml");
+const WXS: &str = include_str!("../../../packaging/windows/filmagic.wxs");
+const WXI: &str = include_str!("../../../packaging/windows/install-policy.wxi");
+const PACKAGE_SH: &str = include_str!("../../../packaging/linux/package.sh");
 /// The scripts that name the id themselves, with the assignment each one makes.
 const SCRIPTS: [(&str, &str, &str); 6] = [
     ("packaging/icons.sh", include_str!("../../../packaging/icons.sh"), "APP_ID=\""),
@@ -155,9 +161,131 @@ fn the_packaging_scripts_name_the_app_id() {
 
 #[test]
 fn no_packaging_file_names_the_upstream_identifier() {
-    let files = [DESKTOP, METAINFO, MIME, FLATPAK, FLATPAK_BUNDLE, INFO_PLIST, OMASTORE].into_iter().chain(SCRIPTS.map(|(_, text, _)| text));
+    let files = [DESKTOP, METAINFO, MIME, FLATPAK, FLATPAK_BUNDLE, INFO_PLIST, OMASTORE, WXS, WXI].into_iter().chain(SCRIPTS.map(|(_, text, _)| text));
     for text in files {
-        assert!(!text.contains("ai.storyteller"), "{text}");
-        assert!(!text.contains("ArtCraft"), "{text}");
+        let lower = text.to_ascii_lowercase();
+        for term in UPSTREAM_TERMS {
+            assert!(!lower.contains(term), "{term}:\n{text}");
+        }
     }
+}
+
+/// The value of attribute `name` on every element opened by `open`.
+fn attributes<'a>(text: &'a str, open: &str, name: &str) -> Vec<&'a str> {
+    let needle = format!(" {name}=\"");
+    text.match_indices(open)
+        .filter_map(|(at, _)| {
+            let tag = text.get(at..)?.split('>').next()?;
+            tag.split_once(&needle)?.1.split('"').next()
+        })
+        .collect()
+}
+
+#[test]
+fn the_updater_knows_the_windows_installer_by_its_publisher_and_key() {
+    let app = &filmagic_ui_egui::UPDATE_APP;
+    // The uninstall entry's Publisher is the package's Manufacturer, set in two places.
+    let manufacturers = attributes(WXS, "<Package ", "Manufacturer").into_iter().chain(attributes(WXS, "<SummaryInformation ", "Manufacturer"));
+    let manufacturers: Vec<&str> = manufacturers.collect();
+    assert_eq!(manufacturers, [app.publisher, app.publisher]);
+    // The key the installer records InstallDir under, in the context it was installed for, and the
+    // key the installer's own searches read back for both contexts.
+    let install_dir: Vec<&str> = WXS
+        .lines()
+        .filter(|l| l.contains("<RegistryValue ") && l.contains(" Name=\"InstallDir\""))
+        .flat_map(|l| attributes(l, "<RegistryValue ", "Key"))
+        .collect();
+    assert_eq!(install_dir, [app.install_key().as_str()]);
+    let searched: Vec<&str> = WXI
+        .lines()
+        .filter(|l| l.contains("<RegistrySearch ") && (l.contains(" Name=\"InstallDir\"") || l.contains(" Name=\"InstallFolder\"")))
+        .flat_map(|l| attributes(l, "<RegistrySearch ", "Key"))
+        .collect();
+    assert_eq!(searched.len(), 4, "InstallDir and InstallFolder, for one account and for everyone: {searched:?}");
+    assert!(searched.iter().all(|k| *k == app.install_key()), "{searched:?}");
+}
+
+#[test]
+fn without_an_apple_team_a_macos_update_is_refused_with_a_download_link() {
+    let app = &filmagic_ui_egui::UPDATE_APP;
+    // Filmagic's releases aren't signed with an Apple Developer ID yet (docs/releasing.md).
+    assert_eq!(app.apple_team, None, "set the Team ID only together with signed releases");
+    let Err(why) = app.apple_team() else { panic!("an app without a team must not verify a macOS update") };
+    assert!(why.contains(&app.releases_url()), "{why}");
+}
+
+#[test]
+fn linux_packages_name_a_maintainer_of_this_repository() {
+    let line = PACKAGE_SH.lines().find(|l| l.contains("FILMAGIC_MAINTAINER=")).unwrap_or_default();
+    assert!(line.contains("${FILMAGIC_MAINTAINER:-"), "the environment can still override it: {line}");
+    assert!(line.contains("Filmagic contributors <188127122+vansyson1308@users.noreply.github.com>"), "{line}");
+}
+
+/// Names of the upstream company, its products and its domains, lowercased.
+const UPSTREAM_TERMS: [&str; 5] = ["ai.storyteller", "storyteller.ai", "learning machines", "artcraft", "getartcraft"];
+
+/// Files outside `vendor/` that may name ArtCraft, and why. The other terms are allowed nowhere.
+const UPSTREAM_NOTES: [(&str, &str); 15] = [
+    ("AGENTS.md", "the rule against upstream brand marks"),
+    ("NOTICE", "the upstream copyright and trademark notice"),
+    ("LICENSE-MIT", "the upstream copyright line"),
+    ("ATTRIBUTION.md", "the authors of vendored code"),
+    ("ROADMAP.md", "history: the upstream naming update"),
+    ("docs/gaps.md", "history: the upstream naming update"),
+    ("docs/roadmap.md", "history: the upstream naming update"),
+    ("docs/hardware-parity.md", "history: the upstream naming update"),
+    ("docs/target-app-parity.md", "history: the upstream naming update"),
+    ("docs/feature-naming.md", "history: the upstream naming scheme"),
+    ("docs/egui-037-migration-plan.md", "history: the upstream suite's migration"),
+    ("crates/ui-egui/src/cjk.rs", "history: an upstream issue number"),
+    ("crates/ui-egui/src/theme.rs", "history: an upstream issue number"),
+    ("crates/ui-egui/src/panels/dialogs.rs", "About: the fork's credit to its upstream authors"),
+    ("crates/ui-egui/src/i18n/", "translations of the About credit"),
+];
+
+/// Tests that name the upstream terms to check they appear nowhere else; any term is allowed there.
+const UPSTREAM_CHECKS: [&str; 2] = ["crates/ui-egui/tests/it/links_ui.rs", "apps/filmagic/src/app_id_tests.rs"];
+
+/// Every file under `dir` (relative to the repository), skipping build output, the vendored
+/// code, the local notebook and version control. Bounded in depth so a link loop can't run away.
+fn files_under(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    const SKIP: [&str; 5] = [".git", "target", "vendor", "plan", "node_modules"];
+    if depth > 16 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root.join(dir)) else { return };
+    for entry in entries.flatten() {
+        let rel = dir.join(entry.file_name());
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            if !(depth == 0 && SKIP.iter().any(|s| entry.file_name() == *s)) {
+                files_under(root, &rel, depth + 1, out);
+            }
+        } else if kind.is_file() {
+            out.push(rel);
+        }
+    }
+}
+
+#[test]
+fn only_the_listed_notes_name_the_upstream_company() {
+    let root = repo();
+    let mut files = Vec::new();
+    files_under(&root, Path::new(""), 0, &mut files);
+    assert!(files.iter().any(|f| f == Path::new("packaging/linux/package.sh")), "the walk found the packaging");
+    let mut found = Vec::new();
+    for file in &files {
+        let Ok(bytes) = std::fs::read(root.join(file)) else { continue };
+        let Ok(text) = std::str::from_utf8(&bytes) else { continue };
+        let lower = text.to_ascii_lowercase();
+        let rel = file.to_string_lossy().replace('\\', "/");
+        let noted = UPSTREAM_NOTES.iter().any(|(path, _)| if path.ends_with('/') { rel.starts_with(path) } else { rel == *path });
+        for term in UPSTREAM_TERMS {
+            let allowed = noted && term == "artcraft" || UPSTREAM_CHECKS.contains(&rel.as_str());
+            if lower.contains(term) && !allowed {
+                found.push(format!("{rel}: {term}"));
+            }
+        }
+    }
+    assert!(found.is_empty(), "upstream names outside vendor/ and the notes in UPSTREAM_NOTES:\n{}", found.join("\n"));
 }

@@ -99,7 +99,7 @@ pub fn install_at(
     let result = match kind {
         #[cfg(target_os = "macos")]
         PackageKind::Dmg => {
-            macos::install_dmg(app, &file, existing, destination.as_deref(), job.replace, job.paths, &macos::Expect::release(release))
+            macos::install_dmg(app, &file, existing, destination.as_deref(), job.replace, job.paths, &macos::Expect::release(app, release)?)
                 .map(|path| Some(record(&version, kind, path, Vec::new(), false)))
         }
         #[cfg(windows)]
@@ -1373,9 +1373,9 @@ pub mod macos {
         Ok(user)
     }
 
-    /// The Apple Developer team that signs every Craft App and ArtCraft Launcher (Learning
-    /// Machines LLC): the macOS side of the Windows publisher check.
-    pub const TEAM_ID: &str = "DJ6XS33FX8";
+    /// The Apple Developer team that signs every Craft App and the suite's launcher: the macOS
+    /// side of the Windows publisher check. An app names its own with [`App::apple_team`].
+    pub const TEAM_ID: &str = crate::app::SUITE_APPLE_TEAM;
 
     /// What a new copy must prove before it replaces anything. The checksum shows the download is
     /// the file the release lists; these show the app inside is the one the release promises.
@@ -1388,8 +1388,10 @@ pub mod macos {
     }
 
     impl<'a> Expect<'a> {
-        pub fn release(release: &'a Release) -> Self {
-            Self { team: Some(TEAM_ID), version: release.version.as_ref() }
+        /// What a copy of `app` from `release` must prove: its own team's signature. An app
+        /// with no Apple Developer team gets the reason it can't update ([`App::apple_team`]).
+        pub fn release(app: &App, release: &'a Release) -> Result<Self, String> {
+            Ok(Self { team: Some(app.apple_team()?), version: release.version.as_ref() })
         }
     }
 
@@ -3192,7 +3194,15 @@ esac
             let image = dmg(dir.path(), "0.6.0");
             let release = Release { tag: "v0.6.0".into(), version: version::parse("0.6.0"), ..Release::default() };
 
-            let result = install_dmg(photocraft(), &image, Some(&existing), None, false, &Paths::under(dir.path()), &Expect::release(&release));
+            let result = install_dmg(
+                photocraft(),
+                &image,
+                Some(&existing),
+                None,
+                false,
+                &Paths::under(dir.path()),
+                &Expect::release(photocraft(), &release).unwrap(),
+            );
             assert_eq!(result, Err("the app isn't signed by its developer, so it wasn't installed".into()));
             assert_eq!(std::fs::read_to_string(current.join("Contents/MacOS/PhotoCraft")).unwrap(), "0.5.0");
             assert_eq!(

@@ -16,6 +16,14 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
     // The reverse-DNS app id (APP_ID in apps/filmagic/src/main.rs and the packaging), which the
     // updater uses for Flatpak, the AppImage menu entry and the macOS bundle check.
     bundle_id_override: Some("io.github.vansyson1308.editfilm"),
+    // What the Windows installer writes: the Manufacturer of packaging/windows/filmagic.wxs (the
+    // uninstall entry's Publisher) and the key holding InstallDir.
+    publisher: "Filmagic contributors",
+    install_key_override: Some(r"Software\Filmagic"),
+    // No Apple Developer ID team yet, so a macOS copy never installs an update it can't verify; it
+    // points to the releases page instead. Set the team id here once releases are signed
+    // (docs/releasing.md).
+    apple_team: None,
     ..craft_update::app::App::new("filmagic", "Filmagic", "Video editing, color and sound", "vansyson1308/editfilm")
 };
 

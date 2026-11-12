@@ -78,6 +78,12 @@ deliberately, in every job at once.
 - **Notarization:** the app is sent with `xcrun notarytool submit`, then the ticket is stapled
   and checked with `stapler validate`. The app goes on a DMG (`hdiutil makehybrid`), which is
   signed and notarized too. The universal `filmagic-cli` is signed the same way, zipped, and the zip is notarized.
+- **Self-update on macOS** replaces `Filmagic.app` only with a copy signed by the Apple Developer
+  team in `UPDATE_APP.apple_team` (`crates/ui-egui/src/lib.rs`). Filmagic has no team yet, so it is
+  `None`: a macOS copy offers the release but doesn't install it, and asks the person to download
+  it from the releases page. Once releases are signed with the owner's Developer ID, set
+  `apple_team: Some("<TEAMID>")` to the ten-character Team ID of that certificate (the `APPLE_TEAM_ID`
+  secret above; `codesign -dv Filmagic.app` prints it as `TeamIdentifier`).
   Its Finder window (background, icon size and positions) comes from
   [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `Filmagic`
   without the version, which the window's background needs; the DMG file name keeps the version.

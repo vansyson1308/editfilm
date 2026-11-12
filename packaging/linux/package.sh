@@ -41,7 +41,7 @@ case "$ARCH" in
   aarch64 | arm64) ARCH=aarch64; DEB_ARCH=arm64 ;;
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
-export FILMAGIC_MAINTAINER="${FILMAGIC_MAINTAINER:-Filmagic maintainers <filmagic@storyteller.ai>}"
+export FILMAGIC_MAINTAINER="${FILMAGIC_MAINTAINER:-Filmagic contributors <188127122+vansyson1308@users.noreply.github.com>}"
 BASENAME="filmagic-$VERSION-linux-$ARCH"
 
 echo "==> Filmagic $VERSION for Linux $ARCH ($FORMATS)"

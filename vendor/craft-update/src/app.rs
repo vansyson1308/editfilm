@@ -26,10 +26,26 @@ pub struct App {
     /// Its own reverse-DNS identifier, for an app outside the suite's `ai.storyteller.` namespace
     /// (Filmagic: `io.github.vansyson1308.editfilm`). `None`: `ai.storyteller.<id>`. Filmagic change.
     pub bundle_id_override: Option<&'static str>,
+    /// The publisher its Windows Installer package registers (the uninstall entry's `Publisher`).
+    /// [`SUITE_PUBLISHER`] unless the app says otherwise. Filmagic change.
+    pub publisher: &'static str,
+    /// The registry key, under `HKCU` or `HKLM`, where its Windows installer records the install
+    /// folder (`InstallDir`). `None`: `Software\<publisher>\<name>`, the suite's layout. Filmagic change.
+    pub install_key_override: Option<&'static str>,
+    /// The Apple Developer team whose Developer ID signature a macOS update must carry.
+    /// [`SUITE_APPLE_TEAM`] unless the app says otherwise. `None`: the app has no team yet, so
+    /// macOS updates are refused rather than installed unverified ([`App::apple_team`]). Filmagic change.
+    pub apple_team: Option<&'static str>,
 }
 
 /// The developer of every app in the storytold organisation.
 pub const DEVELOPER: &str = "ArtCraft";
+
+/// The publisher of the suite's Windows Installer packages.
+pub const SUITE_PUBLISHER: &str = "Learning Machines LLC";
+
+/// The Apple Developer team that signs the suite's apps (Learning Machines LLC).
+pub const SUITE_APPLE_TEAM: &str = "DJ6XS33FX8";
 
 impl App {
     /// An app with no former names and no icon.
@@ -45,7 +61,32 @@ impl App {
             accent: None,
             developer: DEVELOPER,
             bundle_id_override: None,
+            publisher: SUITE_PUBLISHER,
+            install_key_override: None,
+            apple_team: Some(SUITE_APPLE_TEAM),
         }
+    }
+
+    /// The registry key (under `HKCU` or `HKLM`) where the Windows installer records the install
+    /// folder: [`App::install_key_override`], else `Software\<publisher>\<name>`.
+    pub fn install_key(&self) -> String {
+        match self.install_key_override {
+            Some(key) => key.to_string(),
+            None => format!("Software\\{}\\{}", self.publisher, self.name),
+        }
+    }
+
+    /// The Apple Developer team a macOS update must be signed by, or why the app can't update
+    /// itself on macOS: without a team there is no signature to check, and an unverified copy is
+    /// never installed.
+    pub fn apple_team(&self) -> Result<&'static str, String> {
+        self.apple_team.ok_or_else(|| {
+            format!(
+                "{} isn't signed with an Apple Developer ID yet, so it can't check that an update is genuine and doesn't install it. Download the new version from {}",
+                self.name,
+                self.releases_url()
+            )
+        })
     }
 
     /// The macOS bundle id, Flatpak id and Linux desktop-file id: [`App::bundle_id_override`] when
@@ -93,6 +134,34 @@ mod tests {
         assert_eq!(pdf.names().collect::<Vec<_>>(), ["PdfCraft", "PrintCraft"]);
         assert_eq!(pdf.bundle_id(), "ai.storyteller.pdfcraft");
         assert_eq!(pdf.releases_url(), "https://github.com/storytold/pdfcraft/releases");
+    }
+
+    #[test]
+    fn suite_apps_keep_the_suite_publisher_key_and_team() {
+        let pdf = App::new("pdfcraft", "PdfCraft", "PDFs", "storytold/pdfcraft");
+        assert_eq!(pdf.publisher, SUITE_PUBLISHER);
+        assert_eq!(pdf.install_key(), r"Software\Learning Machines LLC\PdfCraft");
+        assert_eq!(pdf.apple_team(), Ok(SUITE_APPLE_TEAM));
+    }
+
+    #[test]
+    fn an_app_can_name_its_own_publisher_key_and_team() {
+        let own = App {
+            publisher: "Example contributors",
+            install_key_override: Some(r"Software\Editor"),
+            apple_team: Some("ABCDE12345"),
+            ..App::new("editor", "Editor", "Editing", "example/editor")
+        };
+        assert_eq!(own.install_key(), r"Software\Editor");
+        assert_eq!(own.apple_team(), Ok("ABCDE12345"));
+    }
+
+    #[test]
+    fn an_app_without_an_apple_team_refuses_macos_updates_and_says_where_to_download() {
+        let own = App { apple_team: None, ..App::new("editor", "Editor", "Editing", "example/editor") };
+        let Err(why) = own.apple_team() else { panic!("an app without a team must not verify") };
+        assert!(why.contains("Editor isn't signed with an Apple Developer ID"), "{why}");
+        assert!(why.contains("https://github.com/example/editor/releases"), "{why}");
     }
 
     #[test]

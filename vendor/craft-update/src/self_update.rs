@@ -411,6 +411,16 @@ impl std::fmt::Debug for Restart {
     }
 }
 
+/// Whether an update for this kind of install can be checked before it replaces anything. A macOS
+/// `.app` is only replaced by one signed by the app's Apple Developer team; an app with none yet
+/// is refused before anything is downloaded (Filmagic change).
+fn verifiable(app: &App, install: &Install) -> Result<(), String> {
+    match install {
+        Install::MacApp(_) => app.apple_team().map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
 /// [`update`] without starting the helper: the caller starts the returned [`Restart`] when the
 /// app's exit is certain. On macOS and Linux the update is in place when this returns.
 #[allow(clippy::too_many_arguments)]
@@ -434,6 +444,7 @@ pub fn prepare_update(
         // Without that opt-in, a build from source requires a strictly higher release.
         return Err(format!("{} {} is not newer than currently running version {}", app.name, release.version_label(), cur_v));
     }
+    verifiable(app, install)?;
     let (asset, _) = pick_asset(release, &[app.id], platform, &[install.kind()])
         .ok_or_else(|| format!("{} {} has no {} for {}", app.name, release.version_label(), install.kind().label(), platform.label()))?;
     let asset = asset.clone();
@@ -456,7 +467,8 @@ pub fn prepare_update(
             #[cfg(target_os = "macos")]
             Install::MacApp(bundle) => {
                 let existing = Installed { version: None, source: InstallSource::MacApp, location: bundle.display().to_string(), package: None };
-                let placed = install::macos::install_dmg(app, &file, Some(&existing), None, false, paths, &install::macos::Expect::release(release));
+                let placed =
+                    install::macos::install_dmg(app, &file, Some(&existing), None, false, paths, &install::macos::Expect::release(app, release)?);
                 let _ = std::fs::remove_file(&file);
                 let placed = placed?;
                 Ok(relaunch_after_exit(app, pid, &[Path::new("/usr/bin/open").as_os_str(), placed.as_os_str()]))
@@ -2652,6 +2664,38 @@ mod tests {
         let running = Some("0.2.0-integration.20261029.f5b3f123");
         let result = update(&crate::suite::LAUNCHER, &install, &release, platform, &http, &paths, &stop, &mut phase, &last, running);
         assert!(result.unwrap_err().contains("is not newer than currently running version"));
+    }
+
+    #[test]
+    fn a_mac_app_without_an_apple_team_is_refused_before_anything_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new(crate::TEST_AGENT).unwrap();
+        let mut phase = |p| panic!("no phase may start ({p:?})");
+        let last = || Ok(());
+        let stop = Stop::default();
+        // An asset that would be picked, at an address that must never be fetched.
+        let release = Release {
+            version: version::parse("9.0.0"),
+            tag: "v9.0.0".into(),
+            assets: vec![crate::Asset {
+                name: "editor-9.0.0-macos-universal.dmg".into(),
+                size: 1,
+                url: "https://example.invalid/x.dmg".into(),
+                sha256: None,
+            }],
+            ..Release::default()
+        };
+        let app = App { apple_team: None, ..App::new("editor", "Editor", "Editing", "example/editor") };
+        let install = Install::MacApp(dir.path().join("Editor.app"));
+        use crate::{Arch, Os};
+        let platform = Platform { os: Os::MacOs, arch: Arch::Arm64 };
+        let why = prepare_update(&app, &install, &release, platform, &http, &paths, &stop, &mut phase, &last, Some("1.0.0")).unwrap_err();
+        assert!(why.contains("isn't signed with an Apple Developer ID") && why.contains("https://github.com/example/editor/releases"), "{why}");
+        assert!(std::fs::read_dir(paths.downloads()).map_or(true, |mut d| d.next().is_none()), "nothing was downloaded");
+        // Other kinds of install are not affected by the missing team.
+        assert_eq!(verifiable(&app, &Install::AppImage(dir.path().join("e.AppImage"))), Ok(()));
+        assert_eq!(verifiable(&crate::suite::PHOTOCRAFT, &install), Ok(()), "a suite app keeps its team");
     }
 
     #[cfg(target_os = "linux")]

@@ -42,11 +42,15 @@ pub fn data_local_dir() -> Option<PathBuf> {
 
 /// The host's per-user data folder, also from inside a Flatpak, where `XDG_DATA_HOME` points into
 /// the sandbox (`~/.var/app/<id>/data`). Files other programs on the host must find go here.
+// Only the Linux installer uses it since the version-pin file went (README.filmagic.md).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn host_data_local_dir() -> Option<PathBuf> {
     pick_host_data_dir(std::path::Path::new("/.flatpak-info").exists(), absolute_env("HOST_XDG_DATA_HOME"), home_dir(), data_local_dir())
 }
 
 /// [`host_data_local_dir`] with its inputs passed in, so every CI OS can test the Flatpak case.
+// Only the Linux installer uses it since the version-pin file went (README.filmagic.md).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn pick_host_data_dir(in_flatpak: bool, host_xdg: Option<PathBuf>, home: Option<PathBuf>, local: Option<PathBuf>) -> Option<PathBuf> {
     if in_flatpak {
         return host_xdg.or_else(|| home.map(|h| h.join(".local").join("share")));

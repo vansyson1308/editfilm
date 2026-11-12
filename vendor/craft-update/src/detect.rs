@@ -88,15 +88,11 @@ pub(crate) fn appimage_version(name: &str, stems: &[&str]) -> Option<Option<Stri
     (parsed.kind == crate::PackageKind::AppImage && parsed.token.starts_with("linux-")).then_some(Some(parsed.version))
 }
 
-/// Who our Windows Installer packages name as their publisher.
-#[cfg_attr(not(windows), allow(dead_code))]
-const PUBLISHER: &str = "Learning Machines LLC";
-
 /// Whether an uninstall entry's `DisplayName` and `Publisher` are `app`'s, under any name its
-/// installers have registered.
+/// installers have registered. The publisher is the app's own ([`App::publisher`]; Filmagic change).
 #[cfg_attr(not(windows), allow(dead_code))]
 fn is_installer_entry(app: &App, display_name: &str, publisher: &str) -> bool {
-    publisher == PUBLISHER && app.names().any(|n| n == display_name)
+    publisher == app.publisher && app.names().any(|n| n == display_name)
 }
 
 /// Where a Windows install of `app` may keep its exe, in the order to try: the entry's
@@ -720,6 +716,13 @@ mod tests {
 
     fn roots() -> Vec<PathBuf> {
         vec![PathBuf::from(r"C:\Program Files"), PathBuf::from(r"C:\Program Files (x86)")]
+    }
+
+    #[test]
+    fn an_app_with_its_own_publisher_matches_only_that_publisher() {
+        let own = App { publisher: "Example contributors", ..App::new("editor", "Editor", "Editing", "example/editor") };
+        assert!(is_installer_entry(&own, "Editor", "Example contributors"));
+        assert!(!is_installer_entry(&own, "Editor", LEARNING_MACHINES));
     }
 
     #[test]

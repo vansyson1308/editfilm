@@ -9,6 +9,8 @@
     "Cargo.toml",
     "src/app.rs",
     "src/desktop_entry.rs",
+    "src/detect.rs",
+    "src/folders.rs",
     "src/install.rs",
     "src/msi_context.rs",
     "src/msi_copy.rs",
@@ -63,7 +65,7 @@
       "source_path": "crates/update/src/app.rs",
       "source_sha256": "f5bc5c29dd3dcab82fea5c129965a38ef1dcb822768504701be8f95e0c132a4a",
       "source_git_blob": "59146cf41148f210e271acf7e51cd4f1aa4ab1fd",
-      "sha256": "1bcf940ad65c4275ab5dd208f48c76284c297b2929072fffc912ec4b4a65f732"
+      "sha256": "4dcf7500a9f98fa9c14f7f1541a5e38c6845f561c67881591a53326a30a1708f"
     },
     {
       "path": "src/desktop_entry.rs",
@@ -77,7 +79,7 @@
       "source_path": "crates/update/src/detect.rs",
       "source_sha256": "74ec77059c8c1867618ea22719b449d5d5f72dcbc11143b31fe5d5c40eaba736",
       "source_git_blob": "437e315d72e19621b99d41edd8848938dfb96d41",
-      "sha256": "74ec77059c8c1867618ea22719b449d5d5f72dcbc11143b31fe5d5c40eaba736"
+      "sha256": "e9c9250bb9dfd85387e15e375e34ec47844e3fa9a5eb7bff33b50e85c292f90d"
     },
     {
       "path": "src/dialog.rs",
@@ -98,7 +100,7 @@
       "source_path": "crates/update/src/folders.rs",
       "source_sha256": "686fb65c1959f1358af83d79be9d4085a54f435b8f67406301e38b3db5fc5f39",
       "source_git_blob": "0fc6da8c5d18e6a6faeb84f775e66392d42aa6b1",
-      "sha256": "686fb65c1959f1358af83d79be9d4085a54f435b8f67406301e38b3db5fc5f39"
+      "sha256": "f9a48ff588ae52edd4d74a926e7a5b1d18b699691f4be55c446bdde8d58daacd"
     },
     {
       "path": "src/http.rs",
@@ -112,7 +114,7 @@
       "source_path": "crates/update/src/install.rs",
       "source_sha256": "3d9354ab2731d2b7d083f42ea44f554745fa35830d74914119b5055a32cf47a3",
       "source_git_blob": "bd674163eddfcc4855a13b09bc591cd27c316e39",
-      "sha256": "2cef924053f1c3994b8f76373ee895ee77732e5727893d7e1ef35371c48b1af3"
+      "sha256": "f4d66b25a6a7c2a0200b37b395e0fd152f5045461b26cee92b9c66fa82466efb"
     },
     {
       "path": "src/lib.rs",
@@ -140,7 +142,7 @@
       "source_path": "crates/update/src/msi_copy.rs",
       "source_sha256": "bef1f3e0084dac1a993b40b41657f0c6a5d99404edcbf6592c6cabd537bd5212",
       "source_git_blob": "42f16e5c97fe14e975007bc8e0764e1abb2f8691",
-      "sha256": "19854b8ab45bc7d2085d00b2f97f03e696df1588e760dc8238dbb10d9231a1d5"
+      "sha256": "423dc8a66f824a864ca37fe87e389beb8c22b993e0c9db89d2bd725478f933e4"
     },
     {
       "path": "src/msi_migrate.rs",
@@ -224,7 +226,7 @@
       "source_path": "crates/update/src/self_update.rs",
       "source_sha256": "7fa72e8c38d247303ea13c1b345d0ff0dbabe3f28948bf4f547d21461dbe7243",
       "source_git_blob": "01ec41dae25de9998b7582cf5d8f64428e8379c8",
-      "sha256": "281c0498617e84422cec610107198db37b6cc5ae884e3d1a05bc5914f521091b"
+      "sha256": "dbf0abe0e77bf9fd8d5471d690a0e017d32a8d63dc571c959e900e44b6cd2e87"
     },
     {
       "path": "src/source.rs",
