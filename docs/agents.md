@@ -112,8 +112,8 @@ claude                    # or codex
 **Start the agent after the token.** Claude Code and Codex start their MCP servers when they
 launch, with the environment they had then. An agent that is already running cannot give its bridge
 the token: exporting it in the agent's own shell tool, or reconnecting the server from `/mcp`, still
-leaves a bridge without it, and every call fails with "cannot connect". Quit the agent and start it
-again from the shell that exported the token.
+leaves a bridge without it, and every call fails with "control authentication failed". Quit the
+agent and start it again from the shell that exported the token.
 
 An agent can also drive the app without MCP, through the command-line tool. It reads the token
 from its environment; an agent whose own environment lacks it can put it in front of each command,
@@ -125,8 +125,10 @@ FILMAGIC_CONTROL_TOKEN=<token> ./target/release/filmagic-cli --bridge 127.0.0.1:
 ```
 
 Without the token the app logs `control server disabled: FILMAGIC_CONTROL_TOKEN must contain 64
-random hex characters` and shows it in the status bar, and the bridge reports that it cannot
-connect.
+random hex characters`, shows it in the status bar and does not listen, so the bridge reports that
+it cannot connect. A bridge without the app's token reaches the app but gets `control
+authentication failed`. For a few seconds after launch the app answers `Filmagic is still starting;
+send the request again`.
 
 ### Headless Linux machines
 
