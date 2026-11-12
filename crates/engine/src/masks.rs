@@ -612,6 +612,81 @@ pub struct PendingTrack {
 /// Longest side of the frames the tracker works on (speed; the result is in clip pixels).
 const TRACK_MAX_WIDTH: f64 = 960.0;
 
+/// What tracking saw when it stops because the picture inside the mask is no longer what it
+/// started on ([`filmagic_render::track::Appearance`]), and what that can mean.
+const LOST_SUBJECT: &str = "the colours that set the inside of the mask apart when tracking started are no longer inside it (the mask has slid off its subject, or the subject is covered, lit differently or a different size)";
+
+/// Why tracking stops when the mask was losing what it started on and then left the frame, where
+/// that can no longer be seen.
+const LEFT_FRAME: &str = "the mask was losing the colours that set its inside apart when most of it left the frame";
+
+/// Added to the status of a run that had nothing to check the mask against.
+const UNCHECKED: &str = "not checked against the first frame: the inside of the mask has the colours of what is around it";
+
+/// A fall in the share of its look a mask has kept that is a fall, not the same level again.
+const FALL_STEP: f32 = 0.02;
+/// Frames in doubt in a row without a new low after which the look is taken to have settled: the
+/// picture inside the mask has changed (the light, the subject's size, something in front of
+/// part of it), the mask is not on its way off it. A slide makes a new low every frame or two.
+const SETTLED_AFTER: usize = 6;
+
+/// What to do with a tracked frame, by what is left of the mask's look on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Seen {
+    /// Write it, and the frames held back before it.
+    Write,
+    /// Hold it back: the look is falling, and the next frames say whether the mask is coming off.
+    Hold,
+    /// The mask has lost its subject: this frame and the frames held back are dropped.
+    Lost,
+}
+
+/// Follows the share of its look a mask has kept ([`filmagic_render::track::Appearance::kept`])
+/// from frame to frame, to hold back only the frames on which it is falling: a mask sliding off
+/// its subject loses more every frame, a subject that walked into shade loses some and stays there.
+#[derive(Default)]
+pub(crate) struct Doubt {
+    /// The lowest share kept since the mask was last plainly on its subject.
+    low: Option<f32>,
+    /// Frames in doubt since that low.
+    since_low: usize,
+}
+
+impl Doubt {
+    /// `kept` is `None` on a frame that cannot be checked; `holding` says frames are held back.
+    pub(crate) fn see(&mut self, kept: Option<f32>, holding: bool) -> Seen {
+        use filmagic_render::track::{LOST_BELOW, SURE_ABOVE};
+        match kept {
+            Some(kept) if kept < LOST_BELOW => Seen::Lost,
+            Some(kept) if kept >= SURE_ABOVE => {
+                *self = Self::default();
+                Seen::Write
+            }
+            Some(kept) => {
+                if self.low.is_none_or(|low| kept < low - FALL_STEP) {
+                    (self.low, self.since_low) = (Some(kept), 0);
+                } else {
+                    self.since_low = self.since_low.saturating_add(1);
+                }
+                if self.since_low >= SETTLED_AFTER { Seen::Write } else { Seen::Hold }
+            }
+            // it cannot be told: no reason to hold this frame back, and none to let go of the ones that are
+            None if holding => Seen::Hold,
+            None => Seen::Write,
+        }
+    }
+}
+
+/// A decoded frame as the tracker reads it.
+struct TrackFrame {
+    gray: filmagic_render::track::Prepared,
+    rgba: Vec<u8>,
+    w: usize,
+    h: usize,
+    /// Frame pixels per clip pixel.
+    k: f64,
+}
+
 fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = target_clip(s, p)?;
     let sel = s.state.selected_mask;
@@ -665,43 +740,95 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let run = move || {
         use std::sync::atomic::Ordering;
         let t0 = web_time::Instant::now();
-        let gray = |t: Tick| -> Option<(filmagic_render::track::Prepared, f64)> {
+        let frame = |t: Tick| -> Option<TrackFrame> {
             let f = src.video_frame(filmagic_media::FrameRequest { time: t, scale }).ok()?;
-            let g = filmagic_render::track::Gray::from_rgba8(f.width as usize, f.height as usize, &f.to_rgba8());
-            Some((filmagic_render::track::Prepared::new(g), f.width as f64 / size.0.max(1) as f64))
+            let (w, h, rgba) = (f.width as usize, f.height as usize, f.to_rgba8());
+            let gray = filmagic_render::track::Prepared::new(filmagic_render::track::Gray::from_rgba8(w, h, &rgba));
+            Some(TrackFrame { gray, rgba, w, h, k: f.width as f64 / size.0.max(1) as f64 })
         };
         let mut path = start_path;
         let mut err: Option<String> = None;
         let mut done = 0u64;
-        match gray(mt0) {
+        // nothing set the inside of the mask apart, so nothing checked that tracking stayed on it
+        let mut unchecked = false;
+        // frames that could not be checked though the mask had a look: most of it was outside the frame
+        let mut unseen = 0u64;
+        match frame(mt0) {
             None => err = Some("can't decode the clip".into()),
-            Some((mut prev, mut k_prev)) => {
+            Some(first) => {
                 lock(&out).push((mt0, path.clone()));
+                // what is inside the mask now, to notice a mask that slides off it: every step can
+                // fit the motion it finds while that motion is the background's
+                let start: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * first.k).collect();
+                let look = filmagic_render::track::Appearance::capture(first.w, first.h, &first.rgba, &start);
+                unchecked = look.is_none();
+                // clip pixels at the first frame → clip pixels now
+                let mut from_start = Affine::IDENTITY;
+                let (mut prev, k_first, mut k_prev) = (first.gray, first.k, first.k);
+                // frames tracked while the mask's look is falling: written once it is plainly on
+                // its subject again or the look settles, dropped if tracking finds the subject lost
+                let mut unsure: Vec<(Tick, MaskPath)> = Vec::new();
+                let mut doubt = Doubt::default();
+                // one of the frames held back could not be checked
+                let mut held_unseen = false;
+                let mut lost = false;
                 for step in 1..=steps {
                     if prog.cancel.load(Ordering::Relaxed) {
                         err = Some("stopped".into());
                         break;
                     }
                     let t = if backward { mt0 - Tick(fd.0 * step as i64) } else { mt0 + Tick(fd.0 * step as i64) };
-                    let Some((next, k)) = gray(t) else {
+                    let Some(next) = frame(t) else {
                         err = Some(format!("can't decode frame {step}"));
                         break;
                     };
                     let region: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * k_prev).collect();
-                    let Some(st) = filmagic_render::track::track_step(&prev, &next, &region, method) else {
+                    let Some(st) = filmagic_render::track::track_step(&prev, &next.gray, &region, method) else {
                         err = Some(format!("lost track after {} frame(s): not enough detail inside the mask", step - 1));
                         break;
                     };
                     // frame pixels → clip pixels
+                    let k = next.k;
                     let m = Affine::scale(1.0 / k, 1.0 / k).then_apply(&st.transform).then_apply(&Affine::scale(k_prev, k_prev));
+                    let moved = m.then_apply(&from_start);
+                    // the first frame's pixels → this frame's
+                    let to_frame = Affine::scale(k, k).then_apply(&moved).then_apply(&Affine::scale(1.0 / k_first, 1.0 / k_first));
+                    let kept = look.as_ref().and_then(|l| l.kept(next.w, next.h, &next.rgba, &to_frame));
+                    let seen = doubt.see(kept, !unsure.is_empty());
+                    if seen == Seen::Lost {
+                        lost = true;
+                        break;
+                    }
+                    if look.is_some() && kept.is_none() {
+                        unseen += 1;
+                        held_unseen |= seen == Seen::Hold;
+                    }
+                    from_start = moved;
                     path = path.transformed(&m);
-                    lock(&out).push((t, path.clone()));
-                    done += 1;
-                    prog.done.store(done, Ordering::Relaxed);
+                    unsure.push((t, path.clone()));
+                    if seen == Seen::Write {
+                        done += unsure.len() as u64;
+                        lock(&out).append(&mut unsure);
+                        held_unseen = false;
+                    }
+                    // progress counts the frames held back too: they are tracked, and may yet be written
+                    prog.done.store(done + unsure.len() as u64, Ordering::Relaxed);
                     *lock(&prog.status) = format!("Frame {step} of {steps} · {} features", st.inliers);
-                    prev = next;
+                    prev = next.gray;
                     k_prev = k;
                 }
+                if lost {
+                    // the look was falling through the frames held back: they go with this one
+                    err = Some(format!("lost track after {done} frame(s): {LOST_SUBJECT}"));
+                } else if held_unseen {
+                    // falling, then out of sight to the end: nothing says the mask stayed on its subject
+                    err = Some(format!("lost track after {done} frame(s): {LEFT_FRAME}"));
+                } else {
+                    // never found lost (the run ended, was stopped or could not go on): what was tracked is kept
+                    done += unsure.len() as u64;
+                    lock(&out).append(&mut unsure);
+                }
+                prog.done.store(done, Ordering::Relaxed);
             }
         }
         let secs = t0.elapsed().as_secs_f64();
@@ -719,6 +846,10 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         };
         *lock(&prog.status) = match &err {
             Some(e) => format!("{e} ({done} frame(s) tracked)"),
+            None if unchecked => format!("Tracked {done} frame(s) in {secs:.1}s ({UNCHECKED})"),
+            None if unseen > 0 => {
+                format!("Tracked {done} frame(s) in {secs:.1}s ({unseen} of them not checked against the first frame: most of the mask was outside the frame)")
+            }
             None => format!("Tracked {done} frame(s) in {secs:.1}s"),
         };
         prog.finished.store(true, Ordering::Relaxed);

@@ -265,6 +265,26 @@ fn a_layer_can_follow_its_subject() {
     assert_eq!(n.active_sequence().unwrap().video_tracks.len(), tracks);
 }
 
+/// A plain subject in front of moving water: the mask would follow the water. `follow` reports
+/// that it lost the subject instead of a clean track of the wrong thing.
+#[test]
+fn follow_says_when_the_mask_slid_off_the_subject() {
+    let region = json!({"x": 130.0 / 320.0, "y": 70.0 / 240.0, "w": 60.0 / 320.0, "h": 100.0 / 240.0});
+    for (cmd, extra) in [("layers.extract", json!({"cutOut": true})), ("layers.adjust", json!({"effect": "tint"}))] {
+        let (mut s, c) = crate::masks_tests::adrift_session();
+        let mut p = json!({"clip": c.0, "region": region, "feather": 0, "follow": true});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let r = s.execute(cmd, p).unwrap();
+        let t = &r["tracking"];
+        assert_eq!(t["frames"], 47, "{cmd}: {r}");
+        let error = t["error"].as_str().unwrap_or_else(|| panic!("{cmd}: tracking.error is null: {r}"));
+        assert!(error.starts_with("lost track after ") && error.contains("are no longer inside it"), "{cmd}: {error}");
+        assert!(t["status"].as_str().unwrap().starts_with("lost track after "), "{cmd}: {r}");
+        let tracked = t["tracked"].as_u64().unwrap();
+        assert!((2..20).contains(&tracked), "{cmd}: the frames before it are kept: {r}");
+    }
+}
+
 #[test]
 fn a_clean_plate_takes_out_what_moved_through() {
     let (mut s, c, _) = shot();
