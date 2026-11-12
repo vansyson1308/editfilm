@@ -46,7 +46,7 @@ them, and their old/new-name aliases are gone because the label is the name agai
 
 1. Run `cargo xtask ci` on the integrated head, including project lookup/serialization, panel aliases, shortcut import, folder-state and i18n regressions. Focused harnesses do not replace the aggregate gate.
 2. Review translations and the displayed controls in all locales, particularly long labels and CJK layouts.
-3. Recapture affected screenshots from the updated app. Existing images, including `docs/images/filmcraft-color-panel.png`, still contain old UI text. Captions and descriptions now use the selected terminology, but the pixels have not been refreshed. Update screenshot pixels and attribution records together before release.
+3. Recapture affected screenshots from the updated app. Existing images, including `docs/images/filmagic-color-panel.png`, still contain old UI text. Captions and descriptions now use the selected terminology, but the pixels have not been refreshed. Update screenshot pixels and attribution records together before release.
 4. Review current help/marketing copy and retain factual format/comparison references and required notices where appropriate.
 
 The app name, package names, file formats, iconography and existing first-party trademark license are unchanged.
