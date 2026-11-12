@@ -143,12 +143,13 @@ carry each font's licence as `OFL-<family>.txt`.
 
 ## Third-party source code
 
-Source files that are transcribed from third-party code rather than written from scratch. Each keeps
-the original copyright and permission notice in its header.
+Source files that are transcribed or copied from third-party code rather than written from scratch.
+Each keeps the original copyright and permission notice in its header or beside it.
 
 | File | Author | Source | Licence |
 |---|---|---|---|
 | `crates/platform/src/nvenc/ffi.rs` | NVIDIA Corporation (`nvEncodeAPI.h`); FilmCraft contributors (Rust transcription) | Structures (including `NV_ENC_CONFIG_HEVC` and its bit-field masks, `NV_ENC_PIC_PARAMS_HEVC`, `NV_ENC_SEI_PAYLOAD`, `NV_ENC_TIME_CODE`), function table, codec / profile GUIDs (H.264, HEVC Main, HEVC Main 10) and constants (`NV_ENC_LEVEL_HEVC_*`, tier, CU size, `NV_ENC_BUFFER_FORMAT_YUV420_10BIT`, `NV_ENC_CAPS_SUPPORT_10BIT_ENCODE`, BT.2020 / PQ / HLG VUI codes) transcribed from `nvEncodeAPI.h`, NVIDIA Video Codec SDK, API 12.1 (https://developer.nvidia.com/video-codec-sdk) | MIT (Copyright (c) 2010-2023 NVIDIA Corporation; notice kept in the file header) |
+| `vendor/craft-update/` (the whole crate; local changes listed in `vendor/craft-update/README.filmagic.md`, per-file hashes in `vendor/craft-update/SOURCE.json`) | ArtCraft Team and the craft-libs contributors; changes by the Filmagic contributors | [storytold/craft-libs@1b34eba `crates/update`](https://github.com/storytold/craft-libs/tree/1b34eba41e62138fc2438d2734523b302840b45d/crates/update) | MIT OR Apache-2.0 (`vendor/craft-update/LICENSE-MIT`, `vendor/craft-update/LICENSE-APACHE`) |
 
 ## Downloaded at runtime
 
