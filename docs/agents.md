@@ -274,6 +274,13 @@ progress and stop it:
   once: poll `jobs.list` for the job's `progress`, `etaSeconds`, `finished` and `result`, and stop it
   with `jobs.cancel` (`export.queue.list` lists the Export Queue only, not direct exports, #1544). Other exports (`file.exportFrame`, interchange formats, …) finish quickly and
   ignore the token.
+- **Client timeouts.** An MCP client gives up on a tool call after its own timeout and cancels the
+  request, which stops a `wait: true` export and deletes the partial file. Codex waits 300 seconds by
+  default (`tool_timeout_sec` under `[mcp_servers.<name>]` in `~/.codex/config.toml`), and Claude
+  Code waits `MCP_TOOL_TIMEOUT` milliseconds (an environment variable set when `claude` starts). A
+  whole film can take longer than that to encode, so for anything but a short range call
+  `file.exportMedia` without `wait` and poll `jobs.list` until the job is `finished`, or raise the
+  client's timeout.
 - An image sequence (PNG, TIFF, DPX, ... stills) never writes the path it is given: `a.png` becomes
   `a000.png`, `a001.png` and so on. `file.exportMedia`, `export.quick` and the job's `result` then
   name the first still as `path`, the name `file.import` takes for the sequence, and the two commands
