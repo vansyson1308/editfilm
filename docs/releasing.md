@@ -6,7 +6,7 @@ the web build, and creates or updates a **draft**
 GitHub Release named `Filmagic v<version>`. Nobody sees a draft until a maintainer publishes it.
 
 User-facing names say **Filmagic**. Files, binaries and ids stay lowercase
-(`filmagic-<version>-<platform>-<arch>.<ext>`, `ai.storyteller.filmagic`).
+(`filmagic-<version>-<platform>-<arch>.<ext>`, `io.github.vansyson1308.editfilm`).
 
 ## Cutting a release
 
@@ -70,7 +70,7 @@ deliberately, in every job at once.
 `packaging/macos/package.sh` builds `aarch64-apple-darwin` and `x86_64-apple-darwin` with
 `MACOSX_DEPLOYMENT_TARGET=11.0`, joins them with `lipo` and assembles `Filmagic.app`:
 
-- `Info.plist` is generated from `Info.plist.in` (bundle id `ai.storyteller.filmagic`, the
+- `Info.plist` is generated from `Info.plist.in` (bundle id `io.github.vansyson1308.editfilm`, the
   version and the build commit).
 - **Signing** uses the hardened runtime and a secure timestamp, with the entitlements in
   `entitlements.plist`. The Developer ID certificate is imported into a temporary keychain by
@@ -78,6 +78,12 @@ deliberately, in every job at once.
 - **Notarization:** the app is sent with `xcrun notarytool submit`, then the ticket is stapled
   and checked with `stapler validate`. The app goes on a DMG (`hdiutil makehybrid`), which is
   signed and notarized too. The universal `filmagic-cli` is signed the same way, zipped, and the zip is notarized.
+- **Self-update on macOS** replaces `Filmagic.app` only with a copy signed by the Apple Developer
+  team in `UPDATE_APP.apple_team` (`crates/ui-egui/src/lib.rs`). Filmagic has no team yet, so it is
+  `None`: a macOS copy offers the release but doesn't install it, and asks the person to download
+  it from the releases page. Once releases are signed with the owner's Developer ID, set
+  `apple_team: Some("<TEAMID>")` to the ten-character Team ID of that certificate (the `APPLE_TEAM_ID`
+  secret above; `codesign -dv Filmagic.app` prints it as `TeamIdentifier`).
   Its Finder window (background, icon size and positions) comes from
   [`packaging/macos/dmg/`](../packaging/macos/dmg/README.md), and its volume is named `Filmagic`
   without the version, which the window's background needs; the DMG file name keeps the version.
@@ -91,7 +97,7 @@ check the bundle and the DMG on your own Mac (`packaging/macos/package.sh`).
 nor the portable zip needs the Visual C++ redistributable.
 
 - `filmagic.wxs` (WiX) is a dual-scope package: per-user by default into
-  `%LOCALAPPDATA%\Programs\ArtCraft\Filmagic`, per-machine into `Program Files\ArtCraft\Filmagic` (`Program Files (x86)` for the 32-bit build)
+  `%LOCALAPPDATA%\Programs\Filmagic`, per-machine into `Program Files\Filmagic` (`Program Files (x86)` for the 32-bit build)
   (see `packaging/windows/INSTALLATION.md`). It has a Start Menu shortcut and
   an App Paths entry (Win+R `filmagic`). Same-version upgrades are allowed, so release candidates
   replace each other.
@@ -135,15 +141,15 @@ release. The job checks both with `--appimage-updateinformation` and `test -s`.
 
 **Flatpak.** The `flatpak` jobs (x86_64 on `ubuntu-24.04`, aarch64 on `ubuntu-24.04-arm`) run
 `packaging/linux/flatpak-bundle.sh` on the Linux job's tarball: it installs the binaries with
-`packaging/linux/flatpak/ai.storyteller.filmagic.bundle.yml` into a single-file bundle,
+`packaging/linux/flatpak/io.github.vansyson1308.editfilm.bundle.yml` into a single-file bundle,
 `filmagic-<v>-linux-<arch>.flatpak` (no Rust build, so it takes a minute), then installs it and
 runs `filmagic-cli --version` in the sandbox. Users install it with
 `flatpak install --user <file>`; the freedesktop runtime comes from Flathub.
-`packaging/linux/flatpak/ai.storyteller.filmagic.yml` is the from-source manifest for a Flathub
+`packaging/linux/flatpak/io.github.vansyson1308.editfilm.yml` is the from-source manifest for a Flathub
 submission (its header says how to build it). Both manifests must keep the same runtime and
 `finish-args`, and install the same programs: the app and `filmagic-cli`, which runs the
 headless commands and the MCP server in the sandbox
-(`flatpak run --command=filmagic-cli ai.storyteller.filmagic mcp`). packaging-lint checks this.
+(`flatpak run --command=filmagic-cli io.github.vansyson1308.editfilm mcp`). packaging-lint checks this.
 
 ### FreeBSD
 

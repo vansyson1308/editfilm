@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$ROOT/assets/app-icon"
 SVG="$DIR/filmagic.svg"
 SMALL="$DIR/filmagic-small.svg"
-APP_ID="ai.storyteller.filmagic"
+APP_ID="io.github.vansyson1308.editfilm"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

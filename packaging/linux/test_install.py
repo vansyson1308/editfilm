@@ -12,7 +12,7 @@ import unittest
 
 
 HERE = Path(__file__).resolve().parent
-APP_ID = "ai.storyteller.filmagic"
+APP_ID = "io.github.vansyson1308.editfilm"
 
 
 class InstallTests(unittest.TestCase):

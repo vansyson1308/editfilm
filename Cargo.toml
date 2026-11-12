@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
+# vendor/craft-update is a path dependency with its own manifest (vendor/craft-update/README.filmagic.md).
+exclude = ["vendor/craft-update"]
 default-members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
@@ -89,7 +91,8 @@ egui_extras = { version = "0.37", default-features = false }
 eframe = { version = "0.37", default-features = false }
 egui_kittest = "0.37"
 # craft-update: app-specific pretend versions apply to startup and manual checks.
-craft-update = { git = "https://github.com/storytold/craft-libs", version = "=0.1.0", rev = "1b34eba41e62138fc2438d2734523b302840b45d", features = ["egui"] }
+# Vendored from storytold/craft-libs@1b34eba (vendor/craft-update/README.filmagic.md).
+craft-update = { path = "vendor/craft-update", version = "=0.1.0", features = ["egui"] }
 rfd = "0.17"
 
 [workspace.lints.rust]
