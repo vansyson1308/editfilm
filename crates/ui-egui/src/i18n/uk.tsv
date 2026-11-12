@@ -5,6 +5,8 @@
 # Core menu coverage; other interface strings fall back to English.
 
 	About Filmagic	Про Filmagic
+	Links	Посилання
+	Shows the version, project links and credits in a Filmagic window.	Показує версію, посилання проєкту та учасників у вікні Filmagic.
 	Add Audio Submix Track	Додати доріжку підміксу аудіо
 	Add Caption at Playhead	Додати субтитр у позиції курсора відтворення
 	Add Chapter Marker…	Додати маркер розділу…

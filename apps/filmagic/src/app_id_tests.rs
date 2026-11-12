@@ -225,7 +225,7 @@ fn linux_packages_name_a_maintainer_of_this_repository() {
 const UPSTREAM_TERMS: [&str; 5] = ["ai.storyteller", "storyteller.ai", "learning machines", "artcraft", "getartcraft"];
 
 /// Files outside `vendor/` that may name ArtCraft, and why. The other terms are allowed nowhere.
-const UPSTREAM_NOTES: [(&str, &str); 15] = [
+const UPSTREAM_NOTES: [(&str, &str); 14] = [
     ("AGENTS.md", "the rule against upstream brand marks"),
     ("NOTICE", "the upstream copyright and trademark notice"),
     ("LICENSE-MIT", "the upstream copyright line"),
@@ -235,7 +235,6 @@ const UPSTREAM_NOTES: [(&str, &str); 15] = [
     ("docs/roadmap.md", "history: the upstream naming update"),
     ("docs/hardware-parity.md", "history: the upstream naming update"),
     ("docs/target-app-parity.md", "history: the upstream naming update"),
-    ("docs/feature-naming.md", "history: the upstream naming scheme"),
     ("docs/egui-037-migration-plan.md", "history: the upstream suite's migration"),
     ("crates/ui-egui/src/cjk.rs", "history: an upstream issue number"),
     ("crates/ui-egui/src/theme.rs", "history: an upstream issue number"),

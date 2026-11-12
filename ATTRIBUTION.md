@@ -1,6 +1,6 @@
 # Attribution
 
-Every non-code asset in FilmCraft, with its author, source and licence. Each file listed here also has
+Every non-code asset in Filmagic, with its author, source and licence. Each file listed here also has
 a `<file>.attribution` sidecar with full details. The rules are in [AGENTS.md](AGENTS.md) §1: no Adobe
 iconography, images or other Adobe assets; open licences only; every asset attributed.
 `cargo xtask assets` checks that this index and the sidecars cover every asset in the repository.
@@ -60,7 +60,7 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 
 Reference frames for the renderer golden tests (`crates/golden`), rendered by FilmCraft itself from
 procedural demo footage (`crates/media/src/generators.rs`); no external media. Regenerate with
-`FILMCRAFT_BLESS=1 cargo test -p filmcraft-golden`.
+`FILMAGIC_BLESS=1 cargo test -p filmagic-golden`.
 
 | Asset | Author | Source | Licence |
 |---|---|---|---|
@@ -136,7 +136,7 @@ its author, pinned upstream source and licence text are listed in its
 [ATTRIBUTION.md](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md). Release packages
 carry each font's licence as `OFL-<family>.txt`.
 
-| Font | Use in FilmCraft | Licence |
+| Font | Use in Filmagic | Licence |
 |---|---|---|
 | BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI text; Japanese fallback for sans titles (the web build embeds only Regular) | OFL-1.1 |
 | Shippori Mincho Regular (FONTDASU) | Japanese fallback for serif titles (native builds) | OFL-1.1 |
@@ -158,7 +158,7 @@ Each keeps the original copyright and permission notice in its header or beside 
 
 ## Downloaded at runtime
 
-These files are never in the repository or the app bundle. FilmCraft downloads them into the
+These files are never in the repository or the app bundle. Filmagic downloads them into the
 per-user data directory (`<data dir>/models/<id>/`) only after the user confirms a dialog that shows
 the size, the source URL and the licence. Every file is pinned to a revision and checked against its
 SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).

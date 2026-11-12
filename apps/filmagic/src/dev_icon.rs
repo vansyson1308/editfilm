@@ -289,7 +289,7 @@ mod tests {
     /// backslashes just added.
     #[test]
     fn exec_escapes_both_desktop_entry_layers() {
-        assert_eq!(escape_exec_argument("/opt/film craft/filmagic"), "/opt/film craft/filmagic");
+        assert_eq!(escape_exec_argument("/opt/film magic/filmagic"), "/opt/film magic/filmagic");
         // a\b → shell a\\b → string a\\\\b
         assert_eq!(escape_exec_argument("a\\b"), "a\\\\\\\\b");
         // a$b → shell a\$b → string a\\$b
@@ -299,7 +299,7 @@ mod tests {
     /// A written entry reads back as the exact binary it was written for, through both layers.
     #[test]
     fn exec_round_trips_through_both_layers() {
-        for exe in ["/home/dev/Projects/filmagic/target/debug/filmagic", "/opt/film craft/filmagic", "/a$b\"c`d\\e"] {
+        for exe in ["/home/dev/Projects/filmagic/target/debug/filmagic", "/opt/film magic/filmagic", "/a$b\"c`d\\e"] {
             let body = desktop_file_content("io.github.vansyson1308.editfilm", "Filmagic", exe);
             assert_eq!(exec_line(&body).as_deref(), Some(exe));
             assert!(desktop_file_exec_is_ours(&body, exe));

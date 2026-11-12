@@ -7,7 +7,7 @@ clients through their inherited environment. Generate a fresh token for each des
 start the desktop and bridge from that environment:
 
 ```sh
-export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"   # or: openssl rand -hex 32
 filmagic --control 9876 &
 filmagic-cli mcp --bridge 127.0.0.1:9876
 ```

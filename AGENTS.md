@@ -53,8 +53,11 @@ Dependencies and assets use SPDX identifiers. An expression is allowed when ever
 
 # Filmagic — rules for agents and contributors
 
-These rules apply to every human and AI contributor. `CLAUDE.md` holds the working instructions; this
-file holds the rules that must never be broken. When the two disagree, this file wins.
+These rules apply to every human and AI contributor and must never be broken. This file is the one set
+of agent instructions: Codex and other agents read `AGENTS.md` directly, and Claude Code reads it
+through `CLAUDE.md`, which only imports it (`@AGENTS.md`). The working how-to is in
+[docs/contributing.md](docs/contributing.md) and [docs/agents.md](docs/agents.md); where they disagree
+with this file, this file wins.
 
 ## 0. Never crash
 
@@ -192,7 +195,7 @@ linked partners; explicit move requests with repeated identities are still rejec
 - **Quality gates** before every commit: `cargo xtask ci` (fmt, clippy -D warnings, tests, layers, assets, wasm).
 - New workspace crates include `[lints] workspace = true` in `Cargo.toml`. Production crate roots declare the crate-level lint attributes before modules; crate-level `//!` documentation may precede them.
 - **Commits:** one task id per commit (`M2.4: CABAC residual decoding`). Only green states.
-- `cargo run -p filmagic -- --control 9876` opens the desktop app (`docs/control-protocol.md`). For UI work, look at `ui.screenshot`. Generate fixtures with ffmpeg into `target/fixtures/` and do not commit media (`docs/testing.md`).
+- `cargo run -p filmagic -- --control 9876` opens the desktop app with its control server, which stays closed unless `FILMAGIC_CONTROL_TOKEN` holds 64 random hex characters: first `export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"`, in the shell that also starts the bridge (`docs/control-protocol.md`). For UI work, look at `ui.screenshot`. Generate fixtures with ffmpeg into `target/fixtures/` and do not commit media (`docs/testing.md`).
 - `plan/` is an optional gitignored notebook (`plan/premiere/` may hold local screenshots). Do not ask for it and do not stop when it is absent. Public work lists are [`ROADMAP.md`](ROADMAP.md), [`docs/gaps.md`](docs/gaps.md) and [`docs/agents.md`](docs/agents.md).
 
 

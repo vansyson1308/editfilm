@@ -88,7 +88,7 @@ FFmpeg's decode (worst channel SNR):
 The noise row shows the difference is dither: two of our own decodes with different dither
 sequences differ as much as we differ from FFmpeg. In MPEG-2 TS (AVCHD-style `.mts`) and VOB the
 maximum sample difference to FFmpeg is 2.3·10⁻³. E-AC-3 through `filmagic-codecs`
-(`tests/eac3_oracle.rs`): 5.1 in MP4 and Matroska 91.3 dB, stereo in QuickTime 87.0 dB and
+(`crates/codecs/tests/it/eac3_oracle.rs`): 5.1 in MP4 and Matroska 91.3 dB, stereo in QuickTime 87.0 dB and
 MPEG-TS 79.5 dB against FFmpeg's decode.
 
 ## Gaps

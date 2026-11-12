@@ -3,9 +3,10 @@
 Use a **Cross Dissolve** transition to fade a picture in or out. Use **Volume** keyframes
 to make a clip's sound gradually louder or quieter.
 
-These instructions follow Filmagic's current `main` branch, checked on 24 October 2026
-([source revision](https://github.com/storytold/filmcraft/commit/552f008d2757e307194256b3e672c9c1de4fa9b2)).
-An older installed release may differ. The [planned fade handles](#whats-coming-timeline-fade-handles)
+These instructions were checked on 24 October 2026 against FilmCraft's `main` branch at
+[552f008d](https://github.com/storytold/filmcraft/commit/552f008d2757e307194256b3e672c9c1de4fa9b2),
+before Filmagic was forked from it. No Filmagic releases are published yet; build from source as in
+the [README](../README.md#get-started). The [planned fade handles](#whats-coming-timeline-fade-handles)
 are separate from the operations available now.
 
 ## What you'll learn
@@ -159,15 +160,15 @@ point. Turning it off removes the parameter's keyframes and keeps its value at t
 
 ## What's coming: timeline fade handles
 
-**Planned / pending, not available on current main:**
-[PR #1635](https://github.com/storytold/filmcraft/pull/1635) is open and **has not been merged**
-as of 24 October 2026. It proposes small handles in eligible clips' top corners: click to apply
+**Upstream proposal, not available in Filmagic:** in FilmCraft, before the fork,
+[PR #1635](https://github.com/storytold/filmcraft/pull/1635) was open and **had not been merged**
+as of 24 October 2026; it is not part of this repository. It proposes small handles in eligible clips' top corners: click to apply
 the default video or audio transition, or drag to preview and set its length. The result would
 be an ordinary transition that can be resized or removed. These handles would not replace
 Volume keyframes for detailed audio shaping. The proposal may change before release.
 
 For now, use the transition library or the Volume-keyframe steps above. Do not look for the
-proposed corner handles in your current installation.
+proposed corner handles in Filmagic.
 
 ## Common problems and solutions
 

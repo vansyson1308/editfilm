@@ -88,10 +88,6 @@ pub enum Icon {
     Undo,
     Redo,
     Bell,
-    /// Community chat: a speech bubble with three dots. Our own drawing, not a service's logo.
-    Chat,
-    /// Website: a globe.
-    Globe,
     /// Source code (GitHub repository): angle brackets and a slash.
     Code,
     Sparkle,
@@ -650,33 +646,6 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.arc(8.0, 7.0, 3.5, 180.0, 360.0);
             pen.dot(8.0, 13.8, 1.0);
         }
-        Chat => {
-            pen.line(&[
-                (3.5, 3.0),
-                (12.5, 3.0),
-                (14.0, 4.5),
-                (14.0, 9.5),
-                (12.5, 11.0),
-                (7.0, 11.0),
-                (4.0, 14.0),
-                (4.5, 11.0),
-                (3.5, 11.0),
-                (2.0, 9.5),
-                (2.0, 4.5),
-                (3.5, 3.0),
-            ]);
-            pen.dot(5.5, 7.0, 0.9);
-            pen.dot(8.0, 7.0, 0.9);
-            pen.dot(10.5, 7.0, 0.9);
-        }
-        Globe => {
-            pen.circle(8.0, 8.0, 6.0);
-            pen.line(&[(2.0, 8.0), (14.0, 8.0)]);
-            pen.line(&[(3.0, 5.0), (13.0, 5.0)]);
-            pen.line(&[(3.0, 11.0), (13.0, 11.0)]);
-            pen.line(&[(8.0, 2.0), (6.0, 5.0), (5.5, 8.0), (6.0, 11.0), (8.0, 14.0)]);
-            pen.line(&[(8.0, 2.0), (10.0, 5.0), (10.5, 8.0), (10.0, 11.0), (8.0, 14.0)]);
-        }
         Code => {
             pen.line(&[(5.0, 4.0), (1.5, 8.0), (5.0, 12.0)]);
             pen.line(&[(11.0, 4.0), (14.5, 8.0), (11.0, 12.0)]);
@@ -906,8 +875,6 @@ mod tests {
         Undo,
         Redo,
         Bell,
-        Chat,
-        Globe,
         Code,
         Sparkle,
         Grid,

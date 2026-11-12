@@ -24,9 +24,9 @@ Progress toward parity with Adobe Premiere Pro. This page is the summary; the de
 | **Ready for real work** | **~56%** (51–61%) | How close Filmagic is to replacing Premiere for an editor on real projects: depth, correctness, file compatibility, speed, stability, ecosystem. Estimated depth per area, combined by a [written formula](docs/target-app-parity.md#three-readiness-numbers) |
 | **Mainstream practitioner** | **~55%** | A typical professional editor's weekly work only, discounted ×0.90 interaction, ×0.92 stability, ×0.88 file exchange with Premiere users ([method](docs/target-app-parity.md#mainstream-practitioner)) |
 | **Essentials user** | **~60%** | Import, cut, title, music, export at default settings, discounted ×0.88 launch / stability, ×0.90 discoverability, ×0.95 opening files people send ([method](docs/target-app-parity.md#essentials-user)) |
-| **To beta** | **~400–700 Opus 5.5 agent-hours** | Estimated, calibrated from this repo's PR history |
+| **To beta** | **~400–700 Opus 5.5 agent-hours** | Estimated, calibrated from upstream FilmCraft's PR history before the fork |
 | **To full parity** | **~1,550–2,750 agent-hours** | ~70% parallelizes; plugins, AI models, native-speaker review and some hardware need a human |
-| Code (measured) | 45 crates, ~343k lines of Rust, 2,520 tests, 268 merged PRs, 69 authors | `git`, `gh`, `grep` |
+| Code (measured) | 45 crates, ~343k lines of Rust, 2,520 tests; upstream FilmCraft before the fork: 268 merged PRs, 69 authors | `git`, `gh`, `grep` |
 
 Two numbers, because they answer different questions. The gap between them is the work that
 matters most now: breadth is nearly done, depth is not.

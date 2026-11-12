@@ -2,9 +2,13 @@
 
 Status: draft, 2026-11-08. This is an engineering naming policy and rollout plan, not trademark clearance.
 
+It was written for FilmCraft before Filmagic was forked from it. The naming scheme, the selected names
+and the compatibility rules below still describe this code and still apply here; the integration
+section and the validation gates are upstream history.
+
 ## Scheme and selected names
 
-Use the existing ArtCraft app identity with short, descriptive feature names. Share names across apps when they describe the same function. Use stable identifiers for dispatch and persistence; translate display labels without changing those identifiers. Preserve interoperability labels and required notices.
+Use the Filmagic app identity with short, descriptive feature names. Share names across apps when they describe the same function. Use stable identifiers for dispatch and persistence; translate display labels without changing those identifiers. Preserve interoperability labels and required notices.
 
 | Previous display label | Selected display label | Stable key |
 | --- | --- | --- |
@@ -29,9 +33,9 @@ docs are unchanged here:
 They are not retired marks: the display guard in `crates/ui-egui/src/i18n/tests.rs` does not ban
 them, and their old/new-name aliases are gone because the label is the name again.
 
-## Integration and attribution
+## Integration and attribution (upstream history)
 
-[PR #1880](https://github.com/storytold/filmcraft/pull/1880), for [issue #1868](https://github.com/storytold/filmcraft/issues/1868), is the single integration PR. Its original author's commits are preserved unchanged in history. The complementary work from [draft #4545](https://github.com/storytold/filmcraft/pull/4545) is integrated here rather than maintained as a competing PR. The interim Color Grade wording is replaced by the selected suite-wide Color Grading name.
+In FilmCraft, [PR #1880](https://github.com/storytold/filmcraft/pull/1880), for [issue #1868](https://github.com/storytold/filmcraft/issues/1868), was the single integration PR. Its original author's commits were preserved unchanged in history. The complementary work from [draft #4545](https://github.com/storytold/filmcraft/pull/4545) was integrated into it rather than maintained as a competing PR. The interim Color Grade wording was replaced by the selected suite-wide Color Grading name.
 
 ## Compatibility and localization
 
@@ -42,11 +46,11 @@ them, and their old/new-name aliases are gone because the label is the name agai
 - All 16 shipped locale catalogs include the selected effect names, grading/scopes/preset labels, add-to-clip button and color-management settings note. The locale regression checks parsing, unique keys and absence of retired display marks in translated entries. Additional guards scan the actual built-in interface names and translated output, while retaining English fallback and excluding compatibility identifiers and user text. A feature label must also read differently from every other label in its catalog (German and Russian had both read "Color Grading" and "Color Correction" the same way).
 - Existing license, source and author records are preserved. Internal filenames and golden scene ids are not renamed.
 
-## Remaining validation gates
+## Validation gates (upstream, at the time)
 
 1. Run `cargo xtask ci` on the integrated head, including project lookup/serialization, panel aliases, shortcut import, folder-state and i18n regressions. Focused harnesses do not replace the aggregate gate.
 2. Review translations and the displayed controls in all locales, particularly long labels and CJK layouts.
 3. Recapture affected screenshots from the updated app. Existing images, including `docs/images/filmagic-color-panel.png`, still contain old UI text. Captions and descriptions now use the selected terminology, but the pixels have not been refreshed. Update screenshot pixels and attribution records together before release.
 4. Review current help/marketing copy and retain factual format/comparison references and required notices where appropriate.
 
-The app name, package names, file formats, iconography and existing first-party trademark license are unchanged.
+In FilmCraft this change left the app name, package names, file formats, iconography and trademark licence unchanged. Filmagic's own name, icon and app identifier came later, with the fork.

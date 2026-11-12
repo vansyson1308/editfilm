@@ -50,7 +50,7 @@ if [[ "$PUSH" = 1 ]]; then
 
   AUTH_ARGS=()
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    AUTH_ARGS=(--dest-creds "${GITHUB_ACTOR:-storytold}:$GITHUB_TOKEN")
+    AUTH_ARGS=(--dest-creds "${GITHUB_ACTOR:-vansyson1308}:$GITHUB_TOKEN")
   fi
 
   echo "==> Pushing to $REGISTRY:$TAG"
