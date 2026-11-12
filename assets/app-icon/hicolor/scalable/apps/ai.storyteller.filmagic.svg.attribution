@@ -1,8 +1,8 @@
 asset:        ai.storyteller.filmagic.svg
-title:        FilmCraft app icon, Linux hicolor theme scalable
-author:       Brandon Thomas (FilmCraft owner), for the FilmCraft project
-source:       original work (drawn by the owner in ArtCraft, then vectorised)
+title:        Filmagic app icon, Linux hicolor theme scalable
+author:       Filmagic contributors
+source:       original work
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
-added:        2026-10-02 by Claude (agent) for Brandon Thomas
-notes:        Copy of filmagic-small.svg, made by packaging/icons.sh.
+added:        2026-11-12 by @vansyson1308
+notes:        A copy of filmagic-small.svg, made by packaging/icons.sh.

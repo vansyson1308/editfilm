@@ -1,8 +1,8 @@
 asset:        background.svg
-title:        FilmCraft macOS DMG window background
-author:       @XusBadia
+title:        Filmagic macOS DMG window background
+author:       @XusBadia; left panel redrawn by the Filmagic contributors
 source:       original work
 license:      MIT OR Apache-2.0
 license-file: LICENSE-MIT, LICENSE-APACHE
 added:        2026-10-08 by @XusBadia
-notes:        Original work for this repository, derived from the FilmCraft app icon (assets/app-icon/filmagic.svg, referenced via <image>, not copied). Text is outlined Inter / JetBrains Mono glyph paths. Used for the Finder window of the macOS DMG; packaging/macos/dmg/generate.py renders it to background.tiff. See packaging/macos/dmg/README.md. In Filmagic the outlined title reads "Filmagic" (Inter SemiBold, 30 px, the original letter spacing), changed by the Filmagic contributors.
+notes:        Original work for this repository. Text is outlined Inter / JetBrains Mono glyph paths; in Filmagic the outlined title was changed from "FilmCraft" to "Filmagic" (Inter SemiBold, 30 px, the original letter spacing) by the Filmagic contributors. Used for the Finder window of the macOS DMG; packaging/macos/dmg/generate.py renders it to background.tiff. See packaging/macos/dmg/README.md. On 2026-11-12 (@vansyson1308) the left panel, which cropped the previous app icon, was redrawn by hand in SVG with the new icon's motif (a tilted film strip and gold four-pointed sparkles on violet); it no longer links or contains any other artwork, and the unused hatch pattern and grain filter were removed.
