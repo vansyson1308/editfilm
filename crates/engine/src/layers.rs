@@ -13,6 +13,7 @@
 //! | `layers.lift` | Both: the subject goes onto its own layer and the plate fills the place it left, so the layer can be moved without leaving a double. |
 //! | `layers.retime` | Plays the region at another speed while the rest of the shot keeps its own. |
 //! | `layers.adjust` | Applies an effect to the region only. |
+//! | `layers.transform` | Makes a layer larger or smaller, or shifts it, in place: the layer's Motion is keyed so that a point of its mask (the subject's feet, by default) stays where it stood while the subject moves through the shot. |
 //!
 //! A region is given in fractions (0…1 from the top-left corner), so it does not depend on the
 //! size a frame was looked at: `{"shape":"rectangle"|"ellipse","x":…,"y":…,"w":…,"h":…}` or
@@ -25,7 +26,8 @@
 //! exist: it needs a camera that does not move and a subject that does. Nothing here replaces an
 //! object with a different one, or shows what was never photographed.
 
-use filmagic_project::{ClipId, ItemId, TrackItem, TrackKind};
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::{ClipId, ItemId, Keyframe, MaskMode, MaskPath, Param, ParamValue, TrackItem, TrackKind};
 use filmagic_time::Tick;
 use serde_json::{Value, json};
 
@@ -74,6 +76,12 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Adjust a Region",
             r#"{"clip":id,"region":{"shape":"rectangle"|"ellipse","x":0..1,"y":0..1,"w":0..1,"h":0..1}|{"points":[[x,y],…]}, either with "space":"clip"|"frame"="clip" (fractions of the clip's own picture, or of the programme frame as rendered) and "atSeconds":f64? (the frame the region was read from, for `space` "frame"; default: the clip's first),"effect":id|name,"params":{param:value,…}?,"feather":px=12,"follow":bool=false}"#,
             adjust,
+        ),
+        edit(
+            "layers.transform",
+            "Transform a Layer in Place",
+            r#"{"layer":id (a clip with an opacity mask: `layers.extract` and `layers.lift` return one; `clip` names it too),"scale":percent? (the layer's Motion Scale, 0.1 to 10000),"offset":[dx,dy]? (sequence pixels, from where the subject is now),"anchor":"bottom"|"center"|"top"|[fx,fy]="bottom" (the point of the mask's bounds, as seen in the frame, that stays where it is),"mask":n? (which opacity mask; default: the last that keeps a region)}"#,
+            transform,
         ),
     ]
 }
@@ -226,6 +234,11 @@ fn flag_p(p: &Value, key: &str, default: bool, cmd: &str) -> Result<bool> {
 /// The video clip a command works on, and the size of its picture.
 fn picture_clip(s: &Session, p: &Value, cmd: &str) -> Result<(TrackItem, (u32, u32))> {
     let clip = clip_p(p, "clip").ok_or_else(|| bad(cmd, "need `clip`: the id of a video clip in the timeline"))?;
+    picture_clip_of(s, clip, cmd)
+}
+
+/// [`picture_clip`] for a clip id already read from the parameters.
+fn picture_clip_of(s: &Session, clip: ClipId, cmd: &str) -> Result<(TrackItem, (u32, u32))> {
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (track, it) = q.find_item(clip).ok_or_else(|| bad(cmd, format!("no clip {} in the active sequence", clip.0)))?;
     let tr = q.track(track).ok_or_else(|| bad(cmd, "the clip's track is gone"))?;
@@ -683,7 +696,7 @@ fn lift(s: &mut Session, p: &Value) -> Result<Value> {
             // the subject is back where it stood, over its plate: this reads `none` until the layer is moved
             "pictureChange": crate::story::change_json(&before, &crate::story::looks_across(s, it.start, it.end())),
             "plate": plate.report,
-            "note": "move, scale or re-time the layer (its Motion, `clip.speedDuration`), or switch it off (`clip.enable`) to take the subject out; the plate hides the original underneath",
+            "note": "scale or shift the layer where it stands (`layers.transform`), move or re-time it (its Motion, `clip.speedDuration`), or switch it off (`clip.enable`) to take the subject out; the plate hides the original underneath",
         }))
     })
 }
@@ -777,4 +790,347 @@ fn adjust(s: &mut Session, p: &Value) -> Result<Value> {
         let after = crate::story::looks_across(s, it.start, it.end());
         Ok(json!({"clip": it.id.0, "effect": id, "index": index, "mask": mask, "tracking": tracking, "warnings": [], "pictureChange": crate::story::change_json(&before, &after)}))
     })
+}
+
+/// Furthest `layers.transform` shifts a layer in one call, in sequence pixels.
+const MAX_OFFSET: f64 = 100_000.0;
+
+/// How close (sequence pixels) a layer's edge may come to the place its subject stood and still
+/// count as covering it.
+const COVER_SLACK: f64 = 0.5;
+
+/// The point of a mask's bounds that `layers.transform` holds still, in fractions of the bounds
+/// from their top-left corner. The default is the bottom centre: where a standing subject meets
+/// the ground.
+fn anchor_p(p: &Value, cmd: &str) -> Result<(f64, f64)> {
+    const DOC: &str = "`anchor` must be \"bottom\", \"center\" or \"top\", or [fx, fy]: fractions (0 to 1) of the mask's bounds from their top-left corner";
+    match p.get("anchor") {
+        None | Some(Value::Null) => Ok((0.5, 1.0)),
+        Some(Value::String(a)) => match a.as_str() {
+            "bottom" => Ok((0.5, 1.0)),
+            "center" | "centre" => Ok((0.5, 0.5)),
+            "top" => Ok((0.5, 0.0)),
+            _ => Err(bad(cmd, DOC)),
+        },
+        Some(v) => {
+            let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad(cmd, DOC))?;
+            let f = |i: usize| a.get(i).and_then(Value::as_f64).filter(|x| (0.0..=1.0).contains(x)).ok_or_else(|| bad(cmd, DOC));
+            Ok((f(0)?, f(1)?))
+        }
+    }
+}
+
+fn offset_p(p: &Value, cmd: &str) -> Result<Option<Vec2>> {
+    let wrong = || bad(cmd, format!("`offset` must be [dx, dy] in sequence pixels, each within ±{MAX_OFFSET}"));
+    match p.get("offset") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(wrong)?;
+            let d = |i: usize| a.get(i).and_then(Value::as_f64).filter(|x| (-MAX_OFFSET..=MAX_OFFSET).contains(x)).ok_or_else(wrong);
+            Ok(Some(Vec2::new(d(0)?, d(1)?)))
+        }
+    }
+}
+
+fn scale_p(p: &Value, cmd: &str) -> Result<Option<f64>> {
+    match p.get("scale") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_f64().filter(|x| (0.1..=10_000.0).contains(x)).map(Some).ok_or_else(|| {
+            bad(cmd, "`scale` must be per cent, 0.1 to 10000: the layer's Motion Scale (150 = half as large again as the clip shows it at 100)")
+        }),
+    }
+}
+
+/// The bounds of a path's outline (its curves, not their handles): (top-left, bottom-right).
+/// `None` for a path with no points or with points that are not numbers.
+fn outline_bounds(path: &MaskPath) -> Option<(Vec2, Vec2)> {
+    let pts = path.flatten(0.25);
+    let lo = pts.iter().fold(Vec2::new(f64::INFINITY, f64::INFINITY), |m, p| Vec2::new(m.x.min(p.x), m.y.min(p.y)));
+    let hi = pts.iter().fold(Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY), |m, p| Vec2::new(m.x.max(p.x), m.y.max(p.y)));
+    // a point that is not a number is passed over by `min` and `max`: it must not go unnoticed
+    let numbers = pts.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+    (numbers && lo.x.is_finite() && lo.y.is_finite() && hi.x.is_finite() && hi.y.is_finite()).then_some((lo, hi))
+}
+
+/// The point of a mask path that `layers.transform` holds still while the layer is placed by
+/// `placed`: (in the clip's own pixels, in the frame).
+///
+/// The bounds are the ones a viewer sees, so the bottom of a layer that is turned in the frame is
+/// its bottom in the frame.
+fn fixed_point(path: &MaskPath, placed: &Affine, anchor: (f64, f64)) -> Option<(Vec2, Vec2)> {
+    let at = |(lo, hi): (Vec2, Vec2)| Vec2::new(lo.x + (hi.x - lo.x) * anchor.0, lo.y + (hi.y - lo.y) * anchor.1);
+    let (clip, frame) = match placed.inverse() {
+        Some(back) => {
+            let frame = at(outline_bounds(&path.transformed(placed))?);
+            (back.apply(frame), frame)
+        }
+        // scaled to nothing, there is nothing to see: the mask's bounds in the clip's own picture
+        None => {
+            let clip = at(outline_bounds(path)?);
+            (clip, placed.apply(clip))
+        }
+    };
+    (clip.x.is_finite() && clip.y.is_finite() && frame.x.is_finite() && frame.y.is_finite()).then_some((clip, frame))
+}
+
+/// Whether a project item is a still image.
+fn is_still(p: &filmagic_project::Project, item: ItemId) -> bool {
+    p.item(item).is_some_and(|i| matches!(&i.kind, filmagic_project::ItemKind::Media(m) if matches!(m.info.kind, filmagic_media::MediaKind::Still)))
+}
+
+/// Most frames `layers.transform` works a layer's place out on one by one (eleven minutes at
+/// 30 fps): each is a keyframe in the project.
+const MAX_PLACED_FRAMES: i64 = 20_000;
+
+fn transform(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "layers.transform";
+    // `clip` names the layer too, as it does for every other command, but never in place of a `layer` that is not an id
+    let id = match p.get("layer") {
+        None | Some(Value::Null) => clip_p(p, "clip"),
+        Some(_) => clip_p(p, "layer"),
+    }
+    .ok_or_else(|| bad(CMD, "need `layer`: the id of a clip with an opacity mask (`layers.extract` and `layers.lift` return one as `layer`)"))?;
+    let (it, size) = picture_clip_of(s, id, CMD)?;
+    if s.project.item(it.item).is_some_and(|i| matches!(i.kind, filmagic_project::ItemKind::AdjustmentLayer { .. })) {
+        return Err(bad(CMD, "an adjustment layer's masks are drawn on the frame and its Motion does not move them: it has no subject to hold in place"));
+    }
+    let (scale, offset, anchor) = (scale_p(p, CMD)?, offset_p(p, CMD)?, anchor_p(p, CMD)?);
+    if scale.is_none() && offset.is_none() {
+        return Err(bad(CMD, "need `scale` (per cent), `offset` ([dx, dy] in sequence pixels) or both"));
+    }
+    let shift = offset.unwrap_or(Vec2::ZERO);
+    let masks = it.effect("opacity").map_or(&[][..], |e| e.masks.as_slice());
+    let mask_i = match p.get("mask") {
+        // the mask `layers.extract` adds is the last one that keeps a region; a hole cut into the layer later comes after it
+        None | Some(Value::Null) => masks.iter().rposition(|m| !m.inverted && !matches!(m.mode, MaskMode::None | MaskMode::Subtract)).ok_or_else(|| {
+            bad(CMD, "the clip has no opacity mask that keeps a region, so there is no subject to hold in place: `layers.extract` or `layers.lift` makes a layer (or name a mask with `mask`)")
+        })?,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n < masks.len())
+            .ok_or_else(|| bad(CMD, format!("`mask` must be the index of one of the clip's opacity masks (it has {})", masks.len())))?,
+    };
+    let mask = masks.get(mask_i).ok_or_else(|| bad(CMD, "the mask is gone"))?;
+    let motion = it.effect("motion").ok_or_else(|| bad(CMD, "the clip has no Motion to set"))?;
+    if !motion.enabled {
+        return Err(bad(CMD, "the clip's Motion is switched off, so nothing set on it would show; switch it on first (`effects.toggleEnabled`)"));
+    }
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let par = filmagic_render::source_par(&s.project, it.item);
+    let place = |item: &TrackItem, t: Tick| filmagic_render::motion_matrix(q, item, size, par, t);
+    let first = it.effect_time_at(it.start);
+    let animated = |id: &str| motion.param(id).is_some_and(Param::is_animated);
+    let uniform = motion.param("uniform_scale").and_then(|p| p.value.as_bool()).unwrap_or(true);
+    let was = motion.f64_at("scale", first);
+    if scale.is_some() && (animated("scale") || (!uniform && animated("scale_width"))) {
+        return Err(bad(
+            CMD,
+            "the layer's Scale is keyframed, and `scale` sets one size for the whole layer. Take the keyframes off first (`effects.toggleAnimation`), or give only `offset`",
+        ));
+    }
+    // a scale it already has leaves only the shift to do
+    let rescale = scale.filter(|sc| (sc - was).abs() > 1e-9);
+
+    // the layer as it will be
+    let mut after = it.clone();
+    let centre = Vec2::new(f64::from(q.settings.width) / 2.0, f64::from(q.settings.height) / 2.0);
+    let unplaced = || bad(CMD, "the layer's place in the frame cannot be worked out: its Motion or its mask path holds a value that is not a number");
+    let position = match rescale {
+        // the same size: every position moves by the offset, and its keyframes keep their easing
+        None => {
+            let mut pos = motion.param("position").cloned().unwrap_or_else(|| Param::new(ParamValue::Vec2(centre)));
+            pos.map_values(|v| match v {
+                // a position never set is the middle of the frame
+                ParamValue::Vec2(v) => ParamValue::Vec2(if v.x.is_nan() { centre } else { v } + shift),
+                other => other,
+            });
+            pos
+        }
+        Some(sc) => {
+            let Some(m) = after.effect_mut("motion") else { return Err(bad(CMD, "the clip has no Motion to set")) };
+            m.params.insert("scale".into(), Param::new(ParamValue::Float(sc)));
+            if !uniform {
+                // the width keeps its proportion to the height
+                let width = Some(m.f64_at("scale_width", first) * sc / was).filter(|w| w.is_finite() && was > 0.0).map_or(sc, |w| w.clamp(0.0, 10_000.0));
+                m.params.insert("scale_width".into(), Param::new(ParamValue::Float(width)));
+            }
+            // With the position at the origin, what is left of the placement says where a point of
+            // the scaled picture falls around it: the position is the rest of the way to where the
+            // anchor has to be.
+            m.params.insert("position".into(), Param::new(ParamValue::Vec2(Vec2::ZERO)));
+            let key = |t: Tick| -> Result<ParamValue> {
+                let (in_clip, in_frame) = fixed_point(&mask.path_at(t), &place(&it, t), anchor).ok_or_else(unplaced)?;
+                let pos = in_frame + shift - place(&after, t).apply(in_clip);
+                if pos.x.is_finite() && pos.y.is_finite() { Ok(ParamValue::Vec2(pos)) } else { Err(unplaced()) }
+            };
+            let path_keys = mask.path.keyframes.as_slice();
+            // How the position moves away from each keyframe of the path when only the path moves:
+            // with the path's easing, and not at all where the path has another number of points
+            // at its next keyframe (it does not move toward that one, it jumps).
+            let rides = |i: usize, k: &Keyframe| {
+                let points = |k: &Keyframe| k.value.as_path().map(MaskPath::len);
+                let held = path_keys.get(i + 1).is_some_and(|next| points(next) != points(k));
+                (if held { filmagic_project::Interpolation::Hold } else { k.interp }, k.out_influence, k.in_influence)
+            };
+            // A position already keyed that way goes with the path (this command leaves it so):
+            // scaled again, it still does. The Scale is one value here, a keyframed one was refused.
+            let goes_with_path = motion.param("position").is_none_or(|pos| {
+                pos.keyframes.is_empty()
+                    || (pos.keyframes.len() == path_keys.len()
+                        && pos
+                            .keyframes
+                            .iter()
+                            .zip(path_keys.iter().enumerate())
+                            .all(|(at, (i, k))| at.time == k.time && (at.interp, at.out_influence, at.in_influence) == rides(i, k)))
+            });
+            let keys = if animated("anchor") || animated("rotation") || !goes_with_path {
+                // The layer's own Motion is keyframed. Where the anchor falls then turns on two
+                // animations at once, each with its own keyframes and easing, and no keyframes of
+                // the position at theirs follow both in between: a position for every frame the
+                // layer is on screen, and for every keyframe either of them has.
+                let rate = s.sequence_rate();
+                let frames = it.duration.0 / rate.frame_duration().0.max(1);
+                if frames > MAX_PLACED_FRAMES {
+                    return Err(bad(
+                        CMD,
+                        format!(
+                            "the layer's Motion is keyframed, so its place is worked out on every frame, and it has {frames} (the limit is {MAX_PLACED_FRAMES}). Cut the layer down to the stretch that matters, or take the keyframes off its Motion"
+                        ),
+                    ));
+                }
+                let mut times: Vec<Tick> = path_keys.iter().map(|k| k.time).collect();
+                for id in ["position", "anchor", "rotation"] {
+                    times.extend(motion.param(id).into_iter().flat_map(|p| p.keyframes.iter().map(|k| k.time)));
+                }
+                // the frames of the sequence's own grid from the layer's first to its last
+                let mut frame = rate.frame_at(it.start);
+                if rate.tick_of(frame) < it.start {
+                    frame = frame.saturating_add(1);
+                }
+                let on_screen = times.len();
+                for _ in 0..=frames.saturating_add(1) {
+                    let at = rate.tick_of(frame);
+                    if at >= it.end() {
+                        break;
+                    }
+                    times.push(it.effect_time_at(at));
+                    frame = frame.saturating_add(1);
+                }
+                if times.len() == on_screen {
+                    // shorter than a frame and between two of them
+                    times.push(first);
+                }
+                times.sort_unstable();
+                times.dedup();
+                times.into_iter().map(|t| Ok(Keyframe::new(t, key(t)?))).collect::<Result<Vec<_>>>()?
+            } else {
+                // Only the mask path moves: a position at each of its keyframes, moving between
+                // them as the path does.
+                let mut keys = Vec::with_capacity(path_keys.len());
+                for (i, k) in path_keys.iter().enumerate() {
+                    let mut at = Keyframe::new(k.time, key(k.time)?);
+                    (at.interp, at.out_influence, at.in_influence) = rides(i, k);
+                    keys.push(at);
+                }
+                keys
+            };
+            match keys.first() {
+                Some(k) => Param { value: k.value.clone(), keyframes: keys },
+                None => Param::new(key(first)?),
+            }
+        }
+    };
+    if !std::iter::once(&position.value)
+        .chain(position.keyframes.iter().map(|k| &k.value))
+        .all(|v| v.as_vec2().is_some_and(|v| v.x.is_finite() && v.y.is_finite()))
+    {
+        return Err(unplaced());
+    }
+    let keyframes = position.keyframes.len();
+    let Some(m) = after.effect_mut("motion") else { return Err(bad(CMD, "the clip has no Motion to set")) };
+    m.params.insert("position".into(), position);
+    let set: Vec<(String, Param)> =
+        ["position", "scale", "scale_width"].into_iter().filter_map(|k| m.params.get(k).map(|v| (k.to_string(), v.clone()))).collect();
+    // Asked for what it already is, the layer is left alone: no undo step for a change that is
+    // none. A position never set reads as the middle of the frame, which is where it is.
+    let settled = |p: &Param| {
+        let mut p = p.clone();
+        p.map_values(|v| match v {
+            ParamValue::Vec2(v) if v.x.is_nan() => ParamValue::Vec2(centre),
+            other => other,
+        });
+        p
+    };
+    let unset = Param::new(ParamValue::Vec2(centre));
+    let changes = set.iter().any(|(k, v)| match k.as_str() {
+        "position" => settled(v) != settled(motion.param(k).unwrap_or(&unset)),
+        _ => motion.param(k) != Some(v),
+    });
+
+    // Smaller or shifted, the layer no longer covers the place its subject stood, and the clip it
+    // was made from shows there. Only that clip can: a layer whose clip is gone, switched off or
+    // on a track that is switched off has nothing behind it to show twice.
+    let tracks = q.video_tracks.as_slice();
+    let own = tracks.iter().position(|t| t.items.iter().any(|x| x.id == it.id)).unwrap_or(0);
+    let base = tracks.iter().take(own).enumerate().find_map(|(i, t)| t.items.iter().find(|x| of_its_stack(&s.project, x, &it)).map(|x| (i, t, x)));
+    let seen = |item: &TrackItem, t: Tick| outline_bounds(&mask.path_at(t).transformed(&place(item, t)));
+    let at_times: Vec<Tick> =
+        after.effect("motion").and_then(|m| m.param("position")).map(|p| p.keyframes.iter().map(|k| k.time).collect()).unwrap_or_default();
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some((under, _, base)) = base.filter(|(_, t, b)| t.enabled && b.enabled) {
+        let uncovers = at_times.iter().copied().chain(at_times.is_empty().then_some(first)).any(|t| match (seen(base, t), seen(&after, t)) {
+            (Some(stood), Some(now)) => {
+                stood.0.x < now.0.x - COVER_SLACK || stood.0.y < now.0.y - COVER_SLACK || stood.1.x > now.1.x + COVER_SLACK || stood.1.y > now.1.y + COVER_SLACK
+            }
+            _ => false,
+        });
+        // a plate: a still of something else that is shown between the clip and the layer for as
+        // long as the layer runs. A still under the clip is a backdrop, and hides nothing of it.
+        let plate = tracks
+            .iter()
+            .take(own)
+            .skip(under + 1)
+            .filter(|t| t.enabled)
+            .flat_map(|t| t.items.iter())
+            .any(|x| x.enabled && x.item != it.item && is_still(&s.project, x.item) && x.start <= it.start && x.end() >= it.end());
+        if uncovers && !plate {
+            warnings.push(
+                "the layer no longer covers the place its subject stood, and no plate lies between it and the clip it was made from: the clip shows there (the subject a second time, or the hole it was cut from). `layers.lift` makes the layer with a plate that fills the place"
+                    .into(),
+            );
+        }
+    }
+    let holds = fixed_point(&mask.path_at(first), &place(&after, first), anchor).map(|(_, f)| json!([round2(f.x), round2(f.y)]));
+    let placed_at = after.effect("motion").map(|m| m.vec2_at("position", first)).map(|v| json!([round2(v.x), round2(v.y)]));
+
+    let before = crate::story::looks_across(s, it.start, it.end());
+    if changes {
+        s.edit_sequence("Transform Layer", |q, _, _| {
+            let (_, layer) = q.find_item_mut(id).ok_or(filmagic_edit::EditError::NoItem(id))?;
+            let m = layer.effect_mut("motion").ok_or_else(|| bad(CMD, "the clip has no Motion to set"))?;
+            m.params.extend(set);
+            Ok(())
+        })?;
+    }
+    s.state.selection = vec![id];
+    Ok(json!({
+        "layer": id.0,
+        "mask": mask_i,
+        "scale": rescale.unwrap_or(was),
+        "was": was,
+        "anchor": [anchor.0, anchor.1],
+        "offset": [shift.x, shift.y],
+        // where the layer's Motion puts it, and where the anchor is in the frame, at the layer's first frame
+        "position": placed_at,
+        "anchorAt": holds,
+        "keyframes": keyframes,
+        "changed": changes,
+        "warnings": warnings,
+        "pictureChange": crate::story::change_json(&before, &crate::story::looks_across(s, it.start, it.end())),
+    }))
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }

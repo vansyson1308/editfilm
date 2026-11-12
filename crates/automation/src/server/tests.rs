@@ -511,9 +511,18 @@ async fn story_board_returns_the_board_and_its_cells() {
     let mut c = Client::start(demo());
     let init = c.init().await;
     let guide = init["result"]["instructions"].as_str().unwrap();
-    for id in
-        ["story_board", "story.cuts", "story.blinkPoints", "layers.lift", "color.relight", "sequence.clips", "pictureChange", "\"space\":\"frame\"", "warnings"]
-    {
+    for id in [
+        "story_board",
+        "story.cuts",
+        "story.blinkPoints",
+        "layers.lift",
+        "layers.transform",
+        "color.relight",
+        "sequence.clips",
+        "pictureChange",
+        "\"space\":\"frame\"",
+        "warnings",
+    ] {
         assert!(guide.contains(id), "the instructions do not mention {id}");
     }
     assert!(!guide.contains("fractions of the frame;"), "a region is in fractions of the clip's own picture unless it says otherwise");
