@@ -16,7 +16,7 @@ of the crate you will change.
 | OS | Extra |
 |---|---|
 | macOS | Xcode Command Line Tools. ffmpeg: `brew install ffmpeg` (includes libx264/libx265). |
-| Linux | C toolchain and the system headers cpal and rfd need: ALSA (`libasound2-dev`) and GTK 3 (`libgtk-3-dev`), plus the usual X11/Wayland development packages for winit. ffmpeg from your distribution, built with libx264 and libx265. |
+| Linux | C toolchain, `pkg-config` and the ALSA headers cpal needs (`libasound2-dev`); Debian and Ubuntu: `sudo apt install build-essential pkg-config libasound2-dev`. GTK is not needed: file dialogs go through the XDG desktop portal, and the GTK-based menu crate is used on macOS only. ffmpeg from your distribution, built with libx264 and libx265. |
 | Windows | MSVC build tools. The oracle tests look for ffmpeg only in `/opt/homebrew/bin`, `/usr/local/bin` and `/usr/bin`, so most of them skip on Windows. |
 
 The oracle tests find ffmpeg at `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`. H.264 and

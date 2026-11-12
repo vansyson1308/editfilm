@@ -23,8 +23,9 @@ started by hand in a terminal has no agent attached to it.
 
 ### Build
 
-There are no published releases yet: build from source (Rust 1.95 or newer; on Linux the ALSA and
-GTK 3 development packages, see [contributing.md](contributing.md#1-setup)).
+There are no published releases yet: build from source (Rust 1.95 or newer; on Linux a C toolchain,
+`pkg-config` and the ALSA development package, e.g. `sudo apt install build-essential pkg-config
+libasound2-dev`; see [contributing.md](contributing.md#1-setup)).
 
 ```sh
 git clone https://github.com/vansyson1308/editfilm && cd editfilm
@@ -41,12 +42,13 @@ Inside the checkout, the repository's [`.mcp.json`](../.mcp.json) registers both
 `command` is the relative path `target/release/filmagic-cli`, so start `claude` at the root of the
 checkout, approve the project servers when asked, and check them with `/mcp`.
 
-From any other folder, register the binary by its absolute path (`--scope user` makes it available
-in every project):
+From any other folder, register the binary by its absolute path. `--scope user` makes it available
+in every project; it goes before `--`, because everything after `--` is passed to `filmagic-cli`,
+which rejects options it does not know (exit 2, "unknown mcp option"):
 
 ```sh
-claude mcp add filmagic-headless -- /abs/path/editfilm/target/release/filmagic-cli mcp --demo
-claude mcp add filmagic -- /abs/path/editfilm/target/release/filmagic-cli mcp --bridge 127.0.0.1:9876
+claude mcp add --scope user filmagic-headless -- /abs/path/editfilm/target/release/filmagic-cli mcp --demo
+claude mcp add --scope user filmagic -- /abs/path/editfilm/target/release/filmagic-cli mcp --bridge 127.0.0.1:9876
 ```
 
 Use `mcp --project /abs/path/film.fcproj` instead of `--demo` to open your own project.
@@ -54,9 +56,10 @@ Use `mcp --project /abs/path/film.fcproj` instead of `--demo` to open your own p
 ### Codex
 
 Codex reads [`AGENTS.md`](../AGENTS.md) at the repository root by itself. It does not read
-`.mcp.json`; its MCP servers are configured in `~/.codex/config.toml`. Add the headless server with
-`codex mcp add <name> -- <command> <args…>`, using the absolute path of the binary (in the checkout,
-`$PWD` gives it):
+`.mcp.json`; its MCP servers are configured in `~/.codex/config.toml`. `codex mcp add` always
+writes that global file, so there is no separate "inside the checkout" setup: one entry, with the
+absolute path of the binary, serves the checkout and every other folder. Add the headless server
+with `codex mcp add <name> -- <command> <args…>`:
 
 ```sh
 codex mcp add filmagic-headless -- /abs/path/editfilm/target/release/filmagic-cli mcp --demo
@@ -71,9 +74,9 @@ command = "/abs/path/editfilm/target/release/filmagic-cli"
 args = ["mcp", "--demo"]
 ```
 
-The bridge needs `FILMAGIC_CONTROL_TOKEN` (below). Codex hands an MCP server only the variables its
-configuration names, so let the token through with `env_vars` rather than writing its value into
-the file:
+The bridge has no `codex mcp add` form: its `--env KEY=VALUE` would store the token's value in the
+file. Add the bridge by editing `~/.codex/config.toml`, and let the token through from the
+environment Codex starts in with `env_vars`:
 
 ```toml
 [mcp_servers.filmagic]
@@ -84,19 +87,63 @@ env_vars = ["FILMAGIC_CONTROL_TOKEN"]
 
 ### Driving the desktop app (bridge)
 
-The app's control server stays closed unless `FILMAGIC_CONTROL_TOKEN` holds 64 random hex
-characters; the bridge sends the same value. Generate a fresh token, then start the app and the
-agent from the same shell so both inherit it:
+The app's control server stays closed unless `FILMAGIC_CONTROL_TOKEN` holds 64 hex characters
+(generate them randomly, fresh for each session); the bridge sends the same value. Generate the
+token, then start the app and the agent from that shell so both inherit it:
 
 ```sh
-export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-./target/release/filmagic --control 9876 &
+export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"      # or: python3 -c 'import secrets; print(secrets.token_hex(32))'
+./target/release/filmagic --control 9876 >/dev/null 2>&1 &   # keeps the app's log out of the agent's terminal
 claude                    # or codex
+```
+
+The app's log is still written to `Logs/filmagic.log` in its data directory
+(`~/.local/share/filmagic/Logs/` on Linux, `~/Library/Application Support/Filmagic/Logs/` on macOS,
+`%APPDATA%\Filmagic\Logs\` on Windows, or under `--data-dir`).
+
+On Windows (PowerShell):
+
+```powershell
+$env:FILMAGIC_CONTROL_TOKEN = -join ([Security.Cryptography.RandomNumberGenerator]::GetBytes(32) | ForEach-Object { $_.ToString('x2') })
+Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
+claude                    # or codex
+```
+
+**Start the agent after the token.** Claude Code and Codex start their MCP servers when they
+launch, with the environment they had then. An agent that is already running cannot give its bridge
+the token: exporting it in the agent's own shell tool, or reconnecting the server from `/mcp`, still
+leaves a bridge without it, and every call fails with "cannot connect". Quit the agent and start it
+again from the shell that exported the token.
+
+An agent can also drive the app without MCP, through the command-line tool. It reads the token
+from its environment; an agent whose own environment lacks it can put it in front of each command,
+which keeps it out of the command's arguments:
+
+```sh
+./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec sequence.clips
+FILMAGIC_CONTROL_TOKEN=<token> ./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec playhead.set seconds=2
 ```
 
 Without the token the app logs `control server disabled: FILMAGIC_CONTROL_TOKEN must contain 64
 random hex characters` and shows it in the status bar, and the bridge reports that it cannot
 connect.
+
+### Headless Linux machines
+
+To run the desktop app (and so the bridge) on a Linux machine with no display, such as a cloud
+container or a CI box, it needs three things a desktop already has: an X server, the
+`libxkbcommon-x11` runtime library and a Vulkan driver (software rendering is enough). On Debian
+and Ubuntu:
+
+```sh
+sudo apt install xvfb libxkbcommon-x11-0 mesa-vulkan-drivers
+Xvfb :99 -screen 0 1920x1080x24 &
+export DISPLAY=:99
+./target/release/filmagic --control 9876 >/dev/null 2>&1 &
+```
+
+Without a Vulkan driver the app exits with "Failed to create surface for any enabled backend". The
+headless MCP server (`mcp --demo`) needs none of this.
 
 ### Other MCP clients
 
@@ -105,6 +152,9 @@ Any client that starts stdio servers takes the same command and arguments:
 ```json
 { "mcpServers": { "filmagic": { "command": "/abs/path/filmagic-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```
+
+For the bridge, the client must pass `FILMAGIC_CONTROL_TOKEN` through from its own environment
+(in Codex, `env_vars`); the token's value never goes into a checked-in file.
 
 ### Future releases
 
@@ -372,8 +422,8 @@ For any UI change, look at the result:
    or `filmagic-cli --bridge` from the same shell:
 
    ```sh
-   export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-   cargo run --release -p filmagic -- --control 9876
+   export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"
+   cargo run --release -p filmagic -- --control 9876 >/dev/null 2>&1 &
    ```
 
 2. Drive the feature through the control channel or the MCP bridge: commands, then clicks and drags

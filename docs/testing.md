@@ -291,7 +291,7 @@ project's sequences through a simulated 48 kHz device and counts dropouts, mixin
 For visual work, drive the real app:
 
 ```sh
-export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"   # the control server stays closed without it
+export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"   # the control server stays closed without it
 cargo run --release -p filmagic -- --control 9876
 ```
 
