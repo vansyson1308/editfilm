@@ -61,7 +61,7 @@ REELS = [
     ("films/Night of the Living Dead (1968).mp4", "notld.mp4", 0, 720, FILM43, 24000 / 1001),
     ("films/Carnival of Souls (1962).mp4", "carnival.mp4", 600, 600, FILM43, 30000 / 1001),
     ("films/Charade (1963).mp4", "charade.mp4", 300, 600, CHARADE, 25),
-    ("films/Earth Views from the ISS (NASA).mp4", "earthviews.mp4", 1200, 264, "setsar=1", 30),
+    ("films/Earth Views from the ISS (NASA).mp4", "earthviews.mp4", 1600, 264, "setsar=1", 30),
 ]
 
 AUDIO = [

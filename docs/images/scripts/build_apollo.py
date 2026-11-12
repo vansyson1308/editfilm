@@ -33,17 +33,17 @@ V1 = [
     ("R01", 220.0, 5.0), ("R01", 206.6, 4.0), ("R01", 18.0, 4.0), ("R01", 23.0, 3.5), ("R01", 30.0, 3.5),
     ("R01", 227.0, 4.0), ("R01", 276.0, 4.0), ("R01", 296.0, 4.0), ("R01", 305.0, 3.5), ("R01", 319.0, 4.0),
     ("R01", 368.0, 4.0), ("R01", 382.0, 3.0),
-    # Launch, 0:46.5-1:34; ignition at 1:13 (T-0), the liftoff shot from 1:16
+    # Launch, 0:46.5-1:35; ignition at 1:13 (T-0), the liftoff shot from 1:16
     ("R02", 6.8, 4.0), ("R02", 17.5, 4.0), ("R02", 24.3, 3.0), ("R02", 57.0, 4.0), ("R02", 13.0, 3.5),
     ("R02", 99.6, 2.5), ("R02", 102.5, 2.5), ("R02", 105.5, 3.0), ("R02", 72.0, 3.0), ("R02", 180.0, 6.0),
     ("R02", 140.0, 3.5), ("R02", 223.0, 3.0), ("R02", 236.0, 6.5),
-    # Translunar coast and descent, 1:34-2:05
+    # Translunar coast and descent, 1:35-2:06
     ("R03", 3.0, 4.0), ("R03", 106.0, 4.0), ("R03", 142.0, 3.5), ("R03", 193.0, 4.0), ("R03", 215.0, 4.0),
     ("R03", 227.0, 4.0), ("R03", 257.0, 3.5), ("R03", 261.8, 4.0),
-    # Lunar surface, 2:05-2:47
+    # Lunar surface, 2:06-2:48
     ("R04", 20.0, 4.0), ("R04", 60.0, 6.0), ("R04", 110.0, 5.0), ("R04", 150.0, 4.5), ("R04", 190.0, 5.0),
     ("R04", 240.0, 5.0), ("R04", 305.0, 5.0), ("R04", 338.0, 4.0), ("R04", 353.0, 3.5),
-    # Recovery, 2:47-3:12
+    # Recovery, 2:48-3:12
     ("R05", 10.0, 4.0), ("R05", 93.0, 4.0), ("R05", 138.0, 4.0), ("R05", 162.0, 3.0), ("R05", 193.0, 3.5),
     ("R05", 209.0, 3.0), ("R05", 225.6, 2.5),
 ]
@@ -72,7 +72,7 @@ CAPTIONS = [
     (122.2, 3.0, "ARMSTRONG: Houston, Tranquility Base here."),      # 04 06 45 59
     (125.4, 3.0, "ARMSTRONG: The Eagle has landed."),                # 04 06 46 04
     (128.6, 4.4, "HOUSTON: Roger, Tranquility. We copy you on the ground."),  # 04 06 46 06
-    (133.2, 4.6, "HOUSTON: You got a bunch of guys about to turn blue. We're breathing again. Thanks a lot."),
+    (133.2, 4.6, "HOUSTON: You got a bunch of guys about to turn blue. We're breathing again. Thanks a lot."),  # 04 06 46 06, continued
     (140.0, 5.5, "ARMSTRONG: That's one small step for (a) man, one giant leap for mankind."),  # 04 13 24 48
     (150.0, 2.6, "ALDRIN: Beautiful view!"),                         # 04 13 43 16
     (152.8, 3.2, "ALDRIN: Magnificent desolation."),                 # 04 13 43 24
@@ -97,7 +97,7 @@ def f(s):
 
 def main():
     c = fmctl.Filmagic()
-    c.run("file.newProject", {"name": "Apollo 11 - Tranquility"}, check=False)
+    c.run("file.newProject", {"name": "Apollo 11 - Tranquility"})
     bins = {}
     for name in ["01 Selects - NASA film", "02 Mission audio", "03 Music", "04 Sequences"]:
         bins[name] = c.run("file.newBin", {"name": name})["bin"]
@@ -194,7 +194,9 @@ def main():
     c.run("markers.markOut", {"timecode": "00:01:34:00"})
     c.run("file.saveAs", {"path": PROJECT})
     c.run("sequence.renderInToOut", {})  # a background job; with llvmpipe it takes minutes
-    c.wait_jobs(limit=3600)
+    jobs = c.wait_jobs(limit=3600)
+    if not any(j.get("label", "").startswith("Rendering") for j in jobs):
+        raise SystemExit(f"Render In to Out started no job: {jobs}")
     c.run("file.save", {})
     print("saved", os.path.basename(PROJECT), "with", len(V1), "picture cuts,", round(t / FPS, 1), "s")
 

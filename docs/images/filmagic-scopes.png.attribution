@@ -5,6 +5,6 @@ source:       original work (screenshot of Filmagic captured with its ui.screens
 license:      MIT OR Apache-2.0 (screenshot); embedded film frames are public domain
 license-file:
 added:        2026-11-12 by @vansyson1308
-notes:        Crop (1100x1115 px at 2x) of the Video Scopes panel in the Color workspace: an RGB waveform and a YUV vectorscope computed from a graded Charade (1963) frame; the edge of the Program monitor shows part of that frame. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork. Rebuild and recapture with the scripts in docs/images/scripts/ (README there): build_trailer.py, then capture_gallery.py scopes.
+notes:        Crop (1100x1115 px at 2x) of the Video Scopes panel in the Color workspace: an RGB waveform and a YUV vectorscope computed from a graded Charade (1963) frame; the panel alone, with its tab row. All UI icons are drawn in code; fonts are Inter and JetBrains Mono (OFL-1.1). Contains no Adobe artwork. Rebuild and recapture with the scripts in docs/images/scripts/ (README there): build_trailer.py, then capture_gallery.py scopes.
 Media visible or used in the screenshot (none of it is committed to the repository):
   - Charade (1963), dir. Stanley Donen, Universal. US public domain (defective copyright notice). Source: https://archive.org/details/charade-1963-cary-grant-audrey-hepburn-comedy-mystery-romance-thriller-full-movie (Public Domain Mark).

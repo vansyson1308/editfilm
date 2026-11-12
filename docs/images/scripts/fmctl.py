@@ -46,17 +46,22 @@ class Filmagic:
             req["params"] = params
         self.next_id += 1
         line = (json.dumps(req) + "\n").encode()
-        for attempt in range(2):
-            try:
-                if self.sock is None:
-                    self._connect()
-                self.sock.sendall(line)
-                reply = self._read_line()
-                break
-            except (OSError, ConnectionError):
-                self.sock = None
-                if attempt:
-                    raise
+        if self.sock is None:
+            self._connect()
+        try:
+            self.sock.sendall(line)
+        except OSError:
+            # The server closes idle connections after two minutes. A send that fails has not
+            # delivered a request, so it is safe to reconnect and send this one again.
+            self._connect()
+            self.sock.sendall(line)
+        try:
+            reply = self._read_line()
+        except OSError:
+            # Never resend after a request went out: a command such as timeline.place or
+            # file.import could run twice.
+            self.sock = None
+            raise
         msg = json.loads(reply)
         if self.verbose:
             print(method, json.dumps(params)[:200], "->", json.dumps(msg)[:300], file=sys.stderr)
@@ -102,14 +107,59 @@ class Filmagic:
         self.call("ui.inspect")
 
     def wait_jobs(self, limit=600):
-        """Wait until background jobs (render, conform, waveforms) are finished."""
+        """Wait until every background job (render, export) has finished; stop on a failed one."""
         t0 = time.time()
-        while time.time() - t0 < limit:
-            jobs = self.run("jobs.list", check=False)
-            items = jobs.get("jobs", jobs) if isinstance(jobs, dict) else jobs
-            if not items or all(j.get("finished") for j in items if isinstance(j, dict)):
-                return
+        while True:
+            jobs = self.run("jobs.list")  # raises ControlError on an error reply
+            if not isinstance(jobs, list):
+                raise ControlError(f"jobs.list: expected a list of jobs, got {json.dumps(jobs)[:200]}")
+            for j in jobs:
+                result = j.get("result")
+                if j.get("finished") and isinstance(result, dict) and "error" in result:
+                    raise ControlError(f"job {j.get('id')} ({j.get('label')}) failed: {result['error']}")
+            if all(j.get("finished") for j in jobs):
+                return jobs
+            if time.time() - t0 > limit:
+                busy = [f"{j.get('label')} {round(100 * (j.get('progress') or 0))}%" for j in jobs if not j.get("finished")]
+                raise ControlError(f"jobs still running after {limit} s: {', '.join(busy)}")
             time.sleep(1)
+
+
+def split_path(node, panel, path=()):
+    """The path (False = first child, True = second) of the split whose second child is the tab
+    group holding `panel`, in a ui.docking layout tree; None when there is none."""
+    split = node.get("Split") if isinstance(node, dict) else None
+    if not split:
+        return None
+    second = split["second"]
+    if "Tabs" in second and panel in second["Tabs"]["panels"]:
+        return list(path)
+    return split_path(split["first"], panel, path + (False,)) or split_path(second, panel, path + (True,))
+
+
+METERS_WIDTH = 170  # points: the built-in workspaces give the meters 116, too narrow for their tab title
+
+
+def widen_meters(ctl, width=METERS_WIDTH):
+    """Give the Audio Meters panel room for its tab title (a docking action, like dragging the divider)."""
+    path = split_path(ctl.call("ui.docking")["layout"]["root"], "AudioMeters")
+    if path is None:
+        raise ControlError("no Audio Meters split in this workspace")
+    ctl.run("window.dockAction", {"action": {"ResizeSplit": {"path": path, "size": {"FixedSecond": float(width)}}}})
+
+
+def check_scale(ctl, scale):
+    """Stop unless the app draws at `scale` pixels per point (WINIT_X11_SCALE_FACTOR needs X11)."""
+    got = ctl.inspect()["pixelsPerPoint"]
+    if abs(got - scale) > 1e-3:
+        raise SystemExit(f"the app reports {got} pixels per point, not {scale}: run under X11 or Xvfb (launch.py)")
+
+
+def check_size(path, width, height):
+    """Stop unless the PNG at `path` is `width` x `height` pixels (a small display shrinks the window)."""
+    w, h = struct.unpack(">II", open(path, "rb").read(24)[16:24])
+    if (w, h) != (width, height):
+        raise SystemExit(f"{path}: {w}x{h} px, expected {width}x{height}: is the display large enough?")
 
 
 def secs(s):

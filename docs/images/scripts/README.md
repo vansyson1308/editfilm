@@ -60,7 +60,7 @@ crops the active picture and scales it back to 4:3 (1440x1080):
 | `films/Night of the Living Dead (1968).mp4` | `notld.mp4` (to 1440x1080, 23.976 fps) | 0 s, 720 s |
 | `films/Carnival of Souls (1962).mp4` | `carnival.mp4` (to 1440x1080, 29.97 fps) | 600 s, 600 s |
 | `films/Charade (1963).mp4` | `charade.mp4` (4:3 centre crop to 1440x1080, 25 fps) | 300 s, 600 s |
-| `films/Earth Views from the ISS (NASA).mp4` | `earthviews.mp4` (1280x720, 30 fps) | 1200 s, 264 s |
+| `films/Earth Views from the ISS (NASA).mp4` | `earthviews.mp4` (1280x720, 30 fps) | 1600 s, 264 s |
 
 The two MP3s are copied to `target/demo-media/music/` under their titles.
 
@@ -73,9 +73,13 @@ cargo build --release -p filmagic -p filmagic-cli
 python3 docs/images/scripts/prepare_media.py
 ```
 
-On a machine without a GPU or display (a CI runner or cloud container), install Xvfb and Mesa's
-software Vulkan driver (`apt-get install -y xvfb mesa-vulkan-drivers libxkbcommon-x11-0`);
-`launch.py` starts Xvfb when `DISPLAY` is unset and wgpu picks up llvmpipe.
+The scripts run on **Linux under X11 or Xvfb** only: they set the density with
+`WINIT_X11_SCALE_FACTOR`, which only X11 honours, and they stop with an error if the app reports
+another pixels-per-point value or a capture comes out at another size (a display smaller than the
+window shrinks it). On a machine without a GPU or display (a CI runner or cloud container), install
+Xvfb and Mesa's software Vulkan driver (`apt-get install -y xvfb mesa-vulkan-drivers
+libxkbcommon-x11-0`); `launch.py` starts Xvfb on `:77` when no X display is running, and wgpu picks
+up llvmpipe. The window needs a screen of at least 4800x2570 pixels (Xvfb is started at 5200x3000).
 
 Build the projects (each in a fresh app; the Apollo render of In to Out takes several minutes on
 llvmpipe):
@@ -83,24 +87,29 @@ llvmpipe):
 ```sh
 eval "$(python3 docs/images/scripts/launch.py --scale 1.5)"
 python3 docs/images/scripts/build_apollo.py
-python3 docs/images/scripts/launch.py --stop
+eval "$(python3 docs/images/scripts/launch.py --stop)"
 eval "$(python3 docs/images/scripts/launch.py --scale 1.5)"
 python3 docs/images/scripts/build_trailer.py
-python3 docs/images/scripts/launch.py --stop
+eval "$(python3 docs/images/scripts/launch.py --stop)"
 ```
+
+`launch.py --stop` prints the `unset` lines for what `launch.py` exported (`DISPLAY` too when it
+started Xvfb), so the `eval` leaves the shell as it was.
 
 Capture:
 
 ```sh
 eval "$(python3 docs/images/scripts/launch.py --scale 2)"
 python3 docs/images/scripts/capture_hero.py      # 2400x1285 points at 2x, halved to 2400 px
-python3 docs/images/scripts/launch.py --stop
+eval "$(python3 docs/images/scripts/launch.py --stop)"
 python3 docs/images/scripts/capture_gallery.py   # starts its own app for each of the eight shots
 ```
 
 `capture_gallery.py name…` retakes single shots (`assembly`, `keyframes`, `export`, `color`,
 `timeline`, `scopes`, `color-panel`, `effects`). The full-window shots are taken at 1.5x
-(1600x1000 points = 2400x1500 px); the crops at 2x, cut from the window at the panel's corner.
+(1600x1000 points = 2400x1500 px); the crops at 2x, cut from the window at the panel's corner
+(the Scopes window is resized until the Video Scopes group is exactly 1100x1115 px). Every shot
+widens the Audio Meters to 170 points with a docking action, so their tab title fits.
 
 Open every PNG before committing it: right content, no rendering glitches, sharp text, and nothing
 from the capturing machine (no paths in the title, status bar, bins or Export summary, no user

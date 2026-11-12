@@ -31,7 +31,7 @@ TRAILER = [(40.0, 108), (240.0, 72), (310.0, 60), (360.0, 72), (371.0, 60), (401
 DISSOLVES = [1, 4, 7, 10]
 CARNIVAL_INSERT = (52.0, 660, 60)  # source in s, sequence frame, length in frames: Mary at the wheel
 MARKERS = [(0, "Open", "Mango"), (120, "Cemetery", "Blue"), (324, "Attack", "Forest"),
-           (528, "Run", "Red"), (768, "Tag", "Blue")]
+           (528, "Run", "Red"), (760, "Tag", "Blue")]  # the trailer is 767 frames, 0-766
 
 # Charade - Grade at 25 fps: (source in s, length in frames)
 CHARADE = [(40.0, 75), (12.0, 75), (31.0, 75), (63.0, 50), (82.0, 75), (100.5, 75)]
@@ -46,7 +46,7 @@ def place(c, item, track, frame, sin, frames, **extra):
 
 def main():
     c = fmctl.Filmagic()
-    c.run("file.newProject", {"name": "Night of the Living Dead - Trailer"}, check=False)
+    c.run("file.newProject", {"name": "Night of the Living Dead - Trailer"})
     r = c.run("file.import", {"paths": [os.path.join(FILMS, n) for n in MEDIA] + [os.path.join(MUSIC, n) for n in SCORES]})
     if r.get("errors"):
         raise SystemExit(f"import failed: {r['errors']}")
@@ -93,7 +93,7 @@ def main():
         c.run("effects.setParam", {"clip": first, "effect": "lumetri", "param": p, "value": v})
     for p, v in [("wheels_on", True), ("wheel_shadows", [0.18, -0.12]), ("wheel_highlights", [0.12, 0.08]),
                  ("vignette_on", True), ("vignette_amount", -0.8)]:
-        c.run("effects.setParam", {"clip": first, "effect": "lumetri", "param": p, "value": v}, check=False)
+        c.run("effects.setParam", {"clip": first, "effect": "lumetri", "param": p, "value": v})
     for k in cv[1:]:
         c.run("lumetri.applyPreset", {"name": "Teal Shadows, Warm Skin", "clips": [k[0]]})
 
@@ -105,7 +105,7 @@ def main():
         t += n
     c.run("sequence.applyVideoTransition", {"clip": ev[1][0], "effect": "cross_dissolve", "frames": 30, "edge": "in"})
     for k in ev:
-        c.run("lumetri.applyPreset", {"name": "Golden Dusk", "clips": [k[0]]})
+        c.run("lumetri.applyPreset", {"name": "Hard Sun", "clips": [k[0]]})
 
     c.run("file.saveAs", {"path": PROJECT})
     print("saved", os.path.basename(PROJECT))

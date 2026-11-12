@@ -70,7 +70,7 @@ Every command that changes the picture reports how much a viewer will see of it 
 ## Edit
 
 <p align="center">
-  <img src="docs/images/filmagic-assembly.png" alt="Assembly workspace: bins of film thumbnails, Carnival of Souls in the Source monitor, a Night of the Living Dead cemetery shot in the Program monitor, and the trailer on a three-track timeline with a Chopin score on A2 and loudness meters" width="100%">
+  <img src="docs/images/filmagic-assembly.png" alt="Assembly workspace: the Project panel in icon view with thumbnails of the films, music and sequences, Carnival of Souls in the Source monitor, a Night of the Living Dead cemetery shot in the Program monitor, and the trailer on a three-track timeline with a Chopin score on A2 and loudness meters" width="100%">
 </p>
 
 <p align="center"><sub>The Assembly workspace, cutting a trailer for <i>Night of the Living Dead</i> (1968) with an insert from <i>Carnival of Souls</i> (1962).</sub></p>
@@ -112,7 +112,7 @@ Every command that changes the picture reports how much a viewer will see of it 
 <table>
   <tr>
     <td width="34%" valign="top" align="center">
-      <img src="docs/images/filmagic-color-panel.png" alt="The color grading panel on Charade (1963): Basic Correction sliders with coloured temperature and tint tracks, collapsed Creative and Curves sections, shadow, midtone and highlight colour wheels, and HSL Secondary and Vignette toggles"><br>
+      <img src="docs/images/filmagic-color-panel.png" alt="The color grading panel on Charade (1963): Basic Correction sliders with coloured temperature and tint tracks, collapsed Creative and Curves sections, and Color Wheels & Match open on the shadow, midtone and highlight wheels above the Color Match controls"><br>
       <sub><b>The color grading panel.</b> Basic Correction, Color Wheels and every other section, each with its own on/off switch.</sub>
     </td>
     <td width="66%" valign="top" align="center">
@@ -127,7 +127,7 @@ Every command that changes the picture reports how much a viewer will see of it 
 ## Effects and motion
 
 <p align="center">
-  <img src="docs/images/filmagic-effects.png" alt="Effects workspace: Effect Controls with Motion and Opacity, NASA's Earth Views from the ISS with a warm look in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
+  <img src="docs/images/filmagic-effects.png" alt="Effects workspace: Effect Controls with Motion, Opacity, Time Remapping and a Color Grading look, NASA's Earth Views from the ISS (blue ocean under cloud, with a high-contrast look) in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
 </p>
 
 <p align="center"><sub>NASA's <i>Earth Views from the ISS</i> with a look applied, and the Effects browser open on the dissolves.</sub></p>

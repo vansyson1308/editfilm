@@ -31,15 +31,23 @@ def setup(c):
     c.run("project.view.set", {"view": "list"})
     c.run("project.columns.set", {"columns": ["Name", "Frame Rate", "Media Start", "Media Duration"]})
     c.settle(1)
-    for e in c.elements("project.bin."):
-        if e["id"].endswith(".toggle"):
-            c.call("ui.click", {"id": e["id"]})
+    bins = [int(e["id"].split(".")[2]) for e in c.elements("project.bin.") if e["id"].endswith(".toggle")]
+    for b in bins:
+        if b not in c.inspect()["ui"]["expanded_bins"]:  # the twirl toggles: click closed ones only
+            c.call("ui.click", {"id": f"project.bin.{b}.toggle"})
             c.settle(0.5)
+    closed = sorted(set(bins) - set(c.inspect()["ui"]["expanded_bins"]))
+    if len(bins) != 4 or closed:
+        raise SystemExit(f"expected four open bins; bins {bins}, still closed {closed}")
     # the liftoff shot selected, so Effect Controls and Color Grading show its grade
     clips = c.run("sequence.clips", {"track": "V1", "fromSeconds": 77.0, "toSeconds": 77.1})
-    hero = [k["clip"] for t in clips["tracks"] for k in t["clips"]][0]
+    found = [k["clip"] for t in clips["tracks"] for k in t["clips"]]
+    if not found:
+        raise SystemExit("no clip on V1 at 77 s: rebuild the project with build_apollo.py")
+    hero = found[0]
     c.run("timeline.select", {"clips": [hero], "add": False, "toggle": False, "linked": False})
     c.run("timeline.decreaseVideoHeight")
+    fmctl.widen_meters(c)
     c.ui_set(timeline={"fit": True}, playbackRes="Full", program={"res": "Full", "paused_res": "Full"})
     c.call("ui.move", {"id": "timeline.ruler"})  # the status bar shows the timeline's hint
     c.settle(2)
@@ -47,6 +55,7 @@ def setup(c):
 
 def main():
     c = fmctl.Filmagic()
+    fmctl.check_scale(c, 2)
     setup(c)
     os.makedirs(os.path.dirname(RAW), exist_ok=True)
     c.run("playhead.set", {"timecode": "00:01:16:27"})
@@ -55,6 +64,7 @@ def main():
     time.sleep(0.6)
     c.screenshot(RAW)
     c.call("ui.playback", {"action": "stop"})
+    fmctl.check_size(RAW, 4800, 2570)
     img = fmctl.png_read(RAW)
     fmctl.png_write(OUT, *fmctl.halve(img))
     print("wrote", os.path.relpath(OUT, fmctl.ROOT))
