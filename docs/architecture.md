@@ -558,6 +558,10 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   transform moves the path, written as Mask Path keyframes while the background job runs (one undo
   step per run; `jobs.cancel` stops and keeps what was tracked). Frames are tracked at ≤ 960 px
   wide. On synthetic footage with known similarity motion the path stays within 0.3 px over 20 frames.
+  Each step fits the dominant motion inside the mask, which around a small plain subject is the
+  background's; `track::Appearance` keeps the colours that set the inside of the mask apart from
+  a band around it in the first frame, and the job stops with `lost track after N frame(s)`
+  (keeping the frames before) once less than half of them are still inside.
 
 ### 5.4 Colour management
 

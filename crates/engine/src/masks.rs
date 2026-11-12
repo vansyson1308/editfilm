@@ -612,6 +612,21 @@ pub struct PendingTrack {
 /// Longest side of the frames the tracker works on (speed; the result is in clip pixels).
 const TRACK_MAX_WIDTH: f64 = 960.0;
 
+/// Why tracking stops when the picture inside the mask is no longer what it started on
+/// ([`filmcraft_render::track::Appearance`]).
+const LOST_SUBJECT: &str =
+    "the mask has drifted off what it started on (the subject has too little detail of its own for the tracker to hold against its background)";
+
+/// A decoded frame as the tracker reads it.
+struct TrackFrame {
+    gray: filmcraft_render::track::Prepared,
+    rgba: Vec<u8>,
+    w: usize,
+    h: usize,
+    /// Frame pixels per clip pixel.
+    k: f64,
+}
+
 fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let clip = target_clip(s, p)?;
     let sel = s.state.selected_mask;
@@ -665,41 +680,60 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     let run = move || {
         use std::sync::atomic::Ordering;
         let t0 = web_time::Instant::now();
-        let gray = |t: Tick| -> Option<(filmcraft_render::track::Prepared, f64)> {
+        let frame = |t: Tick| -> Option<TrackFrame> {
             let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale }).ok()?;
-            let g = filmcraft_render::track::Gray::from_rgba8(f.width as usize, f.height as usize, &f.to_rgba8());
-            Some((filmcraft_render::track::Prepared::new(g), f.width as f64 / size.0.max(1) as f64))
+            let (w, h, rgba) = (f.width as usize, f.height as usize, f.to_rgba8());
+            let gray = filmcraft_render::track::Prepared::new(filmcraft_render::track::Gray::from_rgba8(w, h, &rgba));
+            Some(TrackFrame { gray, rgba, w, h, k: f.width as f64 / size.0.max(1) as f64 })
         };
         let mut path = start_path;
         let mut err: Option<String> = None;
         let mut done = 0u64;
-        match gray(mt0) {
+        match frame(mt0) {
             None => err = Some("can't decode the clip".into()),
-            Some((mut prev, mut k_prev)) => {
+            Some(first) => {
                 lock(&out).push((mt0, path.clone()));
+                // what is inside the mask now, to notice a mask that slides off it: every step can
+                // fit the motion it finds while that motion is the background's
+                let start: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * first.k).collect();
+                let look = filmcraft_render::track::Appearance::capture(first.w, first.h, &first.rgba, &start);
+                // clip pixels at the first frame → clip pixels now
+                let mut from_start = Affine::IDENTITY;
+                let (mut prev, k_first, mut k_prev) = (first.gray, first.k, first.k);
                 for step in 1..=steps {
                     if prog.cancel.load(Ordering::Relaxed) {
                         err = Some("stopped".into());
                         break;
                     }
                     let t = if backward { mt0 - Tick(fd.0 * step as i64) } else { mt0 + Tick(fd.0 * step as i64) };
-                    let Some((next, k)) = gray(t) else {
+                    let Some(next) = frame(t) else {
                         err = Some(format!("can't decode frame {step}"));
                         break;
                     };
                     let region: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * k_prev).collect();
-                    let Some(st) = filmcraft_render::track::track_step(&prev, &next, &region, method) else {
+                    let Some(st) = filmcraft_render::track::track_step(&prev, &next.gray, &region, method) else {
                         err = Some(format!("lost track after {} frame(s): not enough detail inside the mask", step - 1));
                         break;
                     };
                     // frame pixels → clip pixels
+                    let k = next.k;
                     let m = Affine::scale(1.0 / k, 1.0 / k).then_apply(&st.transform).then_apply(&Affine::scale(k_prev, k_prev));
+                    let moved = m.then_apply(&from_start);
+                    // the first frame's pixels → this frame's
+                    let to_frame = Affine::scale(k, k).then_apply(&moved).then_apply(&Affine::scale(1.0 / k_first, 1.0 / k_first));
+                    let kept = look.as_ref().and_then(|l| l.kept(next.w, next.h, &next.rgba, &to_frame));
+                    if kept.is_some_and(|kept| kept < filmcraft_render::track::LOST_BELOW) {
+                        // this frame's path is not written: it is where the mask was found to be off
+                        err = Some(format!("lost track after {} frame(s): {LOST_SUBJECT}", step - 1));
+                        break;
+                    }
+                    from_start = moved;
                     path = path.transformed(&m);
                     lock(&out).push((t, path.clone()));
                     done += 1;
                     prog.done.store(done, Ordering::Relaxed);
                     *lock(&prog.status) = format!("Frame {step} of {steps} · {} features", st.inliers);
-                    prev = next;
+                    prev = next.gray;
                     k_prev = k;
                 }
             }
