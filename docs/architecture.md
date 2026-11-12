@@ -332,10 +332,26 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   effects, effect and opacity masks, the other adjustment layers,
   nested sequences (except a plain one, whose own layers go into the plan: same frame size and
   colour settings as its parent, nothing on the clip that changes the picture, every layer inside
-  blended normally) and non-dissolve transitions are rendered on the CPU for that layer or frame
+  blended normally, shown at one time of its own and not as the mix of two of its frames) and
+  non-dissolve transitions are rendered on the CPU for that layer or frame
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
   forces the CPU path in the desktop app.
+- **Time interpolation.** With Frame Blending or Optical Flow, a clip whose media time falls
+  between two source frames (a speed other than 100 %, or media at another frame rate than the
+  sequence) shows the mix of those two frames: a cross-fade, or with Optical Flow the in-between
+  frame synthesised from their motion (`render::flow`). `render::interpolation_blend` picks the
+  pair and the weight. A nested sequence and a multi-camera clip count as footage at the nested
+  sequence's frame rate (`render::nest_picture`): its two frames around the exact time are
+  rendered and mixed, also at 100 % when its frame rate differs from the outer sequence's. So
+  what is animated inside such a nest (a keyframed title, say) cross-fades from one frame of the
+  nest to the next; with Frame Sampling the nest is rendered at the exact time and the animation
+  moves between its frames. A nest that is mixed is rendered on the CPU twice a frame. To keep a
+  chain of such nests from doubling the renders at every level, each counts as two of the
+  `MAX_NEST_DEPTH` (8) levels of nesting: below a blended nest one level fewer of nests is drawn,
+  and a blended nest with fewer than two levels left shows the frame of Frame Sampling. The frame
+  plan decides that from its own depth, so only there, seven or more nests down, can it mix where
+  the CPU compositor samples.
 - **CPU compositor shortcuts.** The CPU compositor, which is what export runs, works on
   premultiplied linear `f32` images, 33 MB at 1080p, so what it does not allocate, convert or mix
   is time saved. Three shortcuts, each of which gives the general path's bits (compared bit for
