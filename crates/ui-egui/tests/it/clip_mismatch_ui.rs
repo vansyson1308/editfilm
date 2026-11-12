@@ -2,17 +2,17 @@
 //! dialog, `panels::clip_mismatch`): the first clip dragged onto an empty sequence it doesn't match,
 //! or put in with Overwrite, asks whether the sequence takes the clip's settings.
 //!
-//! Set `FILMCRAFT_UI_SNAPSHOT_DIR=<dir>` to also render offscreen with wgpu and write
+//! Set `FILMAGIC_UI_SNAPSHOT_DIR=<dir>` to also render offscreen with wgpu and write
 //! `clip-mismatch.png`.
 
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_project::BinEntry;
-use filmcraft_time::FrameRate;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use filmagic_engine::Session;
+use filmagic_project::BinEntry;
+use filmagic_time::FrameRate;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 /// The empty sequence the tests open, and the demo's movies, which don't match it.
@@ -20,7 +20,7 @@ const SEQUENCE: (u32, u32, FrameRate) = (1280, 720, FrameRate::FPS_25);
 const CLIP: (u32, u32, FrameRate) = (1920, 1080, FrameRate::FPS_23_976);
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     snapshots: Option<std::path::PathBuf>,
 }
@@ -32,8 +32,8 @@ impl Driver {
         s.execute("file.openDemoProject", json!({})).unwrap();
         s.execute("file.newSequence", json!({"name": "Empty", "width": 1280, "height": 720, "fps": 25})).unwrap();
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(s).with_control(rx);
-        let snapshots = std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
+        let app = FilmagicApp::new(s).with_control(rx);
+        let snapshots = std::env::var_os("FILMAGIC_UI_SNAPSHOT_DIR").map(std::path::PathBuf::from);
         let mut b = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000);
         if snapshots.is_some() {
             b = b.wgpu();
@@ -97,7 +97,7 @@ impl Driver {
         panic!("{id} never appeared");
     }
 
-    fn app(&mut self) -> &mut FilmcraftApp {
+    fn app(&mut self) -> &mut FilmagicApp {
         self.harness.state_mut()
     }
 

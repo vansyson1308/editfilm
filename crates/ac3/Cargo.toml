@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-ac3"
+name = "filmagic-ac3"
 description = "Clean-room AC-3 and E-AC-3 (Dolby Digital / Dolby Digital Plus, ATSC A/52) audio decoder"
 version.workspace = true
 edition.workspace = true
@@ -10,8 +10,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-filmcraft-bitstream = { workspace = true }
+filmagic-bitstream = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-filmcraft-testkit = { workspace = true }
+filmagic-testkit = { workspace = true }

@@ -160,7 +160,7 @@ fn random_frames_never_panic() {
 ///
 /// The golden values were captured from the decoder before the synthesis filterbank was
 /// rewritten (`synthesize` with the shifting `V` buffer and the 64-row matrix): check out that
-/// commit, run `cargo test -p filmcraft-mpa decoded_samples_are_bit_exact -- --nocapture`, and
+/// commit, run `cargo test -p filmagic-mpa decoded_samples_are_bit_exact -- --nocapture`, and
 /// copy the printed `(ok, hash)` pairs. A change of the filter's arithmetic (summation order,
 /// grouping, fused multiply-add) shows up here; a legitimate one needs new goldens and a reason.
 #[test]

@@ -6,11 +6,11 @@ use std::path::Path;
 use std::process::Command;
 
 use super::*;
-use filmcraft_media::generators::GeneratorSource;
-use filmcraft_media::{FrameRequest, Generator, MediaSource};
-use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
-use filmcraft_render::SourceMap;
-use filmcraft_time::TICKS_PER_SECOND;
+use filmagic_media::generators::GeneratorSource;
+use filmagic_media::{FrameRequest, Generator, MediaSource};
+use filmagic_project::{ItemKind, Label, MediaClip, MediaRef, SequenceSettings, TrackKind};
+use filmagic_render::SourceMap;
+use filmagic_time::TICKS_PER_SECOND;
 
 /// 1 s at 24 fps, 320×180: the counting leader over V1, a 440 Hz tone on A1 (stereo mix), start
 /// timecode 01:00:00:00.
@@ -99,15 +99,15 @@ fn op1a_reads_back_with_our_demuxer_and_decoders() {
         assert_eq!(r.frames, 24);
         assert!(r.extra_files.is_empty());
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
+        let mx = filmagic_mxf::open(&bytes).unwrap();
         assert!(mx.warnings.is_empty(), "{codec:?}: {:?}", mx.warnings);
         assert_eq!(mx.operational_pattern.name(), "OP1a");
         assert_eq!(mx.material_package_name.as_deref(), Some("MXF Test"));
         assert_eq!(mx.timecode.unwrap().format(), "01:00:00:00");
-        let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+        let v = &mx.tracks[mx.track_of_kind(filmagic_mxf::TrackKind::Picture).unwrap()];
         assert_eq!(v.samples.len(), 24, "{codec:?}");
         assert_eq!(v.duration, Some(24));
-        let a = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap()];
+        let a = &mx.tracks[mx.track_of_kind(filmagic_mxf::TrackKind::Sound).unwrap()];
         assert_eq!(a.stored_sample_frames(), 48_000, "{codec:?}");
         assert_eq!(a.sound.as_ref().unwrap().bits, 24);
         if codec == MxfVideoCodec::H264 {
@@ -115,14 +115,14 @@ fn op1a_reads_back_with_our_demuxer_and_decoders() {
             assert!(v.samples[0].key && v.samples.iter().filter(|s| s.key).count() < 24);
         }
         // our MXF source decodes it like the MOV export of the same sequence
-        let src = filmcraft_codecs::open_bytes("x.mxf", bytes.into()).unwrap();
+        let src = filmagic_codecs::open_bytes("x.mxf", bytes.into()).unwrap();
         let info = src.info();
         assert_eq!(info.video.as_ref().unwrap().width, 320, "{codec:?}");
         assert!((info.duration.seconds() - 1.0).abs() < 0.05, "{codec:?}: {}", info.duration.seconds());
         let mov = tmp(&format!("op1a_{codec:?}.mov"));
         let ms = ExportSettings { format: codec.encoder_format(), multiplexer: Multiplexer::Mov, ..settings(Format::MxfOp1a, codec, &mov) };
         export(&p, seq, &ms, &m, &Progress::default()).unwrap();
-        let msrc = filmcraft_codecs::open_bytes("x.mov", std::fs::read(&mov).unwrap().into()).unwrap();
+        let msrc = filmagic_codecs::open_bytes("x.mov", std::fs::read(&mov).unwrap().into()).unwrap();
         for f in [0i64, 5, 13, 23, 7] {
             let t = FrameRate::FPS_24.tick_of(f) + Tick(1);
             let a = src.video_frame(FrameRequest::full(t)).unwrap().to_rgba8();
@@ -145,9 +145,9 @@ fn op1a_h264_high10_and_intra() {
         let s = ExportSettings { h264_profile: H264Profile::High10, h264_intra_only: intra, ..settings(Format::MxfOp1a, MxfVideoCodec::H264, &path) };
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
+        let mx = filmagic_mxf::open(&bytes).unwrap();
         assert!(mx.warnings.is_empty(), "{:?}", mx.warnings);
-        let v = &mx.tracks[mx.track_of_kind(filmcraft_mxf::TrackKind::Picture).unwrap()];
+        let v = &mx.tracks[mx.track_of_kind(filmagic_mxf::TrackKind::Picture).unwrap()];
         assert_eq!(v.samples.len(), 24);
         assert_eq!(v.samples.iter().all(|s| s.key), intra);
         let pic = v.picture.as_ref().unwrap();
@@ -155,7 +155,7 @@ fn op1a_h264_high10_and_intra() {
         // RP 2008 coding label: byte 13 0x31 long GOP (byte 14 0x50 = High 10), 0x32 intra
         let label = pic.picture_coding.map(|u| u.0).unwrap_or_default();
         assert_eq!((label[13], label[14]), if intra { (0x32, 0x20) } else { (0x31, 0x50) });
-        let (Some(ffprobe), Some(ffmpeg)) = (filmcraft_testkit::ffprobe_or_skip("MXF High 10 probe"), filmcraft_testkit::ffmpeg_or_skip("MXF High 10 decode"))
+        let (Some(ffprobe), Some(ffmpeg)) = (filmagic_testkit::ffprobe_or_skip("MXF High 10 probe"), filmagic_testkit::ffmpeg_or_skip("MXF High 10 decode"))
         else {
             continue;
         };
@@ -181,17 +181,17 @@ fn op_atom_writes_one_file_per_essence() {
     assert_eq!(r.extra_files, opatom_audio_paths(&path, 2));
     assert!(r.extra_files[0].ends_with("atom_A1.mxf") && r.extra_files[1].ends_with("atom_A2.mxf"));
     let v = std::fs::read(&path).unwrap();
-    let mv = filmcraft_mxf::open(&v).unwrap();
+    let mv = filmagic_mxf::open(&v).unwrap();
     assert_eq!(mv.operational_pattern.name(), "OP-Atom");
     assert_eq!(mv.tracks.len(), 1);
-    assert_eq!(mv.tracks[0].wrapping, filmcraft_mxf::Wrapping::Clip);
+    assert_eq!(mv.tracks[0].wrapping, filmagic_mxf::Wrapping::Clip);
     assert_eq!(mv.tracks[0].samples.len(), 24);
     for (k, a) in r.extra_files.iter().enumerate() {
         let b = std::fs::read(a).unwrap();
-        let ma = filmcraft_mxf::open(&b).unwrap();
+        let ma = filmagic_mxf::open(&b).unwrap();
         assert_eq!(ma.operational_pattern.name(), "OP-Atom");
         let t = &ma.tracks[0];
-        assert_eq!(t.kind, filmcraft_mxf::TrackKind::Sound);
+        assert_eq!(t.kind, filmagic_mxf::TrackKind::Sound);
         assert_eq!(t.track_id, 3 + k as u32);
         assert_eq!(t.sound.as_ref().unwrap().channels, 1);
         assert_eq!(t.stored_sample_frames(), 48_000);
@@ -226,7 +226,7 @@ fn mxf_formats_and_presets() {
 /// the PCM is sample-exact against what we wrote.
 #[test]
 fn ffmpeg_oracle_op1a_and_op_atom() {
-    let (Some(ffprobe), Some(ffmpeg)) = (filmcraft_testkit::ffprobe_or_skip("MXF export probe"), filmcraft_testkit::ffmpeg_or_skip("MXF export decode")) else {
+    let (Some(ffprobe), Some(ffmpeg)) = (filmagic_testkit::ffprobe_or_skip("MXF export probe"), filmagic_testkit::ffmpeg_or_skip("MXF export decode")) else {
         return;
     };
     let (p, seq, m) = project();
@@ -263,8 +263,8 @@ fn ffmpeg_oracle_op1a_and_op_atom() {
         // PCM exact: ffmpeg's samples are what our demuxer reads back
         let pcm = ffmpeg_raw(&ffmpeg, &path, "0:a:0", &["-f", "s32le", "-acodec", "pcm_s32le"]);
         let bytes = std::fs::read(&path).unwrap();
-        let mx = filmcraft_mxf::open(&bytes).unwrap();
-        let at = mx.track_of_kind(filmcraft_mxf::TrackKind::Sound).unwrap();
+        let mx = filmagic_mxf::open(&bytes).unwrap();
+        let at = mx.track_of_kind(filmagic_mxf::TrackKind::Sound).unwrap();
         let ours = mx.read_pcm(&bytes, at, 0, 48_000).unwrap();
         assert_eq!(pcm.len(), 48_000 * 2 * 4, "{codec:?}");
         for (i, c) in pcm.as_chunks::<4>().0.iter().enumerate() {

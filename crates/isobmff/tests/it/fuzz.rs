@@ -2,7 +2,7 @@
 
 use crate::common;
 
-use filmcraft_isobmff::*;
+use filmagic_isobmff::*;
 use std::io::Cursor;
 
 struct Rng(u64);

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use filmcraft_color::ColorInfo;
-use filmcraft_frame::{Region, VideoFrame};
+use filmagic_color::ColorInfo;
+use filmagic_frame::{Region, VideoFrame};
 
 use crate::CodecError;
 use crate::video::VideoDecoder;
@@ -130,7 +130,7 @@ pub trait VideoSamples: Sync {
 /// Rounded to the nearest unit (#73): muxers round frame times to the timescale (Matroska usually
 /// to 1 ms), so a stamp can sit up to half a unit after the true time, and flooring missed every
 /// frame stamped late.
-pub(crate) fn lookup_time(t: filmcraft_time::Tick, num: i64, den: i64, rate: filmcraft_time::FrameRate, snap: bool) -> i64 {
+pub(crate) fn lookup_time(t: filmagic_time::Tick, num: i64, den: i64, rate: filmagic_time::FrameRate, snap: bool) -> i64 {
     (if snap { rate.snap(t) } else { t }).to_rational_round(num, den)
 }
 
@@ -147,12 +147,12 @@ pub(crate) fn lookup_time(t: filmcraft_time::Tick, num: i64, den: i64, rate: fil
 /// is no constant rate. A variable-rate track with samples 2, 1, 2 units long at two units a frame
 /// has a stamp between two nominal frames, and snapping would move a request at it onto the
 /// frame before. Such a track keeps #73's lookup by the nearest unit.
-pub(crate) fn snap_coarse_units(stamps: impl IntoIterator<Item = i64>, num: i64, den: i64, rate: filmcraft_time::FrameRate) -> bool {
-    let unit = filmcraft_time::Tick::from_rational(1, num, den);
+pub(crate) fn snap_coarse_units(stamps: impl IntoIterator<Item = i64>, num: i64, den: i64, rate: filmagic_time::FrameRate) -> bool {
+    let unit = filmagic_time::Tick::from_rational(1, num, den);
     if unit.0.saturating_mul(2) < rate.frame_duration().0 {
         return false;
     }
-    stamps.into_iter().all(|p| lookup_time(rate.snap_nearest(filmcraft_time::Tick::from_rational(p, num, den)), num, den, rate, true) == p)
+    stamps.into_iter().all(|p| lookup_time(rate.snap_nearest(filmagic_time::Tick::from_rational(p, num, den)), num, den, rate, true) == p)
 }
 
 /// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
@@ -206,7 +206,7 @@ struct State {
     /// (not around the newest decoded picture). Walking a long GOP dumps pictures in decode
     /// order; a window around those would throw away the playhead frame and force another walk.
     pin: i64,
-    /// Only background requests (thumbnails, [`filmcraft_media::cancel::with_background`]) have
+    /// Only background requests (thumbnails, [`filmagic_media::cancel::with_background`]) have
     /// used the decoder since it was made: it is given up as soon as another background request
     /// is done, whatever the caches' recency.
     background: bool,
@@ -234,7 +234,7 @@ impl State {
             self.bytes = self.bytes.saturating_sub(f.byte_size());
             pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
-            filmcraft_frame::pool::recycle(f);
+            filmagic_frame::pool::recycle(f);
         }
     }
 
@@ -554,7 +554,7 @@ fn decode_pool() -> Option<&'static rayon::ThreadPool> {
 /// rayon worker would also run other jobs of its pool while it waits for the decode pool, some
 /// of them asking for a cache's lock while it holds this one: it waits on a plain thread instead.
 fn isolated<T: Send>(f: impl FnOnce() -> crate::Result<T> + Send) -> crate::Result<T> {
-    let ctx = filmcraft_media::cancel::Context::current();
+    let ctx = filmagic_media::cancel::Context::current();
     let job = move || ctx.run(f);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(pool) = decode_pool() {
@@ -640,7 +640,7 @@ impl GopCache {
     /// `f` with the container's colour, which costs nothing (raw frames carry it too).
     fn colored(&self, mut f: VideoFrame) -> VideoFrame {
         if let Some(c) = self.explicit_color
-            && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
+            && !matches!(f.data, filmagic_frame::PixelData::Rgba8(_) | filmagic_frame::PixelData::RgbaF32(_))
         {
             f.color = c;
         }
@@ -673,7 +673,7 @@ impl GopCache {
         }
         drop(st);
         // the raw planes serve the next decoded pictures once nothing else holds them
-        filmcraft_frame::pool::recycle(t.frame);
+        filmagic_frame::pool::recycle(t.frame);
         done
     }
 
@@ -699,7 +699,7 @@ impl GopCache {
         st.raw.remove(&pts);
         if let Some(old) = st.frames.insert(pts, f) {
             st.bytes -= old.byte_size();
-            filmcraft_frame::pool::recycle(old);
+            filmagic_frame::pool::recycle(old);
         }
         // Evict frames far from the request (pin), not the newest decode. A frame-threaded
         // decoder can emit a burst past the playhead; pivoting on those pts used to drop the
@@ -720,7 +720,7 @@ impl GopCache {
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
                 // its planes serve the next decoded pictures instead of going back to the allocator
-                filmcraft_frame::pool::recycle(v);
+                filmagic_frame::pool::recycle(v);
             }
         }
         let pool = &self.shared.pool;
@@ -756,7 +756,7 @@ impl GopCache {
     /// (no other picture depends on them, so the wanted frame decodes exactly as it would
     /// otherwise; a later request for a skipped frame re-seeks).
     ///
-    /// Inside [`filmcraft_media::cancel::with_draft`]`(true, …)` the decoder runs in draft mode
+    /// Inside [`filmagic_media::cancel::with_draft`]`(true, …)` the decoder runs in draft mode
     /// ([`VideoDecoder::set_draft`]); its draft frames are cached for draft requests only, and an
     /// exact request for one re-decodes it.
     pub fn frame_late(&self, s: &dyn VideoSamples, target: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
@@ -769,7 +769,7 @@ impl GopCache {
     /// thumbnail leaves the decoders of earlier thumbnails no reason to stay: each costs hundreds
     /// of MB at 4K.
     fn after_request(&self) {
-        if filmcraft_media::cancel::background() {
+        if filmagic_media::cancel::background() {
             drop(self.shared.pool.release_background(&self.shared));
         }
     }
@@ -797,7 +797,7 @@ impl GopCache {
         if DecodingGuard::active(me) {
             return Ok(Taken { pts: want_pts, frame: self.private_frame(s, i, want_pts, n)?, raw: false });
         }
-        let draft = filmcraft_media::cancel::draft();
+        let draft = filmagic_media::cancel::draft();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
         // after the guard on every return path: dropping a decoder can block (a hardware session
         // waits for its frames in flight) and must not hold this cache's lock.
@@ -806,7 +806,7 @@ impl GopCache {
         let _decoding = DecodingGuard::enter(me);
         st.last_used = Instant::now();
         st.pin = want_pts;
-        let background = filmcraft_media::cancel::background();
+        let background = filmagic_media::cancel::background();
         if let Some(frame) = st.cached(want_pts, draft).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
@@ -833,7 +833,7 @@ impl GopCache {
         released.extend(self.shared.pool.trim_decoders(&self.shared));
         // Nothing cached: the work ahead (possibly a seek and a GOP of decoding) is only worth it
         // while someone still wants the frame.
-        if filmcraft_media::cancel::cancelled() {
+        if filmagic_media::cancel::cancelled() {
             return Err(CodecError::Cancelled);
         }
         if st.intra {
@@ -883,7 +883,7 @@ impl GopCache {
         };
         decoder.set_draft(draft);
         while st.next < limit {
-            if filmcraft_media::cancel::cancelled() {
+            if filmagic_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
                 return Err(CodecError::Cancelled);
             }

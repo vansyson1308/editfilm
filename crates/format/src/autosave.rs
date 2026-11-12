@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn rotation_survives_the_clock_going_back_at_the_end_of_dst() {
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-dst-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-dst-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let t0 = 1_792_900_000;
         // 02:30 at +02:00, then 40 minutes later the clock reads 02:10 at +01:00.
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn repeated_wall_clock_hour_does_not_overwrite_earlier_saves() {
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-dst2-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-dst2-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let t0 = 1_792_900_000;
         // The same wall-clock second, one hour apart (+02:00 then +01:00).
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn same_second_preserves_both_saves() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("filmcraft-same-second-{}-{nonce}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-same-second-{}-{nonce}", std::process::id()));
         let timestamp = 1_790_000_000;
         let first = write_auto_save(&d, "Cut", timestamp, 0, b"first", 5).unwrap();
         let second = write_auto_save(&d, "Cut", timestamp, 0, b"second", 5).unwrap();
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn rotation_uses_next_collision_after_base_is_removed() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-collision-{}-{nonce}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-collision-{}-{nonce}", std::process::id()));
         let unix = 1_790_000_000;
         let base = write_auto_save(&d, "Cut", unix, 0, b"base", 1).unwrap();
         let first_collision = write_auto_save(&d, "Cut", unix, 0, b"first collision", 1).unwrap();
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn a_save_after_rotation_freed_a_lower_collision_is_kept_as_the_newest() {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-freed-collision-{}-{nonce}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-freed-collision-{}-{nonce}", std::process::id()));
         let unix = 1_790_000_000;
         for data in [&b"base"[..], b"first collision", b"second collision"] {
             write_auto_save(&d, "Cut", unix, 0, data, 1).unwrap();
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn noncanonical_collision_suffix_is_not_rotated() {
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-invalid-collision-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-invalid-collision-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         let invalid = d.join("Cut-2026-09-18_22-13-20-1790000000-collision-01.fcproj");
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn rotation_keeps_newest_and_ignores_other_files() {
-        let d = std::env::temp_dir().join(format!("filmcraft-rotate-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("filmagic-rotate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         for i in 0..7 {
             write_auto_save(&d, "Cut", 1_790_000_000 + i * 60, 0, b"{}", 5).unwrap();

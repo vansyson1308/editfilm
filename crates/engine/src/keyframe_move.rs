@@ -3,8 +3,8 @@
 //! itself is a UI concern.
 use std::collections::{BTreeMap, HashSet};
 
-use filmcraft_project::{ClipId, Keyframe, Param, Sequence, TrackItem};
-use filmcraft_time::Tick;
+use filmagic_project::{ClipId, Keyframe, Param, Sequence, TrackItem};
+use filmagic_time::Tick;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -134,7 +134,7 @@ pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use filmcraft_project::Interpolation;
+    use filmagic_project::Interpolation;
     use std::sync::Arc;
 
     fn fixture() -> (Session, Vec<Value>) {

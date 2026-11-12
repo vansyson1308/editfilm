@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <?ifndef HasCraftFontLicences ?>
+  <?define HasCraftFontLicences=0 ?>
+  <?endif?>
+  <Package Name="Filmagic" Manufacturer="Filmagic contributors" Version="$(var.Version)" UpgradeCode="157B9C89-7793-4AC6-9D22-E00F6A99D6FD" Scope="perUserOrMachine" Compressed="yes" Language="1033">
+    <SummaryInformation Description="Filmagic video editor" Manufacturer="Filmagic contributors" />
+    <?include $(sys.SOURCEFILEDIR)install-policy.wxi?>
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
+         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Filmagic is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="FilmagicIcon.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="FilmagicIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/vansyson1308/editfilm" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/vansyson1308/editfilm/releases" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/vansyson1308/editfilm/issues" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
+        <Directory Id="INSTALLFOLDER" Name="Filmagic" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="Filmagic" Level="1">
+      <?if $(var.HasCraftFontLicences) = 1 ?>
+      <ComponentGroupRef Id="CraftFontLicences" />
+      <?endif?>
+      <ComponentGroupRef Id="FilmagicFiles" />
+    </Feature>
+  <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <UI>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="NOT Installed" />
+    </UI>
+  </Package>
+
+  <Fragment>
+    <?if $(var.HasCraftFontLicences) = 1 ?>
+    <ComponentGroup Id="CraftFontLicences" Directory="INSTALLFOLDER">
+      <Files Include="$(var.DocsDir)\**" />
+    </ComponentGroup>
+    <?endif?>
+    <ComponentGroup Id="FilmagicFiles" Directory="INSTALLFOLDER">
+      <Component Id="FilmagicApp" Guid="B3F30924-7BE4-4129-978F-C0087CA64374">
+        <File Id="FilmagicNotice" Source="$(var.BinDir)\NOTICE" KeyPath="no" />
+        <File Id="FilmagicExe" Source="$(var.BinDir)\filmagic.exe" KeyPath="yes">
+          <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Filmagic" Description="Filmagic video editor" WorkingDirectory="INSTALLFOLDER" Advertise="yes" Icon="FilmagicIcon.ico" IconIndex="0" />
+        </File>
+
+        <RegistryValue Root="HKMU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\filmagic.exe" Value="[#FilmagicExe]" Type="string" />
+      <RegistryValue Root="HKMU" Key="Software\Filmagic" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" />
+      </Component>
+
+      <Component Id="FilmagicCli">
+        <File Id="FilmagicCliExe" Source="$(var.BinDir)\filmagic-cli.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

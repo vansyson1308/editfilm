@@ -2,7 +2,7 @@
 
 use crate::common;
 use common::*;
-use filmcraft_prores::{ChromaFormat, DecodeOptions, Encoder, Frame, Profile, decode_frame, decode_frame_with};
+use filmagic_prores::{ChromaFormat, DecodeOptions, Encoder, Frame, Profile, decode_frame, decode_frame_with};
 
 struct Content {
     name: &'static str,

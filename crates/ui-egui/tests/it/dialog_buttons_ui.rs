@@ -8,21 +8,21 @@ use std::time::{Duration, Instant};
 
 use egui::CursorIcon;
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_engine::autosave::AutosaveConfig;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use filmagic_engine::Session;
+use filmagic_engine::autosave::AutosaveConfig;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
 }
 
 impl Driver {
     fn new(session: Session) -> Self {
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
+        let app = FilmagicApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);

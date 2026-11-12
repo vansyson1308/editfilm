@@ -3,8 +3,8 @@
 //! - [`VideoDecoder`]: the trait every video codec implements (our own H.264/HEVC/VP9/ProRes/…, MJPEG, and
 //!   OS hardware decoders registered by the platform layer). Factories are tried in registration
 //!   order, so a hardware decoder can take precedence over the pure-Rust one.
-//! - [`Mp4Source`]: a [`MediaSource`](filmcraft_media::MediaSource) over MP4/MOV using
-//!   `filmcraft-isobmff`: GOP-aware random access (seek to the preceding sync sample and decode
+//! - [`Mp4Source`]: a [`MediaSource`](filmagic_media::MediaSource) over MP4/MOV using
+//!   `filmagic-isobmff`: GOP-aware random access (seek to the preceding sync sample and decode
 //!   forward, caching every decoded frame of the GOP), sequential fast path for playback, and
 //!   packet-cached audio decoding.
 //! - [`MkvSource`], [`MxfSource`] (OP1a / OP-Atom: AVC, MPEG-2 incl. D-10 / XDCAM, VC-3, ProRes,
@@ -59,19 +59,19 @@ pub enum CodecError {
     Decode(String),
     #[error("container: {0}")]
     Container(String),
-    /// The frame is no longer wanted (`filmcraft_media::cancel`).
+    /// The frame is no longer wanted (`filmagic_media::cancel`).
     #[error("cancelled")]
     Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, CodecError>;
 
-impl From<CodecError> for filmcraft_media::MediaError {
+impl From<CodecError> for filmagic_media::MediaError {
     fn from(e: CodecError) -> Self {
         match e {
-            CodecError::Unsupported(s) => filmcraft_media::MediaError::Unsupported(s),
-            CodecError::Cancelled => filmcraft_media::MediaError::Cancelled,
-            other => filmcraft_media::MediaError::Decode(other.to_string()),
+            CodecError::Unsupported(s) => filmagic_media::MediaError::Unsupported(s),
+            CodecError::Cancelled => filmagic_media::MediaError::Cancelled,
+            other => filmagic_media::MediaError::Decode(other.to_string()),
         }
     }
 }
@@ -110,7 +110,7 @@ pub fn video_decoder_registered(f: VideoDecoderFactory) -> bool {
 }
 
 /// Create a decoder for a sample entry.
-pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
+pub fn make_video_decoder(entry: &filmagic_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
     let g = factories().read().unwrap_or_else(|e| e.into_inner());
     for f in g.iter() {
         if let Some(r) = f(entry) {
@@ -122,7 +122,7 @@ pub fn make_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<
 
 /// Create one of our own (software) decoders for a sample entry, skipping registered factories:
 /// what a hardware decoder falls back to when it fails mid-stream.
-pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
+pub fn software_video_decoder(entry: &filmagic_isobmff::SampleEntry) -> Result<Box<dyn VideoDecoder>> {
     for f in BUILTIN_FACTORIES {
         if let Some(r) = f(entry) {
             return r;
@@ -134,21 +134,21 @@ pub fn software_video_decoder(entry: &filmcraft_isobmff::SampleEntry) -> Result<
 /// The codec a "no decoder" error names: the short codec name, or for a sample entry the parser
 /// keeps as `Unknown`, the label probe shows, so the message reads "no decoder for Apple
 /// Intermediate Codec video" rather than "no decoder for unknown video" (#3646).
-fn undecodable_codec(entry: &filmcraft_isobmff::SampleEntry) -> String {
+fn undecodable_codec(entry: &filmagic_isobmff::SampleEntry) -> String {
     match &entry.codec {
-        c @ filmcraft_isobmff::CodecConfig::Unknown { .. } => mp4::codec_label(c),
+        c @ filmagic_isobmff::CodecConfig::Unknown { .. } => mp4::codec_label(c),
         c => c.name().to_string(),
     }
 }
 
 /// Openers for the engine's media pool (MP4/MOV, Matroska/WebM, MXF, Ogg Opus/Vorbis, MPEG TS/PS and
 /// MPEG-1/2 video elementary streams, APV raw bitstreams, YUV4MPEG2, standalone audio).
-pub fn openers() -> Vec<filmcraft_media::Opener> {
+pub fn openers() -> Vec<filmagic_media::Opener> {
     vec![mp4::opener, mkv::opener, mxf::opener, ogg::opener, mpeg::opener, apv::opener, avi::opener, y4m::opener, audio::opener]
 }
 
-fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
-    static R: std::sync::OnceLock<RwLock<Vec<filmcraft_media::ReaderOpener>>> = std::sync::OnceLock::new();
+fn reader_registry() -> &'static RwLock<Vec<filmagic_media::ReaderOpener>> {
+    static R: std::sync::OnceLock<RwLock<Vec<filmagic_media::ReaderOpener>>> = std::sync::OnceLock::new();
     R.get_or_init(|| {
         RwLock::new(vec![
             mp4::reader_opener,
@@ -163,15 +163,15 @@ fn reader_registry() -> &'static RwLock<Vec<filmcraft_media::ReaderOpener>> {
     })
 }
 
-/// Openers that read containers through a [`filmcraft_media::ByteReader`] (index now, samples on
+/// Openers that read containers through a [`filmagic_media::ByteReader`] (index now, samples on
 /// demand) instead of the whole file, in the order they are tried.
-pub fn reader_openers() -> Vec<filmcraft_media::ReaderOpener> {
+pub fn reader_openers() -> Vec<filmagic_media::ReaderOpener> {
     reader_registry().read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Register a reader opener tried before the built-in ones (platform media sources such as the
 /// web app's WebCodecs-decoded MP4).
-pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
+pub fn register_reader_opener(f: filmagic_media::ReaderOpener) {
     let mut g = reader_registry().write().unwrap_or_else(|e| e.into_inner());
     if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
         g.insert(0, f);
@@ -181,9 +181,9 @@ pub fn register_reader_opener(f: filmcraft_media::ReaderOpener) {
 /// A media reader as the demuxers' byte source. The ISO BMFF and Matroska demuxers share one
 /// `ByteSource` trait (craft-media), so one impl serves both.
 #[derive(Clone)]
-pub(crate) struct Src(pub filmcraft_media::SharedReader);
+pub(crate) struct Src(pub filmagic_media::SharedReader);
 
-impl filmcraft_isobmff::ByteSource for Src {
+impl filmagic_isobmff::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
     }
@@ -192,7 +192,7 @@ impl filmcraft_isobmff::ByteSource for Src {
     }
 }
 
-impl filmcraft_avi::ByteSource for Src {
+impl filmagic_avi::ByteSource for Src {
     fn len(&self) -> u64 {
         self.0.len()
     }
@@ -202,8 +202,8 @@ impl filmcraft_avi::ByteSource for Src {
 }
 
 /// Convenience: an `Arc` media source from bytes (tries MP4/MOV then audio files).
-pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmcraft_media::SharedSource, filmcraft_media::MediaError> {
-    filmcraft_media::open_bytes(name, bytes, &openers())
+pub fn open_bytes(name: &str, bytes: Arc<[u8]>) -> std::result::Result<filmagic_media::SharedSource, filmagic_media::MediaError> {
+    filmagic_media::open_bytes(name, bytes, &openers())
 }
 
 #[cfg(test)]

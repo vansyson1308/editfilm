@@ -4,13 +4,13 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use filmagic_engine::Session;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
 }
 
@@ -19,7 +19,7 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
+        let app = FilmagicApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_step_dt(1.0 / 60.0).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
@@ -57,14 +57,14 @@ impl Driver {
         self.ok("ui.elements", json!({"prefix": id})).as_array().is_some_and(|v| v.iter().any(|e| e["id"] == id))
     }
 
-    fn marker(&self, id: u64) -> filmcraft_project::Marker {
+    fn marker(&self, id: u64) -> filmagic_project::Marker {
         self.harness.state().session.active_sequence().unwrap().markers.iter().find(|m| m.id.0 == id).unwrap().clone()
     }
 
     /// One new marker at 2 s (the demo has others), and the Timeline focused.
     fn setup(&mut self) -> u64 {
         self.ok("ui.set", json!({"focused": "Timeline"}));
-        let id = self.exec("markers.add", json!({"time": filmcraft_time::Tick::from_seconds_f64(2.0).0, "name": "First"}))["marker"].as_u64().unwrap();
+        let id = self.exec("markers.add", json!({"time": filmagic_time::Tick::from_seconds_f64(2.0).0, "name": "First"}))["marker"].as_u64().unwrap();
         self.frames(4);
         id
     }
@@ -120,7 +120,7 @@ fn ok_keeps_a_duration_that_was_not_edited() {
         let mut d = Driver::demo();
         let id = d.setup();
         let frame = d.harness.state().session.sequence_rate().tick_of(1).0;
-        let want = filmcraft_time::Tick(ticks(frame));
+        let want = filmagic_time::Tick(ticks(frame));
         d.harness
             .state_mut()
             .session

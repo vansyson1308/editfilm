@@ -1,4 +1,4 @@
-//! GPU-vs-CPU parity of the effect stage (`filmcraft_render::gpufx::FxOp::apply` is the
+//! GPU-vs-CPU parity of the effect stage (`filmagic_render::gpufx::FxOp::apply` is the
 //! reference).
 //!
 //! Tolerances:
@@ -13,12 +13,12 @@
 
 use super::blend_tests::{device, interior, ramp_layer, stats8, yuv_frame};
 use super::*;
-use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{EffectInstance, ParamValue, find_effect};
-use filmcraft_render::effects::FxCtx;
-use filmcraft_render::gpufx::FxOp;
-use filmcraft_render::plan::{LayerFx, execute_cpu};
-use filmcraft_time::Tick;
+use filmagic_geom::{Affine, Vec2};
+use filmagic_project::{EffectInstance, ParamValue, find_effect};
+use filmagic_render::effects::FxCtx;
+use filmagic_render::gpufx::FxOp;
+use filmagic_render::plan::{LayerFx, execute_cpu};
+use filmagic_time::Tick;
 
 const EXACT: f32 = 1e-4;
 const FLIPS: f64 = 0.01;
@@ -34,7 +34,7 @@ fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
         project: None,
         env: None,
         frame_rate: 24.0,
-        working: filmcraft_color::WorkingSpace::Rec709,
+        working: filmagic_color::WorkingSpace::Rec709,
     }
 }
 
@@ -78,8 +78,8 @@ fn picture(w: u32, h: u32) -> Vec<f32> {
                 2 => [fy, fy, fy],
                 3 => [1.6 * fy, 1.2 * fy, 0.3],
                 _ => {
-                    let rgb = filmcraft_color::hsl_to_rgb(fx, 0.25 + 0.75 * ((y % 5) as f32 / 4.0), 0.1 + 0.8 * fy);
-                    rgb.map(filmcraft_color::srgb_to_linear)
+                    let rgb = filmagic_color::hsl_to_rgb(fx, 0.25 + 0.75 * ((y % 5) as f32 / 4.0), 0.1 + 0.8 * fy);
+                    rgb.map(filmagic_color::srgb_to_linear)
                 }
             };
             let a = match y % 7 {
@@ -373,7 +373,7 @@ fn gpu_effects_match_cpu_exactly() {
 }
 
 /// The same on DX12 with FXC, wgpu's shader compiler when `dxcompiler.dll` is not shipped (as in
-/// FilmCraft's builds). FXC aborted on the effect stage ("internal error: compilation aborted
+/// Filmagic's builds). FXC aborted on the effect stage ("internal error: compilation aborted
 /// unexpectedly"), so every Windows device on DX12 rendered effects, previews and exports on the
 /// CPU. WARP stands in when there is no GPU.
 #[cfg(windows)]
@@ -406,7 +406,7 @@ fn effects_match_cpu_exactly(dev: &wgpu::Device, q: &wgpu::Queue) {
         let e = effect(id, &params);
         let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).unwrap_or_else(|| panic!("{id} has no GPU op"));
         assert!(op.gpu_ok(), "{id} {params:?}: not GPU-capable");
-        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        let mut cpu = filmagic_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
         let fx = LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] };
         let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
@@ -443,7 +443,7 @@ fn gpu_neutral_three_way_leaves_negative_and_hdr_values() {
     let e = effect("three_way_color", &[]);
     let op = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("three_way_color has a GPU op");
     assert!(op.is_identity_three_way());
-    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    let mut cpu = filmagic_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
     assert_eq!(cpu.px, px, "the CPU leaves a neutral corrector's input untouched");
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("effect image");
@@ -515,7 +515,7 @@ fn gpu_effect_chains_match_cpu() {
     for chain in chains {
         let ops: Vec<FxOp> = chain.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 1.0), w as usize, h as usize)).collect();
         assert!(ops.iter().all(FxOp::gpu_ok));
-        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        let mut cpu = filmagic_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         for op in &ops {
             op.apply(&mut cpu);
         }
@@ -550,7 +550,7 @@ fn keyframed_effects_follow_time() {
     for s in [0.0, 0.3, 0.75, 1.0] {
         let cx = cx(Tick::from_seconds_f64(s), 1.0);
         let ops: Vec<FxOp> = [&bc, &blur].iter().filter_map(|e| FxOp::eval(e, &cx, w as usize, h as usize)).collect();
-        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        let mut cpu = filmagic_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         for op in &ops {
             op.apply(&mut cpu);
         }
@@ -603,7 +603,7 @@ fn hostile_parameters_are_bounded() {
         }
         assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()), "{}: {op:?}", e.effect);
         // and the CPU reference copes
-        let mut img = filmcraft_render::Image::filled(w, h, [0.3, 0.2, 0.1, 1.0]);
+        let mut img = filmagic_render::Image::filled(w, h, [0.3, 0.2, 0.1, 1.0]);
         if let Some(op) = op {
             op.apply(&mut img);
         }
@@ -693,7 +693,7 @@ fn lumetri_unsupported_sections_fall_back() {
     // HDR working space
     let e = effect("lumetri", &[]);
     let mut cx_hdr = cx(Tick::ZERO, 1.0);
-    cx_hdr.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+    cx_hdr.working = filmagic_color::WorkingSpace::Rec2100Pq;
     let op = FxOp::eval(&e, &cx_hdr, w, h);
     assert!(op.as_ref().is_some_and(|o| !o.gpu_ok()));
 }
@@ -867,7 +867,7 @@ fn alpha_invert_does_not_amplify_invented_opacity_at_odd_source_pixels() {
     let px = picture(w, h);
     let frame = VideoFrame::rgba_f32(w, h, px.clone());
     let op = FxOp::Invert { channel: 4, blend: 0.2 };
-    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    let mut cpu = filmagic_render::Image { w: w as usize, h: h as usize, px: px.clone() };
     op.apply(&mut cpu);
     let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, turns: 0, ops: vec![op] }).expect("alpha invert image");
     assert_eq!(gpu.len(), px.len());
@@ -899,7 +899,7 @@ fn effect_source_quarter_turns_match_the_cpu() {
                 let (dw, dh) = ((w / n) as usize, (h / n) as usize);
                 let size = if turns % 2 == 1 { (dh as u32, dw as u32) } else { (dw as u32, dh as u32) };
                 let fx = LayerFx { size, decimation: n, turns, ops: Vec::new() };
-                let cpu = filmcraft_render::plan::effect_image(&frame, &fx);
+                let cpu = filmagic_render::plan::effect_image(&frame, &fx);
                 let (gw, gh, gpu) = c.effect_image(&frame, &fx).expect("turned source image");
                 assert_eq!((gw as usize, gh as usize, gpu.len()), (cpu.w, cpu.h, cpu.px.len()));
                 let (worst, flips) = compare(&cpu.px, &gpu);

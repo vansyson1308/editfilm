@@ -8,60 +8,60 @@ version = "0.20.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-repository = "https://github.com/storytold/filmcraft"
+repository = "https://github.com/vansyson1308/editfilm"
 
 [workspace.dependencies]
 # internal
-filmcraft-time = { path = "crates/time" }
-filmcraft-geom = { path = "crates/geom" }
-filmcraft-color = { path = "crates/color" }
-filmcraft-bitstream = { path = "crates/bitstream" }
-filmcraft-isobmff = { path = "crates/isobmff" }
-filmcraft-avi = { path = "crates/avi" }
-filmcraft-matroska = { path = "crates/matroska" }
-filmcraft-mxf = { path = "crates/mxf" }
-filmcraft-cfb = { path = "crates/cfb" }
-filmcraft-mpegts = { path = "crates/mpegts" }
-filmcraft-mpeg2v = { path = "crates/mpeg2v" }
-filmcraft-ac3 = { path = "crates/ac3" }
-filmcraft-mpa = { path = "crates/mpa" }
-filmcraft-ogg = { path = "crates/ogg" }
-filmcraft-h264 = { path = "crates/h264" }
-filmcraft-hevc = { path = "crates/hevc" }
-filmcraft-vp8 = { path = "crates/vp8" }
-filmcraft-vp9 = { path = "crates/vp9" }
-filmcraft-prores = { path = "crates/prores" }
-filmcraft-dnx = { path = "crates/dnx" }
-filmcraft-apv = { path = "crates/apv" }
-filmcraft-dng = { path = "crates/dng" }
-filmcraft-av1 = { path = "crates/av1" }
-filmcraft-aac = { path = "crates/aac" }
-filmcraft-mp3enc = { path = "crates/mp3enc" }
-filmcraft-flac = { path = "crates/flac" }
-filmcraft-opus = { path = "crates/opus" }
-filmcraft-h264enc = { path = "crates/h264enc" }
-filmcraft-audio-dsp = { path = "crates/audio-dsp" }
-filmcraft-frame = { path = "crates/frame" }
-filmcraft-media = { path = "crates/media" }
-filmcraft-codecs = { path = "crates/codecs" }
-filmcraft-project = { path = "crates/project" }
-filmcraft-edit = { path = "crates/edit" }
-filmcraft-interchange = { path = "crates/interchange" }
-filmcraft-text = { path = "crates/text" }
-filmcraft-captions = { path = "crates/captions" }
-filmcraft-speech = { path = "crates/speech" }
-filmcraft-tts = { path = "crates/tts" }
-filmcraft-tts-text = { path = "crates/tts-text" }
-filmcraft-render = { path = "crates/render" }
-filmcraft-gpu = { path = "crates/gpu" }
-filmcraft-scopes = { path = "crates/scopes" }
-filmcraft-export = { path = "crates/export" }
-filmcraft-format = { path = "crates/format" }
-filmcraft-engine = { path = "crates/engine" }
-filmcraft-ui-egui = { path = "crates/ui-egui" }
-filmcraft-automation = { path = "crates/automation" }
-filmcraft-platform = { path = "crates/platform" }
-filmcraft-testkit = { path = "crates/testkit" }
+filmagic-time = { path = "crates/time" }
+filmagic-geom = { path = "crates/geom" }
+filmagic-color = { path = "crates/color" }
+filmagic-bitstream = { path = "crates/bitstream" }
+filmagic-isobmff = { path = "crates/isobmff" }
+filmagic-avi = { path = "crates/avi" }
+filmagic-matroska = { path = "crates/matroska" }
+filmagic-mxf = { path = "crates/mxf" }
+filmagic-cfb = { path = "crates/cfb" }
+filmagic-mpegts = { path = "crates/mpegts" }
+filmagic-mpeg2v = { path = "crates/mpeg2v" }
+filmagic-ac3 = { path = "crates/ac3" }
+filmagic-mpa = { path = "crates/mpa" }
+filmagic-ogg = { path = "crates/ogg" }
+filmagic-h264 = { path = "crates/h264" }
+filmagic-hevc = { path = "crates/hevc" }
+filmagic-vp8 = { path = "crates/vp8" }
+filmagic-vp9 = { path = "crates/vp9" }
+filmagic-prores = { path = "crates/prores" }
+filmagic-dnx = { path = "crates/dnx" }
+filmagic-apv = { path = "crates/apv" }
+filmagic-dng = { path = "crates/dng" }
+filmagic-av1 = { path = "crates/av1" }
+filmagic-aac = { path = "crates/aac" }
+filmagic-mp3enc = { path = "crates/mp3enc" }
+filmagic-flac = { path = "crates/flac" }
+filmagic-opus = { path = "crates/opus" }
+filmagic-h264enc = { path = "crates/h264enc" }
+filmagic-audio-dsp = { path = "crates/audio-dsp" }
+filmagic-frame = { path = "crates/frame" }
+filmagic-media = { path = "crates/media" }
+filmagic-codecs = { path = "crates/codecs" }
+filmagic-project = { path = "crates/project" }
+filmagic-edit = { path = "crates/edit" }
+filmagic-interchange = { path = "crates/interchange" }
+filmagic-text = { path = "crates/text" }
+filmagic-captions = { path = "crates/captions" }
+filmagic-speech = { path = "crates/speech" }
+filmagic-tts = { path = "crates/tts" }
+filmagic-tts-text = { path = "crates/tts-text" }
+filmagic-render = { path = "crates/render" }
+filmagic-gpu = { path = "crates/gpu" }
+filmagic-scopes = { path = "crates/scopes" }
+filmagic-export = { path = "crates/export" }
+filmagic-format = { path = "crates/format" }
+filmagic-engine = { path = "crates/engine" }
+filmagic-ui-egui = { path = "crates/ui-egui" }
+filmagic-automation = { path = "crates/automation" }
+filmagic-platform = { path = "crates/platform" }
+filmagic-testkit = { path = "crates/testkit" }
 
 # foundation
 thiserror = "2"
@@ -81,7 +81,7 @@ craft-media = { version = "0.1.0", git = "https://github.com/storytold/craft-lib
 # Shared frontend components; keep this dependency above the engine boundary.
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "1b34eba41e62138fc2438d2734523b302840b45d", features = ["serde", "native-windows"] }
 # egui 0.37: bundled fonts are opt-in, and the monochrome symbol/emoji faces moved to their own
-# feature. FilmCraft paints ✔ ✓ ✖ ⚡ ⚠ ⚙ ♪ ☑ in panel chrome, so both features are part of the
+# feature. Filmagic paints ✔ ✓ ✖ ⚡ ⚠ ⚙ ♪ ☑ in panel chrome, so both features are part of the
 # production font policy (system_fonts stays off).
 egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
 # Resizable table columns (About ▸ Contributors / Models); no image loaders.
@@ -115,53 +115,53 @@ opt-level = 1
 debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
-[profile.dev.package.filmcraft-h264]
+[profile.dev.package.filmagic-h264]
 opt-level = 3
 
-[profile.dev.package.filmcraft-h264enc]
+[profile.dev.package.filmagic-h264enc]
 opt-level = 3
 
-[profile.dev.package.filmcraft-hevc]
+[profile.dev.package.filmagic-hevc]
 opt-level = 3
 
-[profile.dev.package.filmcraft-prores]
+[profile.dev.package.filmagic-prores]
 opt-level = 3
 
-[profile.dev.package.filmcraft-dnx]
+[profile.dev.package.filmagic-dnx]
 opt-level = 3
 
-[profile.dev.package.filmcraft-apv]
+[profile.dev.package.filmagic-apv]
 opt-level = 3
 
-[profile.dev.package.filmcraft-dng]
+[profile.dev.package.filmagic-dng]
 opt-level = 3
 
-[profile.dev.package.filmcraft-av1]
+[profile.dev.package.filmagic-av1]
 opt-level = 3
 
-[profile.dev.package.filmcraft-aac]
+[profile.dev.package.filmagic-aac]
 opt-level = 3
 
-[profile.dev.package.filmcraft-mp3enc]
+[profile.dev.package.filmagic-mp3enc]
 opt-level = 3
 
-[profile.dev.package.filmcraft-flac]
+[profile.dev.package.filmagic-flac]
 opt-level = 3
 
 # Audio effects: realtime-factor tests and long convolution / spectral runs.
-[profile.dev.package.filmcraft-audio-dsp]
+[profile.dev.package.filmagic-audio-dsp]
 opt-level = 3
 
-[profile.dev.package.filmcraft-mxf]
+[profile.dev.package.filmagic-mxf]
 opt-level = 3
 
-[profile.dev.package.filmcraft-opus]
+[profile.dev.package.filmagic-opus]
 opt-level = 3
 
-[profile.dev.package.filmcraft-vp8]
+[profile.dev.package.filmagic-vp8]
 opt-level = 3
 
-[profile.dev.package.filmcraft-vp9]
+[profile.dev.package.filmagic-vp9]
 opt-level = 3
 
 [profile.release]

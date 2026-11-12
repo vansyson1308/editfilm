@@ -67,7 +67,7 @@ pub enum Format {
     #[serde(rename = "aac", alias = "Aac")]
     Aac,
     /// MP3: the mix alone, MPEG-1 (or, at 16-24 kHz, MPEG-2) Audio Layer III at a constant bit
-    /// rate in a plain `.mp3` stream, from our own encoder (`filmcraft-mp3enc`).
+    /// rate in a plain `.mp3` stream, from our own encoder (`filmagic-mp3enc`).
     #[serde(rename = "mp3", alias = "Mp3")]
     Mp3,
     /// FLAC (RFC 9639): lossless compressed audio.
@@ -254,7 +254,7 @@ pub enum H264Pass {
     #[default]
     Single,
     First,
-    Second(filmcraft_h264enc::PassStats),
+    Second(filmagic_h264enc::PassStats),
 }
 
 /// Every Export-mode setting. Serialized in camelCase; every field is optional on input.
@@ -351,7 +351,7 @@ pub struct ExportSettings {
     pub adaptive_bitrate: Option<f32>,
     /// Frames between keyframes (None = 2 seconds).
     pub keyframe_distance: Option<u32>,
-    /// Render at Maximum Depth. FilmCraft always composites in 32-bit float, so this changes
+    /// Render at Maximum Depth. Filmagic always composites in 32-bit float, so this changes
     /// nothing; it is kept so presets round-trip.
     pub render_at_max_depth: bool,
     /// Use Maximum Render Quality: render at full size and scale with an area filter.
@@ -411,9 +411,9 @@ impl ColorSignal {
         if let Some(v) = e.video.as_mut() {
             let (p, t, m) = (self.primaries as u16, self.transfer as u16, self.matrix as u16);
             v.color = Some(if mov {
-                filmcraft_isobmff::ColorInfo::Nclc { primaries: p, transfer: t, matrix: m }
+                filmagic_isobmff::ColorInfo::Nclc { primaries: p, transfer: t, matrix: m }
             } else {
-                filmcraft_isobmff::ColorInfo::Nclx { primaries: p, transfer: t, matrix: m, full_range: false }
+                filmagic_isobmff::ColorInfo::Nclx { primaries: p, transfer: t, matrix: m, full_range: false }
             });
             if let Some((md, cll)) = self.static_metadata() {
                 v.mastering_display = Some(md);
@@ -424,8 +424,8 @@ impl ColorSignal {
     /// HDR10 static metadata of a PQ signal: the mastering display (BT.2020/D65, 1000 / 0.0001 cd/m²)
     /// and (MaxCLL, MaxFALL) = (0, 0), unknown. `None` for HLG and SDR. The one definition of these
     /// values: the `mdcv` / `clli` boxes and the SEI messages of every encoder come from here.
-    pub fn static_metadata(&self) -> Option<(filmcraft_isobmff::MasteringDisplay, (u16, u16))> {
-        (self.transfer == 16).then(|| (filmcraft_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001), (0, 0)))
+    pub fn static_metadata(&self) -> Option<(filmagic_isobmff::MasteringDisplay, (u16, u16))> {
+        (self.transfer == 16).then(|| (filmagic_isobmff::MasteringDisplay::bt2020(1000.0, 0.0001), (0, 0)))
     }
 }
 
@@ -535,7 +535,7 @@ impl ExportSettings {
             return Err(ExportError::Unsupported("output scale must be finite and positive".into()));
         }
         if let Some((width, height)) = self.frame_size {
-            filmcraft_project::validate_frame_size(width, height).map_err(ExportError::Unsupported)?;
+            filmagic_project::validate_frame_size(width, height).map_err(ExportError::Unsupported)?;
         }
         if let Some(rate) = self.frame_rate
             && (rate.num <= 0
@@ -543,13 +543,13 @@ impl ExportSettings {
                 || rate.as_f64() > 1000.0
                 || rate.num > i64::from(u32::MAX)
                 || rate.den > i64::from(u32::MAX)
-                || (i128::from(filmcraft_time::TICKS_PER_SECOND) * i128::from(rate.den) / i128::from(rate.num.max(1))) > i128::from(Tick::MAX.0))
+                || (i128::from(filmagic_time::TICKS_PER_SECOND) * i128::from(rate.den) / i128::from(rate.num.max(1))) > i128::from(Tick::MAX.0))
         {
             return Err(ExportError::Unsupported("output frame rate must be positive and at most 1000 fps".into()));
         }
         self.validate_audio_settings()?;
         if self.field_order != FieldOrder::Progressive && self.has_video() {
-            return Err(ExportError::Unsupported(format!("{} field order: FilmCraft's encoders write progressive frames", self.field_order.label())));
+            return Err(ExportError::Unsupported(format!("{} field order: Filmagic's encoders write progressive frames", self.field_order.label())));
         }
         if self.effects.image_overlay.enabled && self.effects.image_overlay.path.trim().is_empty() {
             return Err(ExportError::Unsupported("image overlay: no image file chosen".into()));

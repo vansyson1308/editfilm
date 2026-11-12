@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-mp3enc"
+name = "filmagic-mp3enc"
 description = "Clean-room MPEG-1/2 Audio Layer III (MP3) encoder"
 version.workspace = true
 edition.workspace = true
@@ -10,8 +10,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-filmcraft-bitstream = { workspace = true }
+filmagic-bitstream = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-filmcraft-testkit = { workspace = true }
+filmagic-testkit = { workspace = true }

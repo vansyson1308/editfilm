@@ -1,4 +1,4 @@
-//! Real-time audio DSP for FilmCraft (layer L1, dependency-free, `wasm32` clean).
+//! Real-time audio DSP for Filmagic (layer L1, dependency-free, `wasm32` clean).
 //!
 //! * [`loudness`] — ITU-R BS.1770-4 / EBU R128 loudness meter (momentary, short-term,
 //!   integrated, loudness range, sample peak, true peak) and the loudness-normalisation helper.
@@ -18,7 +18,7 @@
 //! denormals never appear (no FTZ/DAZ CPU flags needed, which keeps the crate `unsafe`-free and
 //! portable to wasm).
 //!
-//! **Stability.** This crate is internal to the FilmCraft workspace (layer L1) and is not
+//! **Stability.** This crate is internal to the Filmagic workspace (layer L1) and is not
 //! published. Its public surface exists for the other workspace crates only and may change
 //! without notice or a deprecation period; there is no supported use from outside the workspace.
 

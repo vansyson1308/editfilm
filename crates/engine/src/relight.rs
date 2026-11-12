@@ -14,9 +14,9 @@
 //! and exposure; it does not know the shapes in the scene, so it casts no new shadows and lights no
 //! windows. For those, the picture has to be shot or painted that way.
 
-use filmcraft_geom::Vec2;
-use filmcraft_project::{ClipId, EffectInstance, Param, ParamValue, TrackItem, TrackKind};
-use filmcraft_time::Tick;
+use filmagic_geom::Vec2;
+use filmagic_project::{ClipId, EffectInstance, Param, ParamValue, TrackItem, TrackKind};
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, bad, clip_p, has_seq};
@@ -246,7 +246,7 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
     if tr.locked {
         return Err(bad(CMD, format!("track {} is locked", tr.name)));
     }
-    let size = filmcraft_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(CMD, "the clip has no picture"))?;
+    let size = filmagic_render::source_size(&s.project, it.item).filter(|(w, h)| *w > 0 && *h > 0).ok_or_else(|| bad(CMD, "the clip has no picture"))?;
     let has = |id: &str| it.effects.iter().any(|e| whole(e, id));
     let (need_grade, need_light) = (!has("lumetri"), !has("lighting_effects") && ask.light_strength > 0.0);
     // What is already on the clip and is about to be written over: said, not done in silence.
@@ -282,7 +282,7 @@ fn relight(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
         s.edit_sequence("Relight", |q, _, _| {
-            let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+            let (_, it) = q.find_item_mut(clip).ok_or(filmagic_edit::EditError::NoItem(clip))?;
             Ok(apply(it, size, &ask))
         })
     })?;

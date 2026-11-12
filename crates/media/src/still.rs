@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-use filmcraft_frame::VideoFrame;
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
+use filmagic_frame::VideoFrame;
+use filmagic_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use image::ImageDecoder;
 use image::metadata::Orientation;
 
@@ -126,7 +126,7 @@ impl StillSource {
                 par: (1, 1),
                 codec,
                 pixel_format: if has_alpha { "RGBA 8-bit".into() } else { "RGB 8-bit".into() },
-                color: filmcraft_color::ColorInfo::SRGB_FULL,
+                color: filmagic_color::ColorInfo::SRGB_FULL,
                 has_alpha,
                 bitrate: None,
                 hdr: None,
@@ -148,7 +148,7 @@ impl MediaSource for StillSource {
     fn video_frame(&self, _req: FrameRequest) -> Result<Arc<VideoFrame>> {
         Ok(self.frame.clone())
     }
-    fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<filmcraft_frame::AudioBuffer> {
+    fn audio(&self, _start: i64, _frames: usize, _sample_rate: u32) -> Result<filmagic_frame::AudioBuffer> {
         Err(MediaError::NoStream("audio"))
     }
 }

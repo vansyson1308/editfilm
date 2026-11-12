@@ -1,4 +1,4 @@
-//! MP3: the sequence mix alone, encoded by our MPEG Audio Layer III encoder (`filmcraft-mp3enc`)
+//! MP3: the sequence mix alone, encoded by our MPEG Audio Layer III encoder (`filmagic-mp3enc`)
 //! at a constant bit rate into a plain `.mp3` stream of frames. MP3 carries 16-48 kHz, mono or
 //! stereo: [`ExportSettings::mp3_stream`] maps the audio settings onto what it can carry. The
 //! stream has no gapless (Xing / LAME) tag, so a player starts it with the encoder delay.
@@ -7,9 +7,9 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use filmcraft_project::{ItemId, Project};
-use filmcraft_render::SourceProvider;
-use filmcraft_time::TimeRange;
+use filmagic_project::{ItemId, Project};
+use filmagic_render::SourceProvider;
+use filmagic_time::TimeRange;
 
 use crate::audio_out::AudioOut;
 use crate::{ExportError, ExportSettings, Out, Progress, Result};
@@ -30,8 +30,8 @@ pub(crate) fn export(
     s.audio.sample_rate = Some(rate);
     s.audio.channels = channels;
     let mut a = AudioOut::new(project.clone(), seq, &s, range)?;
-    let cfg = filmcraft_mp3enc::Config::cbr(a.sr, a.channels, kbps);
-    let mut enc = filmcraft_mp3enc::Encoder::new(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+    let cfg = filmagic_mp3enc::Config::cbr(a.sr, a.channels, kbps);
+    let mut enc = filmagic_mp3enc::Encoder::new(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
     let frames = a.remaining();
     // one second per chunk: memory stays flat however long the range is
     let chunk = i64::from(a.sr.max(1));

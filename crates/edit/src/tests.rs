@@ -1,6 +1,6 @@
 use super::*;
-use filmcraft_project::{Caption, CaptionFormat, CaptionTrack, Label, Project, SequenceSettings, TrackKind};
-use filmcraft_time::FrameRate;
+use filmagic_project::{Caption, CaptionFormat, CaptionTrack, Label, Project, SequenceSettings, TrackKind};
+use filmagic_time::FrameRate;
 use proptest::prelude::*;
 
 const R: FrameRate = FrameRate::FPS_24;
@@ -648,7 +648,7 @@ fn ripple_trim_group_takes_a_split_edit_along() {
     }
     fx.seq.track_mut(a1).unwrap().transitions = vec![Transition {
         id: TransitionId(1),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(4),
         duration: f(4),
         from: Some(stays),
@@ -708,7 +708,7 @@ fn transitions_stay_on_their_cuts() {
     let c = fx.put(v1, 20, 10, 10);
     let cross = |id, start, from, to| Transition {
         id: TransitionId(id),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(start),
         duration: f(4),
         from,
@@ -753,7 +753,7 @@ fn fades_follow_a_regular_trim() {
     let a = fx.put(v1, 10, 20, 10);
     let fade = |id, start, from, to| Transition {
         id: TransitionId(id),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(start),
         duration: f(6),
         from,
@@ -782,7 +782,7 @@ fn fades_follow_a_non_ripple_speed_change() {
     let a = fx.put(v1, 0, 100, 0);
     fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
         id: TransitionId(1),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(90),
         duration: f(10),
         from: Some(a),
@@ -809,12 +809,12 @@ fn a_transition_stays_within_its_clips_after_a_regular_trim_or_speed_change() {
         let b = fx.put(v1, 10, 10, 10);
         fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
             id: TransitionId(1),
-            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
             start: f(8),
             duration: f(4),
             from: Some(a),
             to: Some(b),
-            align: filmcraft_project::TransitionAlign::EndAtCut,
+            align: filmagic_project::TransitionAlign::EndAtCut,
             reverse: false,
         }];
         let mut n = fx.next;
@@ -829,7 +829,7 @@ fn a_transition_stays_within_its_clips_after_a_regular_trim_or_speed_change() {
         }
         let tr = &fx.seq.track(v1).unwrap().transitions[0];
         assert_eq!((tr.start, tr.duration), (f(expected), f(4)), "{case}");
-        assert_eq!(tr.align, filmcraft_project::TransitionAlign::CenterAtCut, "{case}");
+        assert_eq!(tr.align, filmagic_project::TransitionAlign::CenterAtCut, "{case}");
         fx.seq.check().unwrap();
     }
 }
@@ -844,12 +844,12 @@ fn a_regular_trim_shortens_a_transition_longer_than_its_clips() {
     let b = fx.put(v1, 2, 10, 10);
     fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
         id: TransitionId(1),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(0),
         duration: f(4),
         from: Some(a),
         to: Some(b),
-        align: filmcraft_project::TransitionAlign::StartAtCut,
+        align: filmagic_project::TransitionAlign::StartAtCut,
         reverse: false,
     }];
     let mut n = fx.next;
@@ -857,7 +857,7 @@ fn a_regular_trim_shortens_a_transition_longer_than_its_clips() {
     assert_eq!(fx.spans(v1), vec![(0, 2), (2, 1)]);
     let tr = &fx.seq.track(v1).unwrap().transitions[0];
     assert_eq!((tr.start, tr.duration), (f(0), f(3)), "the transition covers both clips and no more");
-    assert_eq!(tr.align, filmcraft_project::TransitionAlign::CenterAtCut);
+    assert_eq!(tr.align, filmagic_project::TransitionAlign::CenterAtCut);
     fx.seq.check().unwrap();
 }
 
@@ -871,7 +871,7 @@ fn orphan_transitions_are_ones_whose_clips_are_gone_or_apart() {
     let c = fx.put(v1, 25, 10, 0);
     let tr = |id, from, to| Transition {
         id: TransitionId(id),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(8),
         duration: f(4),
         from,
@@ -901,7 +901,7 @@ fn transitions_travel_with_moved_clips() {
     let c = fx.put(v1, 20, 10, 10);
     let tr = |id, start, from, to| Transition {
         id: TransitionId(id),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(start),
         duration: f(4),
         from,
@@ -1243,7 +1243,7 @@ fn roll_keeps_the_transition_on_its_clips() {
     let b = fx.put(v1, 10, 10, 10);
     fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
         id: TransitionId(1),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(8),
         duration: f(4),
         from: Some(a),
@@ -1278,7 +1278,7 @@ fn edits_that_move_a_cut_keep_its_transition_on_its_clips() {
         fx.put(v1, 20, 10, 10);
         fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
             id: TransitionId(1),
-            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
             start: f(6),
             duration: f(4),
             from: Some(a),
@@ -1312,7 +1312,7 @@ fn a_ripple_trim_of_the_second_clips_end_keeps_the_transition_within_it() {
     let b = fx.put(v1, 10, 10, 10);
     fx.seq.track_mut(v1).unwrap().transitions = vec![Transition {
         id: TransitionId(1),
-        effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+        effect: filmagic_project::find_effect("cross_dissolve").unwrap().instance(),
         start: f(8),
         duration: f(4),
         from: Some(a),
@@ -1368,7 +1368,7 @@ fn moving_an_edge_keeps_the_media_under_the_timeline() {
 
 #[test]
 fn trim_caption_shorter_than_min_duration_does_not_cross_bounds() {
-    use filmcraft_project::{Caption, CaptionFormat, CaptionTrack};
+    use filmagic_project::{Caption, CaptionFormat, CaptionTrack};
     for edge in [Edge::In, Edge::Out] {
         let mut fx = Fx::new();
         let tid = TrackId(900);

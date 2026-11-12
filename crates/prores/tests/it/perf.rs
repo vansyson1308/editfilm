@@ -1,8 +1,8 @@
 //! Decode/encode throughput. Run with
-//! `cargo test --release -p filmcraft-prores --test it perf:: -- --ignored --nocapture`.
+//! `cargo test --release -p filmagic-prores --test it perf:: -- --ignored --nocapture`.
 
 use crate::common;
-use filmcraft_prores::*;
+use filmagic_prores::*;
 use std::time::Instant;
 
 /// A 1080p frame whose HQ encoding uses the full nominal rate (detailed, noisy content).

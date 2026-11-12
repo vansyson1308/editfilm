@@ -1,6 +1,6 @@
-use super::{FilmcraftApp, ImeComposition, PanelKind, ime_reset, panels};
+use super::{FilmagicApp, ImeComposition, PanelKind, ime_reset, panels};
 
-impl FilmcraftApp {
+impl FilmagicApp {
     /// Start a new replacement epoch for the Program monitor's text edit target.
     ///
     /// The owner key names the sequence, clip and component. A recreated edit session on the

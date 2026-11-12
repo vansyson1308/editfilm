@@ -2,7 +2,7 @@
 //! every command that says so really reads those keys. A command that documented `clips` but read
 //! only the selection would pass the enabled check and then act on nothing.
 
-use filmcraft_project::{ClipId, ItemId};
+use filmagic_project::{ClipId, ItemId};
 use serde_json::{Value, json};
 
 use crate::commands::{NamedKeys, command_specs};

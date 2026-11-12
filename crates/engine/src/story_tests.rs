@@ -1,7 +1,7 @@
 //! `story.*`: cutting rhythm, cut analysis, blink points, the board, split edits, shadow cuts.
 
-use filmcraft_project::ClipId;
-use filmcraft_time::Tick;
+use filmagic_project::ClipId;
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -22,8 +22,8 @@ fn demo() -> Session {
     let id = s.state.active_sequence.unwrap();
     let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
     let motion = q.video_tracks[1].items[0].effects.iter_mut().find(|e| e.effect == "motion").unwrap();
-    motion.params.get_mut("scale").unwrap().value = filmcraft_project::ParamValue::Float(100.0);
-    motion.params.get_mut("position").unwrap().value = filmcraft_project::ParamValue::Vec2(filmcraft_geom::Vec2::new(960.0, 540.0));
+    motion.params.get_mut("scale").unwrap().value = filmagic_project::ParamValue::Float(100.0);
+    motion.params.get_mut("position").unwrap().value = filmagic_project::ParamValue::Vec2(filmagic_geom::Vec2::new(960.0, 540.0));
     s
 }
 
@@ -57,7 +57,7 @@ fn what_shows_part_of_a_picture_rides_on_the_shot_under_it() {
     let path = dir.join("logo.png");
     let mut px = vec![0u8; 64 * 36 * 4];
     px[..64 * 4 * 6].fill(255);
-    std::fs::write(&path, filmcraft_export::encode_png(px, 64, 36).unwrap()).unwrap();
+    std::fs::write(&path, filmagic_export::encode_png(px, 64, 36).unwrap()).unwrap();
     let logo = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
     let placed = s.execute("timeline.place", json!({"item": logo, "track": "new", "seconds": 0.0, "duration": end.0})).unwrap()["clips"][0].as_u64().unwrap();
     s.execute("effects.setParam", json!({"clip": placed, "effect": "motion", "param": "scale", "value": 3000.0})).unwrap();
@@ -413,7 +413,7 @@ fn phrases_wav(dir: &std::path::Path, phrases: &[(f64, f64)]) -> String {
         }
     }
     let path = dir.join("lines.wav");
-    std::fs::write(&path, filmcraft_media::wav::write_wav16(&samples, 1, rate)).unwrap();
+    std::fs::write(&path, filmagic_media::wav::write_wav16(&samples, 1, rate)).unwrap();
     path.to_string_lossy().into_owned()
 }
 
@@ -733,7 +733,7 @@ fn a_shadow_cut_is_kept_aside_and_compared() {
     let shadow = r["sequence"].as_u64().unwrap();
     assert_eq!(r["name"], "Main Edit (shadow cut 1)");
     assert_eq!(s.state.active_sequence, Some(active), "the working sequence stays open");
-    assert_eq!(s.project.sequence(filmcraft_project::ItemId(shadow)), s.project.sequence(active), "the copy is exact");
+    assert_eq!(s.project.sequence(filmagic_project::ItemId(shadow)), s.project.sequence(active), "the copy is exact");
     assert_eq!(s.execute("story.shadowCut", json!({})).unwrap()["name"], "Main Edit (shadow cut 2)");
     assert_eq!(s.execute("story.shadowCut", json!({"name": "  before the recut "})).unwrap()["name"], "before the recut");
 
@@ -755,7 +755,7 @@ fn a_shadow_cut_is_kept_aside_and_compared() {
     assert!((diff["secondsDifference"].as_f64().unwrap() + 24.0 / s.sequence_rate().as_f64()).abs() < 0.01, "{diff}");
     assert_eq!((diff["this"]["rhythm"]["cuts"].as_u64(), diff["other"]["rhythm"]["cuts"].as_u64()), (Some(7), Some(6)));
     // the shadow cut did not move
-    assert_eq!(crate::story::shots(&s.project, s.project.sequence(filmcraft_project::ItemId(shadow)).unwrap()).unwrap().len(), 7);
+    assert_eq!(crate::story::shots(&s.project, s.project.sequence(filmagic_project::ItemId(shadow)).unwrap()).unwrap().len(), 7);
 
     // shot by shot: the first shot is cut in two, the last is shorter, nothing looks different
     let shots = diff["shots"].as_array().unwrap();
@@ -923,7 +923,7 @@ fn a_plate_over_a_shot_keeps_the_shots_sound() {
 fn two_microphones() -> Session {
     let mut s = demo();
     s.edit_sequence("second microphone", |q, ctx, _| {
-        let copies: Vec<filmcraft_project::TrackItem> = q.audio_tracks[0].items.iter().skip(2).take(2).cloned().collect();
+        let copies: Vec<filmagic_project::TrackItem> = q.audio_tracks[0].items.iter().skip(2).take(2).cloned().collect();
         for mut c in copies {
             c.id = ClipId(ctx.alloc());
             q.audio_tracks[2].items.push(c);
@@ -982,7 +982,7 @@ fn a_transition_on_another_track_is_not_the_cuts() {
             .skip(1)
             .find_map(|(i, t)| t.items.iter().find(|it| it.name.contains("Title") || it.start == cut - Tick::from_seconds_f64(0.5)).map(|it| (i, it.clone())))
             .expect("the title");
-        fade.id = filmcraft_project::TransitionId(ctx.alloc());
+        fade.id = filmagic_project::TransitionId(ctx.alloc());
         (fade.start, fade.duration, fade.from, fade.to) = (title.start, Tick::from_seconds_f64(1.0), None, Some(title.id));
         q.video_tracks[ti].transitions.push(fade);
         Ok(())
@@ -1081,7 +1081,7 @@ fn where_a_clip_has_no_sound_is_not_a_pause() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn clip_of(s: &Session, id: u64) -> filmcraft_project::TrackItem {
+fn clip_of(s: &Session, id: u64) -> filmagic_project::TrackItem {
     s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1.clone()
 }
 
@@ -1104,7 +1104,7 @@ fn a_subclip_is_read_where_it_lies_in_its_media() {
     // the board of a subclip shows the subclip's frames, at its media's frame rate
     let mut s = demo();
     let forest = s.project.items.values().find(|i| i.name == "Misty_Forest.mp4").unwrap().id.0;
-    let rate = s.project.item(filmcraft_project::ItemId(forest)).unwrap().frame_rate();
+    let rate = s.project.item(filmagic_project::ItemId(forest)).unwrap().frame_rate();
     let (from, to) = (rate.tick_of(48), rate.tick_of(96));
     let sub = s.execute("clip.makeSubclip", json!({"item": forest, "start": from.0, "end": to.0})).unwrap()["item"].as_u64().unwrap();
     let dir = tmp_dir("story-subclip");
@@ -1170,7 +1170,7 @@ fn a_shadow_cut_takes_a_number_none_has() {
     assert_eq!(s.execute("story.shadowCut", json!({})).unwrap()["name"], "Main Edit (shadow cut 2)");
     // the first one renamed (or deleted): the next does not become a second "shadow cut 2"
     s.edit("rename", |pr, _| {
-        if let Some(i) = pr.item_mut(filmcraft_project::ItemId(first)) {
+        if let Some(i) = pr.item_mut(filmagic_project::ItemId(first)) {
             i.name = "first assembly".into();
         }
         Ok(())
@@ -1247,7 +1247,7 @@ fn versions_of_another_shape_are_said_not_to_be_compared_by_picture() {
     let shadow = s.execute("story.shadowCut", json!({})).unwrap()["sequence"].as_u64().unwrap();
     // the vertical version of the same cut
     s.edit("vertical", |pr, _| {
-        let q = pr.sequence_mut(filmcraft_project::ItemId(shadow)).ok_or(crate::EngineError::NoSequence)?;
+        let q = pr.sequence_mut(filmagic_project::ItemId(shadow)).ok_or(crate::EngineError::NoSequence)?;
         (q.settings.width, q.settings.height) = (1080, 1920);
         Ok(())
     })
@@ -1307,7 +1307,7 @@ fn a_board_is_a_png_of_its_own_and_shows_frames_as_wide_as_they_are_seen() {
     let dir = tmp_dir("story-board-shape");
     let movie = dir.join("clip.png");
     // a 120×90 still whose pixels are twice as wide as they are tall: seen 240×90
-    std::fs::write(&movie, filmcraft_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap()).unwrap();
+    std::fs::write(&movie, filmagic_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap()).unwrap();
     let mut s = Session::default();
     let item = s.execute("file.import", json!({"paths": [movie.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
     s.execute("file.newSequence", json!({"name": "wide", "width": 240, "height": 90, "fps": 24.0})).unwrap();
@@ -1327,6 +1327,6 @@ fn a_board_is_a_png_of_its_own_and_shows_frames_as_wide_as_they_are_seen() {
             json!({"item": item, "path": movie.to_string_lossy()}),
         ],
     );
-    assert_eq!(std::fs::read(&movie).unwrap(), filmcraft_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap(), "the media is as it was");
+    assert_eq!(std::fs::read(&movie).unwrap(), filmagic_export::encode_png(vec![200u8; 120 * 90 * 4], 120, 90).unwrap(), "the media is as it was");
     let _ = std::fs::remove_dir_all(dir);
 }

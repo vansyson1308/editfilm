@@ -22,7 +22,7 @@ mod tables;
 
 use std::collections::VecDeque;
 
-use filmcraft_bitstream::BitWriter;
+use filmagic_bitstream::BitWriter;
 
 use filterbank::{Analysis, GRANULE};
 use quantize::{Granule, Model};

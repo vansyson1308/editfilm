@@ -1,7 +1,7 @@
 //! `layers.*` (a region of a clip as a layer of its own) and `color.relight`.
 
-use filmcraft_project::{ClipId, ItemId, ParamValue};
-use filmcraft_time::Tick;
+use filmagic_project::{ClipId, ItemId, ParamValue};
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -44,7 +44,7 @@ fn is(p: [f32; 4], want: [f32; 3]) -> bool {
 const RED: [f32; 3] = [1.0, 0.0, 0.0];
 const GREY3: [f32; 3] = [GREY, GREY, GREY];
 
-fn clip(s: &Session, id: u64) -> &filmcraft_project::TrackItem {
+fn clip(s: &Session, id: u64) -> &filmagic_project::TrackItem {
     s.active_sequence().unwrap().find_item(ClipId(id)).unwrap().1
 }
 
@@ -127,7 +127,7 @@ fn a_cut_out_leaves_a_hole_in_the_original() {
     let layer = r["layer"].as_u64().unwrap();
     assert_eq!(r["cutOut"]["clip"].as_u64(), Some(c));
     let hole = &clip(&s, c).effects.iter().find(|e| e.effect == "opacity").unwrap().masks[0];
-    assert_eq!((hole.mode, hole.inverted), (filmcraft_project::MaskMode::Subtract, false), "a hole takes away from what is there");
+    assert_eq!((hole.mode, hole.inverted), (filmagic_project::MaskMode::Subtract, false), "a hole takes away from what is there");
     // together they are the whole picture again
     assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 200, 90), GREY3));
     // the layer off: the original has a hole where the ellipse was
@@ -151,7 +151,7 @@ fn regions_take_points_and_refuse_nonsense() {
         // a sound clip to refuse
         let dir = tmp_dir("layers-sound");
         let wav = dir.join("a.wav");
-        std::fs::write(&wav, filmcraft_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
+        std::fs::write(&wav, filmagic_media::wav::write_wav16(&vec![0.1; 4800], 1, 48_000)).unwrap();
         let item = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
         let id = s.execute("timeline.place", json!({"item": item, "track": "A1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
         let _ = std::fs::remove_dir_all(dir);
@@ -192,7 +192,7 @@ fn regions_take_points_and_refuse_nonsense() {
                 match id {
                     "layers.retime" => p["speed"] = json!(50),
                     "layers.adjust" => p["effect"] = json!("black_white"),
-                    "layers.lift" | "layers.cleanPlate" => p["path"] = json!(std::env::temp_dir().join("filmcraft-never-written.png").to_string_lossy()),
+                    "layers.lift" | "layers.cleanPlate" => p["path"] = json!(std::env::temp_dir().join("filmagic-never-written.png").to_string_lossy()),
                     _ => {}
                 }
                 p
@@ -200,7 +200,7 @@ fn regions_take_points_and_refuse_nonsense() {
             .collect();
         refuses(&mut s, id, &cases);
     }
-    assert!(!std::env::temp_dir().join("filmcraft-never-written.png").exists());
+    assert!(!std::env::temp_dir().join("filmagic-never-written.png").exists());
     // a locked track is left alone
     s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
     assert!(s.active_sequence().unwrap().video_tracks[0].locked);
@@ -412,7 +412,7 @@ fn a_region_plays_at_its_own_speed() {
         .unwrap();
     let l = clip(&s, r["layer"].as_u64().unwrap());
     assert_eq!((l.speed, l.duration, r["untilShotEnd"].as_bool()), (2.0, Tick(clip(&s, c).duration.0 / 2), Some(false)));
-    assert_eq!(l.time_interpolation, filmcraft_project::TimeInterpolation::FrameBlending);
+    assert_eq!(l.time_interpolation, filmagic_project::TimeInterpolation::FrameBlending);
     let region = json!({"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0});
     refuses(
         &mut s,
@@ -702,7 +702,7 @@ fn a_second_cut_out_does_not_fill_the_first() {
     let b = s.execute("layers.extract", json!({"clip": c, "region": right, "feather": 0, "cutOut": true})).unwrap()["layer"].as_u64().unwrap();
     // The second layer is a copy of the clip as it was, hole and all: its region is kept out of what is left.
     let masks = &clip(&s, b).effects.iter().find(|e| e.effect == "opacity").unwrap().masks;
-    assert_eq!(masks.iter().map(|m| m.mode).collect::<Vec<_>>(), [filmcraft_project::MaskMode::Subtract, filmcraft_project::MaskMode::Intersect]);
+    assert_eq!(masks.iter().map(|m| m.mode).collect::<Vec<_>>(), [filmagic_project::MaskMode::Subtract, filmagic_project::MaskMode::Intersect]);
     assert!(is(px(&s, 0, 40, 90), RED) && is(px(&s, 0, 300, 90), GREY3) && is(px(&s, 0, 160, 90), GREY3), "together they are the picture");
     s.execute("clip.enable", json!({"clips": [a, b]})).unwrap();
     assert_eq!(px(&s, 0, 40, 90)[3], 0.0, "the first hole is still a hole");
@@ -1021,7 +1021,7 @@ fn relight_leaves_a_regions_own_grade_alone() {
     let outside_before = px(&s, 30, 300, 170);
     let r = s.execute("color.relight", json!({"clip": c, "time": "22:00", "lightStrength": 0})).unwrap();
     assert!(r["warnings"].as_array().unwrap().is_empty(), "nothing over the whole picture was replaced: {r}");
-    let grades: Vec<&filmcraft_project::EffectInstance> = clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").collect();
+    let grades: Vec<&filmagic_project::EffectInstance> = clip(&s, c).effects.iter().filter(|e| e.effect == "lumetri").collect();
     assert_eq!(grades.len(), 2, "the region's grade, and the shot's");
     let (masked, whole) = (grades.iter().find(|e| !e.masks.is_empty()).unwrap(), grades.iter().find(|e| e.masks.is_empty()).unwrap());
     assert_eq!(masked.params["exposure"].value, ParamValue::Float(1.0), "the region keeps its own grade");

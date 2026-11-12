@@ -1,7 +1,7 @@
 # Story tools and layers
 
 Commands for judging an edit and for working on part of a picture. They are engine commands like
-every other: run them from the CLI (`filmcraft-cli exec story.rhythm`), the control channel, or
+every other: run them from the CLI (`filmagic-cli exec story.rhythm`), the control channel, or
 MCP (`command_run`). The MCP server also has a `story_board` tool that returns the board as an
 image. None of them has a menu entry or a panel yet.
 
@@ -322,5 +322,5 @@ that finds them all.
 
 Some editing products now replace an object with a generated one, change a material from a
 slider, or show a place in another decade. Those results come from a generative video model.
-FilmCraft has none, and these commands do not imitate one: they move, mask, re-time and grade the
+Filmagic has none, and these commands do not imitate one: they move, mask, re-time and grade the
 pixels a camera recorded.

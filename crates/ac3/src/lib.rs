@@ -23,7 +23,7 @@
 mod eac3;
 mod tables;
 
-use filmcraft_bitstream::BitReader;
+use filmagic_bitstream::BitReader;
 use std::sync::OnceLock;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

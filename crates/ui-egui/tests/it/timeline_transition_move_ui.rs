@@ -6,11 +6,11 @@
 
 use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::FilmcraftApp;
+use filmagic_engine::Session;
+use filmagic_ui_egui::FilmagicApp;
 use serde_json::json;
 
-pub(super) fn step(h: &mut Harness<'static, FilmcraftApp>) {
+pub(super) fn step(h: &mut Harness<'static, FilmagicApp>) {
     let ctx = h.ctx.clone();
     let mut raw = std::mem::take(h.input_mut());
     eframe::App::raw_input_hook(h.state_mut(), &ctx, &mut raw);
@@ -19,7 +19,7 @@ pub(super) fn step(h: &mut Harness<'static, FilmcraftApp>) {
     h.step();
 }
 
-pub(super) fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed: Option<bool>) {
+pub(super) fn pointer(h: &mut Harness<'static, FilmagicApp>, pos: Pos2, pressed: Option<bool>) {
     h.input_mut().events.push(Event::PointerMoved(pos));
     if let Some(pressed) = pressed {
         h.input_mut().events.push(Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
@@ -27,15 +27,15 @@ pub(super) fn pointer(h: &mut Harness<'static, FilmcraftApp>, pos: Pos2, pressed
     step(h);
 }
 
-pub(super) fn rect(h: &Harness<'static, FilmcraftApp>, id: &str) -> Rect {
+pub(super) fn rect(h: &Harness<'static, FilmagicApp>, id: &str) -> Rect {
     let [x, y, w, height] = h.state().auto.elements.iter().find(|e| e.id == id).unwrap_or_else(|| panic!("missing {id}")).rect;
     Rect::from_min_size(pos2(x, y), vec2(w, height))
 }
 
-fn build(s: Session) -> Harness<'static, FilmcraftApp> {
-    let app = FilmcraftApp::new(s);
+fn build(s: Session) -> Harness<'static, FilmagicApp> {
+    let app = FilmagicApp::new(s);
     let mut builder = Harness::builder().with_size(vec2(1600.0, 980.0)).with_max_steps(10_000);
-    if std::env::var_os("FILMCRAFT_UI_SNAPSHOT_DIR").is_some() {
+    if std::env::var_os("FILMAGIC_UI_SNAPSHOT_DIR").is_some() {
         builder = builder.wgpu();
     }
     let mut h = builder.build_eframe(move |_cc| app);
@@ -52,7 +52,7 @@ fn build(s: Session) -> Harness<'static, FilmcraftApp> {
 
 /// A sequence with a cross dissolve: between two clips at 0..48f and 48..96f, or a fade-in on the
 /// single clip at 0..48f when `single`.
-pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
+pub(super) fn harness(single: bool) -> Harness<'static, FilmagicApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();
@@ -67,7 +67,7 @@ pub(super) fn harness(single: bool) -> Harness<'static, FilmcraftApp> {
 }
 
 /// XYZ with a cut transition on each cut: X↔Y and Y↔Z.
-fn harness_xyz() -> Harness<'static, FilmcraftApp> {
+fn harness_xyz() -> Harness<'static, FilmagicApp> {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s.execute("file.newSequence", json!({"name":"Transition move","fps":24})).unwrap();

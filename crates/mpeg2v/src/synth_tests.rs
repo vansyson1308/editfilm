@@ -708,8 +708,8 @@ fn check(cfg: Cfg) {
         (out, d.errors())
     };
     assert_eq!(errors, 0, "{}: our decoder reports slice errors", cfg.name);
-    let Some(ff) = filmcraft_testkit::ffmpeg_or_skip(cfg.name) else { return };
-    let path = filmcraft_testkit::fixtures_dir("mpeg2v").join(format!("{}_{:x}.m2v", cfg.name, cfg.seed));
+    let Some(ff) = filmagic_testkit::ffmpeg_or_skip(cfg.name) else { return };
+    let path = filmagic_testkit::fixtures_dir("mpeg2v").join(format!("{}_{:x}.m2v", cfg.name, cfg.seed));
     std::fs::write(&path, &es).unwrap();
     let fmt = if cfg.chroma == 2 { "yuv422p" } else { "yuv420p" };
     let o = std::process::Command::new(ff)

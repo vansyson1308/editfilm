@@ -3,8 +3,8 @@
 //! Premiere's behaviour was observed in Premiere Pro 26.5.2.
 
 use super::*;
-use filmcraft_project::{TrackItem, TrackKind};
-use filmcraft_time::TimeRange;
+use filmagic_project::{TrackItem, TrackKind};
+use filmagic_time::TimeRange;
 use serde_json::json;
 
 fn demo() -> Session {

@@ -2,7 +2,7 @@
 //! effect definitions). Drag onto a clip or edit point; double-click applies to the selection.
 //!
 //! Color Grading Presets: each preset row has a thumbnail (our Color Grading on the procedural preview
-//! picture, `filmcraft_render::lumetri_presets`); double-click (or right-click ▸ Apply to Selected
+//! picture, `filmagic_render::lumetri_presets`); double-click (or right-click ▸ Apply to Selected
 //! Clips, `effects.presetMenu.apply`) applies it (`lumetri.applyPreset`), and dragging it onto a
 //! Timeline clip applies it to that clip (rows and grid cells alike).
 //! When the panel is wide (maximized), clicking a Color Grading Presets folder shows its presets as a
@@ -12,11 +12,11 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use serde_json::json;
 
-use crate::FilmcraftApp;
+use crate::FilmagicApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2(rect.width() - 16.0, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
@@ -33,9 +33,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("fx-body"));
     bui.set_clip_rect(body);
     let filter = q.trim();
-    let defs = filmcraft_project::effect_defs();
+    let defs = filmagic_project::effect_defs();
     // folder tree: top-level categories in Premiere's order
-    let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
+    let tops = filmagic_project::vtransition::EFFECT_TOP_FOLDERS;
     let mut apply: Option<String> = None;
     let mut lumetri_apply: Option<String> = None;
     let mut set_default: Option<String> = None;
@@ -67,7 +67,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            if top == filmcraft_project::vtransition::COLOR_PRESETS_FOLDER_KEY {
+            if top == filmagic_project::vtransition::COLOR_PRESETS_FOLDER_KEY {
                 if let Some(name) = lumetri_rows(app, ui, filter) {
                     lumetri_apply = Some(name);
                 }
@@ -87,7 +87,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             // Sub-folders in definition order; loose items (no sub-folder, e.g. Audio Effects ▸
             // Balance / Mute / Volume) come last, outside any folder.
-            let sub = |d: &filmcraft_project::EffectDef| d.category.get(1).copied().unwrap_or("");
+            let sub = |d: &filmagic_project::EffectDef| d.category.get(1).copied().unwrap_or("");
             let mut subs: Vec<&str> = items.iter().map(|d| sub(d)).collect();
             subs.dedup();
             subs.sort_by_key(|s| s.is_empty());
@@ -109,7 +109,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // inside the top folder, or inside its sub-folder
                     let x = r.min.x + tree_x(if s.is_empty() { 1 } else { 2 }) + 30.0;
                     let icon_r = Rect::from_center_size(pos2(x - 12.0, r.center().y), vec2(13.0, 13.0));
-                    let is_tr = matches!(d.kind, filmcraft_project::EffectKind::VideoTransition | filmcraft_project::EffectKind::AudioTransition);
+                    let is_tr = matches!(d.kind, filmagic_project::EffectKind::VideoTransition | filmagic_project::EffectKind::AudioTransition);
                     ui.painter().rect_stroke(icon_r, 2.0, egui::Stroke::new(1.0, t.text_dim), egui::StrokeKind::Inside);
                     if is_tr {
                         ui.painter().line_segment([icon_r.left_bottom(), icon_r.right_top()], egui::Stroke::new(1.0, t.text_dim));
@@ -174,7 +174,7 @@ pub(crate) fn tree_x(depth: usize) -> f32 {
     8.0 + depth as f32 * 16.0
 }
 
-fn presets_folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize, filter: &str, action: &mut Option<(String, String)>) -> bool {
+fn presets_folder_row(app: &mut FilmagicApp, ui: &mut egui::Ui, key: &str, depth: usize, filter: &str, action: &mut Option<(String, String)>) -> bool {
     let t = app.tokens;
     let mut open = !filter.is_empty() || app.ui.expanded_fx.iter().any(|k| k == key);
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
@@ -221,19 +221,19 @@ fn presets_folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, dept
 
 /// Whether the Effects panel's search shows `d` for `filter`: its label in the interface language,
 /// or a name the effect used to have (`"Lumetri"` still finds Color Grading).
-fn matches_effect(d: &filmcraft_project::EffectDef, filter: &str) -> bool {
-    crate::i18n::matches_query(d.name, filter) || filmcraft_project::search_aliases(d).iter().any(|alias| crate::i18n::matches_query(alias, filter))
+fn matches_effect(d: &filmagic_project::EffectDef, filter: &str) -> bool {
+    crate::i18n::matches_query(d.name, filter) || filmagic_project::search_aliases(d).iter().any(|alias| crate::i18n::matches_query(alias, filter))
 }
 
 fn folder_key_matches(saved: &str, key: &str) -> bool {
     if saved == key {
         return true;
     }
-    let Some(tail) = key.strip_prefix(filmcraft_project::vtransition::COLOR_PRESETS_FOLDER_KEY) else { return false };
+    let Some(tail) = key.strip_prefix(filmagic_project::vtransition::COLOR_PRESETS_FOLDER_KEY) else { return false };
     (tail.is_empty() || tail.starts_with('/')) && ["Color Grade Presets", "Color Grading Presets"].iter().any(|alias| saved.strip_prefix(alias) == Some(tail))
 }
 
-fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize, filter: &str) -> bool {
+fn folder_row(app: &mut FilmagicApp, ui: &mut egui::Ui, key: &str, depth: usize, filter: &str) -> bool {
     let t = app.tokens;
     let open = !filter.is_empty() || app.ui.expanded_fx.iter().any(|saved| folder_key_matches(saved, key));
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
@@ -250,10 +250,10 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
     icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 18.0, r.center().y), vec2(13.0, 13.0)), Icon::Folder, t.text_dim);
     // a sub-folder key is `<top>/<folder>`; folder names may themselves contain a slash
     // (Audio Effects ▸ Noise Reduction/Restoration), so split once, after the top folder
-    let name = if depth == 0 { filmcraft_project::vtransition::effect_folder_label(key) } else { key.split_once('/').map_or(key, |(_, folder)| folder) };
+    let name = if depth == 0 { filmagic_project::vtransition::effect_folder_label(key) } else { key.split_once('/').map_or(key, |(_, folder)| folder) };
     ui.painter().text(pos2(x + 30.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t(name), Tokens::ui(12.0), t.text);
     app.auto.add(&format!("effects.folder.{key}"), r, name);
-    if let Some(tail) = key.strip_prefix(filmcraft_project::vtransition::COLOR_PRESETS_FOLDER_KEY) {
+    if let Some(tail) = key.strip_prefix(filmagic_project::vtransition::COLOR_PRESETS_FOLDER_KEY) {
         for alias in ["Color Grade Presets", "Color Grading Presets"] {
             app.auto.add(&format!("effects.folder.{alias}{tail}"), r, name);
         }
@@ -270,7 +270,7 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
 
 /// Right-click menu of a video or audio transition: Set as Default Transition (automation id
 /// `effects.itemMenu.setDefaultTransition`). True when chosen (#3573).
-fn transition_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
+fn transition_menu(app: &mut FilmagicApp, resp: &egui::Response) -> bool {
     let mut chosen = false;
     resp.context_menu(|ui| {
         let b = ui.button(tl!("Set as Default Transition"));
@@ -285,7 +285,7 @@ fn transition_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
 
 /// Right-click menu of a Color Grading preset: Apply to Selected Clips (automation id
 /// `effects.presetMenu.apply`). True when chosen.
-fn apply_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
+fn apply_menu(app: &mut FilmagicApp, resp: &egui::Response) -> bool {
     let mut chosen = false;
     resp.context_menu(|ui| {
         let b = ui.button(tl!("Apply to Selected Clips"));
@@ -299,16 +299,16 @@ fn apply_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
 }
 
 /// A preset's thumbnail texture (rendered once per size, cached by name).
-fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_render::lumetri_presets::LumetriPreset, w: usize) -> egui::TextureId {
+fn preset_texture(app: &mut FilmagicApp, ctx: &egui::Context, p: &filmagic_render::lumetri_presets::LumetriPreset, w: usize) -> egui::TextureId {
     let name = format!("lumetri-preset-{}-{w}", p.name);
     if let Some((id, _)) = app.texture_existing(&name) {
         return id;
     }
     let h = (w * 9 / 16).max(1);
-    let img = filmcraft_render::lumetri_presets::thumbnail(p, w, h);
+    let img = filmagic_render::lumetri_presets::thumbnail(p, w, h);
     let rgba = crate::frames::Rgba { w: img.w, h: img.h, px: img.over_black_rgba8() };
     let key = crate::frames::FrameKey {
-        target: crate::frames::Target::Item(filmcraft_project::ItemId(u64::MAX)),
+        target: crate::frames::Target::Item(filmagic_project::ItemId(u64::MAX)),
         frame: 0,
         size: w as u32,
         revision: 0,
@@ -319,10 +319,10 @@ fn preset_texture(app: &mut FilmcraftApp, ctx: &egui::Context, p: &filmcraft_ren
 
 /// The Color Grading Presets folder of the tree: sub-folders and preset rows with thumbnails. Returns
 /// the preset to apply (double-click).
-fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Option<String> {
-    use filmcraft_render::lumetri_presets as lp;
+fn lumetri_rows(app: &mut FilmagicApp, ui: &mut egui::Ui, filter: &str) -> Option<String> {
+    use filmagic_render::lumetri_presets as lp;
     let t = app.tokens;
-    let top = filmcraft_project::vtransition::COLOR_PRESETS_FOLDER_KEY;
+    let top = filmagic_project::vtransition::COLOR_PRESETS_FOLDER_KEY;
     let presets: Vec<lp::LumetriPreset> = lp::presets().into_iter().filter(|p| crate::i18n::matches_query(p.name, filter)).collect();
     if !filter.is_empty() && presets.is_empty() {
         return None;
@@ -376,8 +376,8 @@ fn lumetri_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> Opti
 
 /// The wide Effects panel's thumbnail grid of the selected Color Grading Presets folder. Returns the
 /// preset to apply (double-click).
-fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<String> {
-    use filmcraft_render::lumetri_presets as lp;
+fn preset_grid(app: &mut FilmagicApp, ui: &mut egui::Ui, area: Rect) -> Option<String> {
+    use filmagic_render::lumetri_presets as lp;
     let t = app.tokens;
     let folder = app.ui.lumetri_grid_folder.clone()?;
     app.auto.add("effects.presetGrid", area, &folder);
@@ -421,8 +421,8 @@ mod tests {
     fn effects_search_matches_turkish_casing() {
         crate::i18n::set_current(crate::i18n::Language::Tr);
         let ctx = egui::Context::default();
-        let session = filmcraft_engine::Session::default();
-        let mut app = FilmcraftApp::new(session);
+        let session = filmagic_engine::Session::default();
+        let mut app = FilmagicApp::new(session);
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
         for query in ["IŞIK", "ışık", "Işık"] {
             app.ui.effects_search = query.to_string();
@@ -441,9 +441,9 @@ mod tests {
     #[test]
     fn effects_search_finds_grading_by_its_old_names() {
         let ctx = egui::Context::default();
-        let mut app = FilmcraftApp::new(filmcraft_engine::Session::default());
+        let mut app = FilmagicApp::new(filmagic_engine::Session::default());
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
-        let shows = |app: &mut FilmcraftApp, query: &str| {
+        let shows = |app: &mut FilmagicApp, query: &str| {
             app.ui.effects_search = query.to_string();
             app.auto.begin_frame();
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -467,9 +467,9 @@ mod naming_tests {
 
     #[test]
     fn color_preset_labels_do_not_change_saved_folder_identity() {
-        let key = filmcraft_project::vtransition::COLOR_PRESETS_FOLDER_KEY;
+        let key = filmagic_project::vtransition::COLOR_PRESETS_FOLDER_KEY;
         assert_eq!(key, "Lumetri Presets");
-        assert_eq!(filmcraft_project::vtransition::effect_folder_label(key), "Color Grading Presets");
+        assert_eq!(filmagic_project::vtransition::effect_folder_label(key), "Color Grading Presets");
         for saved in ["Lumetri Presets", "Color Grade Presets", "Color Grading Presets"] {
             assert!(folder_key_matches(saved, key));
             assert!(folder_key_matches(&format!("{saved}/Cinematic"), &format!("{key}/Cinematic")));

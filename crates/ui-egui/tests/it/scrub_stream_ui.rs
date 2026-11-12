@@ -12,10 +12,10 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_ui_egui::control::ControlRequest;
-use filmcraft_ui_egui::scrub::ScrubOut;
-use filmcraft_ui_egui::{AudioOut, FilmcraftApp};
+use filmagic_engine::Session;
+use filmagic_ui_egui::control::ControlRequest;
+use filmagic_ui_egui::scrub::ScrubOut;
+use filmagic_ui_egui::{AudioOut, FilmagicApp};
 use serde_json::{Value, json};
 
 type Fill = Box<dyn FnMut(&mut [f32], usize) + Send>;
@@ -79,7 +79,7 @@ impl AudioOut for Playback {
 }
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     scrub: Arc<ScrubCounts>,
     playback: Arc<PlaybackCounts>,
@@ -94,7 +94,7 @@ impl Driver {
         session.execute("file.newSequence", json!({"name": "Scrub", "video": 3, "audio": 3})).expect("sequence");
         session.prefs.audio.scrub_audio = true;
         let (tx, rx) = channel();
-        let mut app = FilmcraftApp::new(session).with_control(rx);
+        let mut app = FilmagicApp::new(session).with_control(rx);
         let scrub = Arc::new(ScrubCounts::default());
         let playback = Arc::new(PlaybackCounts::default());
         app.scrub_out = Some(Box::new(ScrubDevice { counts: scrub.clone(), fill: Arc::new(Mutex::new(None)) }));

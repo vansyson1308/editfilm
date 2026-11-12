@@ -6,27 +6,27 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Find a tool silently (see `filmcraft_testkit::oracle`).
+/// Find a tool silently (see `filmagic_testkit::oracle`).
 pub fn tool(name: &str) -> Option<PathBuf> {
     match name {
-        "ffmpeg" => filmcraft_testkit::ffmpeg(),
-        "ffprobe" => filmcraft_testkit::ffprobe(),
-        _ => filmcraft_testkit::oracle::find_tool(name),
+        "ffmpeg" => filmagic_testkit::ffmpeg(),
+        "ffprobe" => filmagic_testkit::ffprobe(),
+        _ => filmagic_testkit::oracle::find_tool(name),
     }
 }
 
-/// ffmpeg, or `None` after printing `SKIPPED` (a failure with `FILMCRAFT_REQUIRE_ORACLES=1`).
+/// ffmpeg, or `None` after printing `SKIPPED` (a failure with `FILMAGIC_REQUIRE_ORACLES=1`).
 pub fn ffmpeg() -> Option<PathBuf> {
-    filmcraft_testkit::ffmpeg_or_skip("isobmff oracle")
+    filmagic_testkit::ffmpeg_or_skip("isobmff oracle")
 }
 
-/// ffprobe, or `None` after printing `SKIPPED` (a failure with `FILMCRAFT_REQUIRE_ORACLES=1`).
+/// ffprobe, or `None` after printing `SKIPPED` (a failure with `FILMAGIC_REQUIRE_ORACLES=1`).
 pub fn ffprobe() -> Option<PathBuf> {
-    filmcraft_testkit::ffprobe_or_skip("isobmff oracle")
+    filmagic_testkit::ffprobe_or_skip("isobmff oracle")
 }
 
 pub fn fixture_dir() -> PathBuf {
-    filmcraft_testkit::fixtures_dir("isobmff")
+    filmagic_testkit::fixtures_dir("isobmff")
 }
 
 pub fn out_dir() -> PathBuf {
@@ -110,10 +110,10 @@ pub fn fixture_specs() -> Vec<(&'static str, Vec<&'static str>)> {
 }
 
 fn run_ffmpeg(ff: &Path, args: &[&str], out: &Path) -> bool {
-    let tmp = filmcraft_testkit::temp_path(out);
+    let tmp = filmagic_testkit::temp_path(out);
     let st = Command::new(ff).args(["-v", "error", "-y", "-nostdin"]).args(args).arg(&tmp).output();
     match st {
-        Ok(o) if o.status.success() => filmcraft_testkit::fixtures::publish(&tmp, out).is_ok(),
+        Ok(o) if o.status.success() => filmagic_testkit::fixtures::publish(&tmp, out).is_ok(),
         Ok(o) => {
             eprintln!("ffmpeg failed for {}: {}", out.display(), String::from_utf8_lossy(&o.stderr));
             let _ = std::fs::remove_file(&tmp);

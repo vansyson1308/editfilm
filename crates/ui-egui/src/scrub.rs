@@ -14,9 +14,9 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use filmcraft_time::Tick;
+use filmagic_time::Tick;
 
-use crate::FilmcraftApp;
+use crate::FilmagicApp;
 
 /// Length of the grain played after each move.
 pub const GRAIN_S: f64 = 0.08;
@@ -45,7 +45,7 @@ pub trait ScrubOut {
         self.stop();
     }
     /// Apply Settings ▸ Audio Hardware: the next grain opens the new device.
-    fn configure(&mut self, _hw: &filmcraft_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
+    fn configure(&mut self, _hw: &filmagic_engine::settings::AudioHardwarePrefs, _document_rate: Option<u32>) {}
 }
 
 /// What the audio callback plays next: `left` of `total` frames from `cursor`.
@@ -76,7 +76,7 @@ impl ScrubAudio {
     }
 }
 
-impl FilmcraftApp {
+impl FilmagicApp {
     /// Once a frame: play a grain when the playhead moved under a held mouse button.
     pub(crate) fn scrub_audio(&mut self, ctx: &egui::Context) {
         let (now, down) = (self.now(), ctx.input(|i| i.pointer.any_down()));
@@ -85,7 +85,7 @@ impl FilmcraftApp {
         }
     }
 
-    /// `FilmcraftApp::scrub_audio` with the clock and the button state given. Returns whether
+    /// `FilmagicApp::scrub_audio` with the clock and the button state given. Returns whether
     /// the scrub stream is still open.
     pub fn scrub_tick(&mut self, now: f64, down: bool) -> bool {
         let ph = self.session.playhead();
@@ -238,11 +238,11 @@ mod tests {
         }
     }
 
-    fn app(scrub_audio: bool) -> (FilmcraftApp, Arc<Mutex<Option<Fill>>>) {
-        let mut s = filmcraft_engine::Session::default();
+    fn app(scrub_audio: bool) -> (FilmagicApp, Arc<Mutex<Option<Fill>>>) {
+        let mut s = filmagic_engine::Session::default();
         s.execute("file.openDemoProject", serde_json::json!({})).unwrap();
         s.prefs.audio.scrub_audio = scrub_audio;
-        let mut app = FilmcraftApp::new(s);
+        let mut app = FilmagicApp::new(s);
         let fill = Arc::new(Mutex::new(None));
         app.audio = Some(Box::new(Out { fill: fill.clone() }));
         (app, fill)
@@ -261,13 +261,13 @@ mod tests {
     /// the next grain opens it for the sequence that is active now, at the same rate.
     #[test]
     fn a_sequence_change_reopens_an_open_scrub_stream() {
-        let mut s = filmcraft_engine::Session::default();
+        let mut s = filmagic_engine::Session::default();
         s.execute("file.newProject", serde_json::json!({"name": "two"})).unwrap();
         s.execute("file.newSequence", serde_json::json!({"name": "A", "video": 1, "audio": 1})).unwrap();
         let first = s.state.active_sequence.unwrap();
         s.execute("file.newSequence", serde_json::json!({"name": "B", "video": 1, "audio": 1})).unwrap();
         s.prefs.audio.scrub_audio = true;
-        let mut app = FilmcraftApp::new(s);
+        let mut app = FilmagicApp::new(s);
         app.apply_prefs(&egui::Context::default());
         let fill: Arc<Mutex<Option<Fill>>> = Arc::new(Mutex::new(None));
         app.audio = Some(Box::new(Out { fill }));

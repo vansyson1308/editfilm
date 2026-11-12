@@ -1,26 +1,26 @@
 {
-  "id": "filmcraft",
-  "name": "FilmCraft",
-  "upgradeCode": "31E6FB14-9DBC-41DD-B24B-26B71FB31B62",
+  "id": "filmagic",
+  "name": "Filmagic",
+  "upgradeCode": "157B9C89-7793-4AC6-9D22-E00F6A99D6FD",
   "sources": [
-    "filmcraft.wxs"
+    "filmagic.wxs"
   ],
-  "icon": "assets/app-icon/filmcraft.ico",
+  "icon": "assets/app-icon/filmagic.ico",
   "localization": [],
   "extensions": [
     "UI"
   ],
   "payloads": [
     "NOTICE",
-    "filmcraft-cli.exe",
-    "filmcraft.exe"
+    "filmagic-cli.exe",
+    "filmagic.exe"
   ],
   "registry": [
     [
       "-1",
-      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\filmcraft.exe",
+      "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\filmagic.exe",
       "",
-      "[#FilmcraftExe]"
+      "[#FilmagicExe]"
     ]
   ],
   "mode": "dualScope"

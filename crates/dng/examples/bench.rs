@@ -1,14 +1,14 @@
 //! Decode + develop speed of a synthetic 4096 × 2160 12-bit lossless-JPEG CinemaDNG frame, the
 //! current pipeline against the reference one of PR #1068, interleaved in one run at 1, 4 and 16
-//! threads (rayon pools). `cargo run --release -p filmcraft-dng --features writer --example bench`
+//! threads (rayon pools). `cargo run --release -p filmagic-dng --features writer --example bench`
 //! (`-- --reps N`, `-- --quick` for a 1920 × 1080 frame, `-- --target 1920x1080` for the reduced
 //! path). Times are the best of the repetitions, in ms.
 
 use std::time::Instant;
 
-use filmcraft_dng::tiff::tags;
-use filmcraft_dng::writer::{Compression, Layout, Options, Value, write};
-use filmcraft_dng::{Dng, ProcessOptions};
+use filmagic_dng::tiff::tags;
+use filmagic_dng::writer::{Compression, Layout, Options, Value, write};
+use filmagic_dng::{Dng, ProcessOptions};
 
 fn frame(w: usize, h: usize, layout: Layout) -> Vec<u8> {
     // a smooth scene with sensor-like noise, black 256, white 4095

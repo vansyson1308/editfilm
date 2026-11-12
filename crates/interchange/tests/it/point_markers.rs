@@ -1,10 +1,10 @@
-//! FCPXML point markers: a one-frame `<marker>` is a FilmCraft point (duration 0), not a range.
+//! FCPXML point markers: a one-frame `<marker>` is a Filmagic point (duration 0), not a range.
 
 use crate::support;
 
-use filmcraft_interchange::{ExportOptions, Format, import};
-use filmcraft_project::{Label, Marker, MarkerId, MarkerKind, Project, TrackKind};
-use filmcraft_time::{FrameRate, Tick};
+use filmagic_interchange::{ExportOptions, Format, import};
+use filmagic_project::{Label, Marker, MarkerId, MarkerKind, Project, TrackKind};
+use filmagic_time::{FrameRate, Tick};
 use support::*;
 
 fn fcpxml_with_markers(frame: &str, point_dur: &str, range_dur: &str) -> String {

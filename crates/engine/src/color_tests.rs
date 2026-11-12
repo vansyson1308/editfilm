@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use crate::{Services, Session};
-use filmcraft_color::{Lut, Lut3d};
-use filmcraft_project::{ClipId, ParamValue};
+use filmagic_color::{Lut, Lut3d};
+use filmagic_project::{ClipId, ParamValue};
 
 fn demo() -> Session {
     let mut s = Session::default();
@@ -30,7 +30,7 @@ fn lumetri_text(s: &Session, clip: ClipId, p: &str) -> String {
     }
 }
 
-fn mean(img: &filmcraft_render::Image) -> [f32; 3] {
+fn mean(img: &filmagic_render::Image) -> [f32; 3] {
     assert!(img.px.iter().any(|v| *v > 0.01), "blank render");
     let mut m = [0f64; 3];
     for p in img.px.as_chunks::<4>().0 {
@@ -43,7 +43,7 @@ fn mean(img: &filmcraft_render::Image) -> [f32; 3] {
 }
 
 fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("filmcraft-color-{}-{name}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("filmagic-color-{}-{name}", std::process::id()));
     d.to_string_lossy().to_string()
 }
 
@@ -80,7 +80,7 @@ fn import_lut_set_input_and_look_then_undo() {
     assert_eq!(lib["library"].as_array().unwrap().len(), 1);
     assert!(lib["builtin"].as_array().unwrap().iter().any(|b| b["ref"] == "builtin:slog3-sgamut3cine-to-rec709"));
     let js = serde_json::to_string(&*s.project).unwrap();
-    let back: filmcraft_project::Project = serde_json::from_str(&js).unwrap();
+    let back: filmagic_project::Project = serde_json::from_str(&js).unwrap();
     assert_eq!(back.luts, s.project.luts);
     // undo the look, the section toggles and the input LUT
     for _ in 0..4 {
@@ -97,8 +97,8 @@ fn export_builtin_and_library_luts() {
         let path = tmp(&format!("slog3.{ext}"));
         s.execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": path, "format": fmt})).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        let back = Lut::parse(&text, filmcraft_color::LutFormat::from_path(&path)).unwrap();
-        let orig = filmcraft_render::luts::resolve(None, "builtin:slog3-sgamut3cine-to-rec709").unwrap();
+        let back = Lut::parse(&text, filmagic_color::LutFormat::from_path(&path)).unwrap();
+        let orig = filmagic_render::luts::resolve(None, "builtin:slog3-sgamut3cine-to-rec709").unwrap();
         for c in [[0.4, 0.4, 0.4], [0.6, 0.3, 0.2]] {
             let (a, b) = (orig.apply(c), back.apply(c));
             assert!((0..3).all(|k| (a[k] - b[k]).abs() < 2e-3), "{fmt}: {a:?} vs {b:?}");
@@ -138,7 +138,7 @@ fn apply_match_grades_the_clip_towards_the_reference() {
     let q = s.active_sequence().unwrap();
     // reference: the middle of the last clip on V1 (a different shot)
     let other = q.video_tracks[0].items.iter().rfind(|i| i.id != clip).unwrap();
-    let reference = other.start + filmcraft_time::Tick(other.duration.0 / 2);
+    let reference = other.start + filmagic_time::Tick(other.duration.0 / 2);
     let r = s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0, "faceDetection": true})).unwrap();
     let (before, after) = (r["distanceBefore"].as_f64().unwrap(), r["distanceAfter"].as_f64().unwrap());
     assert!(after < before * 0.8, "match improves the statistics distance: {r}");
@@ -191,7 +191,7 @@ fn interpret_footage_and_sequence_colour_settings() {
     assert!(work.iter().zip(&sdr).all(|(a, b)| (a - b).abs() < 0.08), "BT.2020 working values ≈ BT.709 SDR values: {work:?} vs {sdr:?}");
     assert!(disp.iter().zip(&sdr).all(|(a, b)| (a - b).abs() < 0.08), "display transform: {disp:?} vs {sdr:?}");
     let spaces = s.execute("color.spaces", json!({})).unwrap();
-    assert_eq!(spaces["colorSpaces"].as_array().unwrap().len(), filmcraft_color::ColorSpace::ALL.len());
+    assert_eq!(spaces["colorSpaces"].as_array().unwrap().len(), filmagic_color::ColorSpace::ALL.len());
     assert!(s.execute("sequence.colorSettings", json!({"workingSpace": "xyz"})).is_err());
 }
 
@@ -280,7 +280,7 @@ fn preset_thumbnails_are_written_through_the_host_and_no_wider_than_the_presets(
     assert!(files.read_file(path).unwrap().starts_with(b"\x89PNG"));
     assert!(!std::path::Path::new(path).exists());
     // Asking for more columns than there are presets lays them out in one row.
-    let n = filmcraft_render::lumetri_presets::presets().len();
+    let n = filmagic_render::lumetri_presets::presets().len();
     let r = s.execute("lumetri.presetThumbnails", json!({"width": 16, "columns": 32})).unwrap();
     assert_eq!(r["columns"].as_u64(), Some(n as u64));
     assert_eq!(r["width"].as_u64(), Some((n * (16 + 4) + 4) as u64));
@@ -290,10 +290,10 @@ fn preset_thumbnails_are_written_through_the_host_and_no_wider_than_the_presets(
 /// file and one tagged BT.709 give the same `metadata`; `assumed` tells them apart.
 #[test]
 fn color_info_says_which_values_no_tag_gave() {
-    let Some(ffmpeg) = filmcraft_testkit::oracle::ffmpeg_or_skip("color_info_assumed") else { return };
-    let dir = filmcraft_testkit::fixtures_dir("engine/color-assumed");
+    let Some(ffmpeg) = filmagic_testkit::oracle::ffmpeg_or_skip("color_info_assumed") else { return };
+    let dir = filmagic_testkit::fixtures_dir("engine/color-assumed");
     let make = |name: &str, filter: &[&str]| {
-        filmcraft_testkit::fixtures::generate(&dir.join(name), |tmp| {
+        filmagic_testkit::fixtures::generate(&dir.join(name), |tmp| {
             std::process::Command::new(&ffmpeg)
                 .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=25:duration=0.2"])
                 .args(filter)
@@ -323,8 +323,8 @@ fn color_info_says_which_values_no_tag_gave() {
 
 /// Linear premultiplied pixels to encoded RGB (sRGB transfer), for comparing renders as the
 /// viewer sees them.
-fn encoded(img: &filmcraft_render::Image) -> Vec<[f32; 3]> {
-    use filmcraft_color::linear_to_srgb;
+fn encoded(img: &filmagic_render::Image) -> Vec<[f32; 3]> {
+    use filmagic_color::linear_to_srgb;
     img.px.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2]].map(|v| linear_to_srgb(v.clamp(0.0, 1.0)))).collect()
 }
 
@@ -345,7 +345,7 @@ fn export_cube_gives_the_render_when_applied_to_the_ungraded_frame() {
     let lut = Lut3d::parse_cube(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(lut.size, 33);
     // the render without the vignette and sharpen, and the ungraded render the table is applied to
-    let render = |s: &mut Session, edit: &dyn Fn(&mut filmcraft_project::EffectInstance)| {
+    let render = |s: &mut Session, edit: &dyn Fn(&mut filmagic_project::EffectInstance)| {
         s.edit_sequence("probe", |q, _, _| {
             let (_, it) = q.find_item_mut(clip).unwrap();
             edit(it.effects.iter_mut().find(|e| e.effect == "lumetri").unwrap());
@@ -389,7 +389,7 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
     assert!(s.execute("lumetri.exportCube", json!({"clip": "x", "path": path})).is_err());
     let q = s.active_sequence().unwrap();
     let other = q.video_tracks[0].items.iter().rfind(|i| i.id != clip).unwrap();
-    let reference = other.start + filmcraft_time::Tick(other.duration.0 / 2);
+    let reference = other.start + filmagic_time::Tick(other.duration.0 / 2);
     s.execute("lumetri.applyMatch", json!({"referenceTime": reference.0})).unwrap();
     let path = tmp("match.cube");
     let r = s.execute("lumetri.exportCube", json!({"path": path, "size": 17})).unwrap();
@@ -424,7 +424,7 @@ fn export_cube_exports_an_apply_match_result_and_refuses_what_it_cannot() {
 
 #[test]
 fn export_cube_goes_through_the_host_and_refuses_a_masked_lumetri() {
-    use filmcraft_project::{Mask, MaskPath};
+    use filmagic_project::{Mask, MaskPath};
     let files = std::sync::Arc::new(WrittenFiles::default());
     let mut s = Session::new(files.clone());
     s.execute("file.openDemoProject", json!({})).unwrap();

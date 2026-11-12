@@ -7,10 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use filmcraft_mp3enc::{Config, DELAY, Encoder, StereoMode};
+use filmagic_mp3enc::{Config, DELAY, Encoder, StereoMode};
 
 fn fixtures() -> PathBuf {
-    filmcraft_testkit::fixtures_dir("mp3enc")
+    filmagic_testkit::fixtures_dir("mp3enc")
 }
 
 fn chords(rate: u32, n: usize, detune: f32) -> Vec<f32> {
@@ -111,7 +111,7 @@ fn run(ff: &Path, c: &Case) -> f64 {
     let frames = dec[0].len() / frame_samples;
     let nominal = c.kbps as f64 * 1000.0 / 8.0 * (frames * frame_samples) as f64 / c.rate as f64;
     assert!((bytes.len() as f64 / nominal - 1.0).abs() < 0.01, "{}: {} bytes vs {nominal}", c.name, bytes.len());
-    if let Some(probe) = filmcraft_testkit::ffprobe() {
+    if let Some(probe) = filmagic_testkit::ffprobe() {
         let out = Command::new(probe)
             .args(["-v", "error", "-show_entries", "stream=codec_name,sample_rate,channels:format=duration", "-of", "default=nw=1"])
             .arg(&path)
@@ -133,7 +133,7 @@ fn run(ff: &Path, c: &Case) -> f64 {
 
 #[test]
 fn ffmpeg_decodes_our_streams_at_every_rate() {
-    let Some(ff) = filmcraft_testkit::ffmpeg_or_skip("mp3enc oracle") else { return };
+    let Some(ff) = filmagic_testkit::ffmpeg_or_skip("mp3enc oracle") else { return };
     use StereoMode::*;
     let cases = [
         Case { name: "chords", rate: 44_100, channels: 2, kbps: 128, stereo: JointStereo, signal: sig_chords, min_snr: 42.0 },

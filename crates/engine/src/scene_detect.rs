@@ -4,7 +4,7 @@
 //! applyCuts=true, createSubclips=false, generateMarkers=false, wait=false}` analyses the selected
 //! timeline video clips in a background job (`jobs.list` shows the progress, `jobs.cancel` stops
 //! it without changing anything). Every sequence frame of each clip is decoded at reduced size and
-//! compared with the previous one ([`filmcraft_render::scene`]). A cut is a change above the
+//! compared with the previous one ([`filmagic_render::scene`]). A cut is a change above the
 //! sensitivity's threshold, or (`lookAlike`) one sharp step in a quiet stretch between two shots
 //! that look alike; with `lookAlike` off the latter are reported as near misses instead. When the
 //! job finishes, the results are
@@ -19,9 +19,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, TrackKind};
-use filmcraft_render::scene::{SceneDetector, SceneOptions};
-use filmcraft_time::{Tick, TimeRange};
+use filmagic_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, TrackKind};
+use filmagic_render::scene::{SceneDetector, SceneOptions};
+use filmagic_time::{Tick, TimeRange};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, bad, bool_p, clips_p, f64_p, has_seq, u64_p};
@@ -111,7 +111,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// The media item a clip shows (a subclip resolves to its parent: subclip clips use the parent's
 /// media time).
-fn media_root(p: &filmcraft_project::Project, item: ItemId) -> Option<ItemId> {
+fn media_root(p: &filmagic_project::Project, item: ItemId) -> Option<ItemId> {
     p.resolve_media(item).map(|(root, _, _)| root)
 }
 
@@ -119,7 +119,7 @@ struct Work {
     clip: ClipId,
     name: String,
     media_item: ItemId,
-    src: filmcraft_media::SharedSource,
+    src: filmagic_media::SharedSource,
     scale: f32,
     /// (timeline time, media time) of every sequence frame of the clip.
     frames: Vec<(Tick, Tick)>,
@@ -216,7 +216,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
                     err = Some("stopped".to_string());
                     break 'clips;
                 }
-                match w.src.video_frame(filmcraft_media::FrameRequest { time: *mt, scale: w.scale }) {
+                match w.src.video_frame(filmagic_media::FrameRequest { time: *mt, scale: w.scale }) {
                     Ok(f) => {
                         det.push_rgba(&f.to_rgba8(), f.width as usize, f.height as usize);
                     }
@@ -257,7 +257,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
             Some(e) => Err(e),
             None => {
                 *lock(&out) = Some(found);
-                Ok(filmcraft_export::Report {
+                Ok(filmagic_export::Report {
                     path: String::new(),
                     frames: done,
                     seconds: secs,
@@ -306,7 +306,7 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
         }
         poll(s);
     } else {
-        std::thread::Builder::new().name("filmcraft-scene-detect".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+        std::thread::Builder::new().name("filmagic-scene-detect".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
     }
     if let Some(Err(e)) = s.jobs.iter().find(|j| j.id == id).and_then(|j| lock(&j.result).clone()) {
         return Err(EngineError::Other(e));
@@ -359,7 +359,7 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                 let min = pr.sequence(seq_id).map(|q| q.settings.frame_rate.frame_duration()).unwrap_or(Tick(1));
                 let mut next = pr.next_id;
                 let q = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-                let mut ctx = filmcraft_edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &|_| Tick::ZERO, min_duration: min };
+                let mut ctx = filmagic_edit::EditCtx { next_id: &mut next, media_duration: &durations, media_start: &|_| Tick::ZERO, min_duration: min };
                 // latest cut first: the left piece keeps the clip's id for the earlier cuts
                 for (t, _) in r.cuts.iter().rev() {
                     let link = q.find_item(r.clip).and_then(|(_, it)| it.link);
@@ -367,7 +367,7 @@ fn apply_results(s: &mut Session, seq_id: ItemId, apply: SceneApply, results: Ve
                     if let Some(l) = link {
                         items.extend(q.all_tracks().flat_map(|tr| tr.items.iter()).filter(|it| it.link == Some(l) && it.id != r.clip).map(|it| it.id));
                     }
-                    filmcraft_edit::razor_items(q, &items, *t, &mut ctx);
+                    filmagic_edit::razor_items(q, &items, *t, &mut ctx);
                 }
                 pr.next_id = next;
                 pr.sequence(seq_id).ok_or(EngineError::NoSequence)?.check().map_err(EngineError::Other)?;

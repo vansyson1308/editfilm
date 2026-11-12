@@ -20,10 +20,10 @@
 
 use std::collections::BTreeSet;
 
-use filmcraft_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, Project, Sequence, TrackItem, TrackKind};
-use filmcraft_render::scene::{Signature, difference, signature};
-use filmcraft_render::story::{Attention, Change, Glance, Pace, Sheet, attention, contact_sheet, drift, eye_travel, medoid, rhythm, screen_direction, settles};
-use filmcraft_time::{FrameRate, Tick};
+use filmagic_project::{ClipId, ItemId, ItemKind, Label, Marker, MarkerId, MarkerKind, Project, Sequence, TrackItem, TrackKind};
+use filmagic_render::scene::{Signature, difference, signature};
+use filmagic_render::story::{Attention, Change, Glance, Pace, Sheet, attention, contact_sheet, drift, eye_travel, medoid, rhythm, screen_direction, settles};
+use filmagic_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, bad, clip_p, has_seq, item_p, str_p, time_p, u64_p};
@@ -131,7 +131,7 @@ const BOARD_GAP: usize = 6;
 /// The height of a board cell `width` wide for a picture of `size` pixels shaped `par` (width over
 /// height): the picture as it is shown, not as it is stored.
 fn cell_height(width: f64, size: (usize, usize), par: (u32, u32)) -> usize {
-    let shown = size.0.max(1) as f64 * filmcraft_project::par_ratio(filmcraft_project::sane_par(par));
+    let shown = size.0.max(1) as f64 * filmagic_project::par_ratio(filmagic_project::sane_par(par));
     ((width * size.1.max(1) as f64 / shown.max(1.0)).round() as usize).clamp(8, 4 * (width as usize).max(2))
 }
 
@@ -145,7 +145,7 @@ fn board_budget(cells: usize, columns: usize, width: f64, size: (u32, u32), par:
     let cell_h = cell_height(width, (size.0 as usize, size.1 as usize), par).saturating_add(1);
     let w = columns.saturating_mul(width as usize).saturating_add(BOARD_GAP.saturating_mul(columns + 1));
     let h = rows.saturating_mul(cell_h).saturating_add(BOARD_GAP.saturating_mul(rows + 1));
-    if w.saturating_mul(h) > filmcraft_render::story::MAX_SHEET_PIXELS {
+    if w.saturating_mul(h) > filmagic_render::story::MAX_SHEET_PIXELS {
         return Err(bad(cmd, format!("the board would be {w}×{h} pixels, more than one sheet holds; lower `width`, `max` or `count`")));
     }
     Ok(())
@@ -153,8 +153,8 @@ fn board_budget(cells: usize, columns: usize, width: f64, size: (u32, u32), par:
 
 /// The sequence's frame as displayed: width over height, pixel shape included.
 fn display_aspect(q: &Sequence) -> f32 {
-    let par = filmcraft_project::sane_par(q.settings.par);
-    (f64::from(q.settings.width.max(1)) * filmcraft_project::par_ratio(par) / f64::from(q.settings.height.max(1))) as f32
+    let par = filmagic_project::sane_par(q.settings.par);
+    (f64::from(q.settings.width.max(1)) * filmagic_project::par_ratio(par) / f64::from(q.settings.height.max(1))) as f32
 }
 
 /// The first frame of the sequence's grid at or after `t`.
@@ -208,14 +208,14 @@ fn is_footage(p: &Project, it: &TrackItem) -> bool {
 /// - a clip placed over less than half the frame: a picture in a picture, a bug in a corner.
 ///   (Letterboxed footage covers three quarters of the frame and more, and is a shot.)
 fn is_partial(p: &Project, q: &Sequence, it: &TrackItem) -> bool {
-    if it.effects.iter().any(|e| e.effect == "opacity" && e.enabled && e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None)) {
+    if it.effects.iter().any(|e| e.effect == "opacity" && e.enabled && e.masks.iter().any(|m| m.mode != filmagic_project::MaskMode::None)) {
         return true;
     }
     if p.resolve_media(it.item).is_some_and(|(_, m, _)| m.info.video.as_ref().is_some_and(|v| v.has_alpha)) {
         return true;
     }
-    let Some(size) = filmcraft_render::source_size(p, it.item).filter(|(w, h)| *w > 0 && *h > 0) else { return false };
-    let placed = filmcraft_render::motion_matrix(q, it, size, filmcraft_render::source_par(p, it.item), it.effect_time_at(it.start));
+    let Some(size) = filmagic_render::source_size(p, it.item).filter(|(w, h)| *w > 0 && *h > 0) else { return false };
+    let placed = filmagic_render::motion_matrix(q, it, size, filmagic_render::source_par(p, it.item), it.effect_time_at(it.start));
     let frame = f64::from(q.settings.width.max(1)) * f64::from(q.settings.height.max(1));
     let covered = placed.determinant().abs() * f64::from(size.0) * f64::from(size.1);
     covered.is_finite() && covered < 0.5 * frame
@@ -422,11 +422,11 @@ fn sound_at(s: &Session, q: &Sequence, t: Tick) -> Option<bool> {
     let start = (at - half).max(0);
     let frames = usize::try_from(at + half - start).ok()?;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
-    let mix = filmcraft_render::audio::mix_sequence(&s.project, q, start, frames, &provider);
+    let mix = filmagic_render::audio::mix_sequence(&s.project, q, start, frames, &provider);
     let n = mix.frames();
     let chans = mix.channels.len().max(1) as f32;
     let mono: Vec<f32> = (0..n).map(|i| mix.channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() / chans).collect();
-    let db = filmcraft_render::story::levels_db(&mono, sr);
+    let db = filmagic_render::story::levels_db(&mono, sr);
     // 10 ms steps; the cut sits at step `cut`
     let cut = usize::try_from((at - start) / i64::from(sr / 100).max(1)).ok()?;
     let before = db.get(cut.saturating_sub(55)..cut.saturating_sub(8))?;
@@ -571,7 +571,7 @@ fn analyse_cut(s: &Session, cx: &CutContext<'_>) -> Result<Value> {
     let in1 = look(s, scale, Some(first_in + fd).filter(|g| *g < after.end).unwrap_or(first_in))?;
     let offline = out1.offline || in0.offline;
     let diff = difference(&out1.sig, &in0.sig);
-    let likeness = filmcraft_render::scene::likeness(&out1.sig, &in0.sig);
+    let likeness = filmagic_render::scene::likeness(&out1.sig, &in0.sig);
     let change = Change::of(diff);
     let (eye_out, eye_in): (Attention, Attention) = (attention(&out1.glance, Some(&out0.glance)), attention(&in0.glance, Some(&in1.glance)));
     let travel = (eye_out.strength > 0.0 && eye_in.strength > 0.0).then(|| eye_travel(eye_out, eye_in, display_aspect(q)));
@@ -779,13 +779,13 @@ struct BlinkPoint {
 fn phrase_points(pr: &Probe, min_pause: f64) -> (Vec<BlinkPoint>, bool) {
     let Some(sound) = &pr.sound else { return (Vec::new(), false) };
     let sr = pr.sample_rate;
-    let step = filmcraft_render::story::level_step(sr);
+    let step = filmagic_render::story::level_step(sr);
     let origin = (pr.from - pr.lead).max(pr.sound_span.0);
     let (a, b) = (origin.to_units_floor(i64::from(sr)), pr.to.min(pr.sound_span.1).to_units_floor(i64::from(sr)));
     let mut heard = false;
     // five seconds at a time, in whole level steps, so a long clip never sits in memory at once
     let chunk = (sr as usize * 5 / step).max(1) * step;
-    let mut voice_band = filmcraft_render::story::VoiceBand::new(sr);
+    let mut voice_band = filmagic_render::story::VoiceBand::new(sr);
     let (mut whole, mut voice): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let mut at = a;
     while at < b {
@@ -797,7 +797,7 @@ fn phrase_points(pr: &Probe, min_pause: f64) -> (Vec<BlinkPoint>, bool) {
         let read = sound(at, n);
         heard |= read.is_some();
         let mono = read.unwrap_or_else(|| vec![0.0; n]);
-        whole.extend(filmcraft_render::story::levels_db(&mono, sr));
+        whole.extend(filmagic_render::story::levels_db(&mono, sr));
         voice.extend(voice_band.levels_db(&mono));
         at += n as i64;
     }
@@ -805,9 +805,9 @@ fn phrase_points(pr: &Probe, min_pause: f64) -> (Vec<BlinkPoint>, bool) {
     let fd = pr.rate.frame_duration();
     // Speech over an engine, wind or surf shows its pauses only in the band a voice lives in;
     // sound with nothing there (a drum, a door) is read whole.
-    let mut found = filmcraft_render::story::pauses_in_levels(&voice, step_s, min_pause, 0.4);
+    let mut found = filmagic_render::story::pauses_in_levels(&voice, step_s, min_pause, 0.4);
     if found.is_empty() {
-        found = filmcraft_render::story::pauses_in_levels(&whole, step_s, min_pause, 0.4);
+        found = filmagic_render::story::pauses_in_levels(&whole, step_s, min_pause, 0.4);
     }
     let points = found
         .into_iter()
@@ -917,7 +917,7 @@ fn blink_span(p: &Value, lo: Tick, hi: Tick, cmd: &str) -> Result<(Tick, Tick)> 
     Ok((from, to))
 }
 
-fn frame_scale(src: &filmcraft_media::SharedSource) -> f32 {
+fn frame_scale(src: &filmagic_media::SharedSource) -> f32 {
     src.info().video.as_ref().map_or(1.0, |v| (ANALYSIS_SIDE / v.width.max(v.height).max(1) as f32).min(1.0))
 }
 
@@ -943,7 +943,7 @@ fn clip_probe(s: &Session, p: &Value, clip: ClipId, picture: bool) -> Result<Pro
         Box::new(move |start: i64, frames: usize| {
             let mut sum: Option<Vec<f32>> = None;
             for a in &audible {
-                let Some(ch) = filmcraft_render::audio::clip_signal(a, start, frames, sr, &provider) else { continue };
+                let Some(ch) = filmagic_render::audio::clip_signal(a, start, frames, sr, &provider) else { continue };
                 let one = mono(&ch, frames);
                 match &mut sum {
                     Some(acc) => acc.iter_mut().zip(one).for_each(|(x, y)| *x += y),
@@ -963,7 +963,7 @@ fn clip_probe(s: &Session, p: &Value, clip: ClipId, picture: bool) -> Result<Pro
             if t < v.start || t >= v.end() {
                 return None;
             }
-            let f = src.video_frame(filmcraft_media::FrameRequest { time: v.source_time_at(t), scale }).ok()?;
+            let f = src.video_frame(filmagic_media::FrameRequest { time: v.source_time_at(t), scale }).ok()?;
             Some((f.to_rgba8(), f.width as usize, f.height as usize))
         }) as Box<dyn Fn(Tick) -> Option<(Vec<u8>, usize, usize)>>)
     });
@@ -999,7 +999,7 @@ fn item_probe(s: &Session, p: &Value, item: ItemId, picture: bool) -> Result<Pro
     let scale = frame_scale(&src);
     let picture = (picture && info.video.is_some()).then(|| {
         Box::new(move |t: Tick| {
-            let f = src.video_frame(filmcraft_media::FrameRequest { time: t, scale }).ok()?;
+            let f = src.video_frame(filmagic_media::FrameRequest { time: t, scale }).ok()?;
             Some((f.to_rgba8(), f.width as usize, f.height as usize))
         }) as Box<dyn Fn(Tick) -> Option<(Vec<u8>, usize, usize)>>
     });
@@ -1012,7 +1012,7 @@ fn item_probe(s: &Session, p: &Value, item: ItemId, picture: bool) -> Result<Pro
 /// The stretch of media time a project item covers. A subclip is a stretch of its parent's media
 /// and is read from the parent's source, so its times are the parent's: it runs from its In point
 /// to its Out point, not from 0.
-fn item_span(s: &Session, item: ItemId, pi: &filmcraft_project::ProjectItem) -> (Tick, Tick) {
+fn item_span(s: &Session, item: ItemId, pi: &filmagic_project::ProjectItem) -> (Tick, Tick) {
     match s.project.resolve_media(item) {
         Some((_, _, Some(range))) => (range.start, range.end()),
         _ => (Tick::ZERO, crate::commands::full_duration(s, pi)),
@@ -1020,7 +1020,7 @@ fn item_span(s: &Session, item: ItemId, pi: &filmcraft_project::ProjectItem) -> 
 }
 
 /// The frame rate of a project item's media (a subclip's is its parent's).
-fn item_rate(s: &Session, item: ItemId, pi: &filmcraft_project::ProjectItem) -> FrameRate {
+fn item_rate(s: &Session, item: ItemId, pi: &filmagic_project::ProjectItem) -> FrameRate {
     s.project.resolve_media(item).and_then(|(parent, _, _)| s.project.item(parent)).unwrap_or(pi).frame_rate().sane()
 }
 
@@ -1115,7 +1115,7 @@ fn blink_points(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A board cell before it is laid out.
 struct Cell {
-    image: filmcraft_render::Image,
+    image: filmagic_render::Image,
     label: String,
     info: Value,
 }
@@ -1135,7 +1135,7 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize
     let wanted: Vec<(usize, &Shot)> =
         all.iter().enumerate().filter(|(_, sh)| sh.clip.is_some() && from.is_none_or(|f| sh.end > f) && to.is_none_or(|x| sh.start < x)).collect();
     let truncated = wanted.len() > max;
-    let par = filmcraft_project::sane_par(q.settings.par);
+    let par = filmagic_project::sane_par(q.settings.par);
     board_budget(wanted.len().min(max), columns, width, (q.settings.width, q.settings.height), par, CMD)?;
     let scale = (width / f64::from(q.settings.width.max(1))).clamp(0.01, 1.0) as f32;
     let mut cells = Vec::new();
@@ -1145,7 +1145,7 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize
         // the frames the shot is on screen for: a shot need not start on the grid, and the frame
         // its start falls in still shows the shot before
         let (first, last) = (frame_from(rate, sh.start), frame_before(rate, sh.end));
-        let mut frames: Vec<(Tick, filmcraft_render::Image, Signature)> = Vec::new();
+        let mut frames: Vec<(Tick, filmagic_render::Image, Signature)> = Vec::new();
         for k in 1..=5 {
             let t = rate.snap(sh.start + Tick(len / 6 * k));
             let t = if first <= last { t.clamp(first, last) } else { t };
@@ -1178,9 +1178,9 @@ fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, co
         return Err(bad(CMD, "nothing to show between `fromSeconds` and `toSeconds`"));
     }
     let rate = item_rate(s, item, pi);
-    let (w, h) = filmcraft_render::source_size(&s.project, item).ok_or_else(|| bad(CMD, format!("`{}` has no picture", pi.name)))?;
+    let (w, h) = filmagic_render::source_size(&s.project, item).ok_or_else(|| bad(CMD, format!("`{}` has no picture", pi.name)))?;
     // media is decoded as it is stored; anamorphic footage is shown wider than that
-    let par = filmcraft_render::source_par(&s.project, item).map_or((1, 1), filmcraft_project::sane_par);
+    let par = filmagic_render::source_par(&s.project, item).map_or((1, 1), filmagic_project::sane_par);
     board_budget(count, columns, width, (w, h), par, CMD)?;
     let scale = (width / f64::from(w.max(1))).clamp(0.01, 1.0) as f32;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
@@ -1188,7 +1188,7 @@ fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, co
     for k in 0..count {
         // the middle of each of `count` equal parts
         let t = rate.snap(from + Tick((to - from).0 / (count as i64 * 2) * (2 * k as i64 + 1)));
-        let Some(image) = filmcraft_render::render_item(&s.project, item, t, scale, &provider) else { continue };
+        let Some(image) = filmagic_render::render_item(&s.project, item, t, scale, &provider) else { continue };
         cells.push(Cell { image, label: format!("{}  {}", k + 1, clock(t)), info: json!({"index": k + 1, "at": time_json(t, rate)}) });
     }
     if cells.is_empty() {
@@ -1239,9 +1239,9 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
     let cell_h = cell_height(width, (first.image.w, first.image.h), par);
     let sheet = Sheet { columns: columns.min(cells.len()), cell_w, cell_h, gap: BOARD_GAP, pixel_aspect: par };
     let info: Vec<Value> = cells.iter().map(|c| c.info.clone()).collect();
-    let laid: Vec<(filmcraft_render::Image, String)> = cells.into_iter().map(|c| (c.image, if labels { c.label } else { String::new() })).collect();
+    let laid: Vec<(filmagic_render::Image, String)> = cells.into_iter().map(|c| (c.image, if labels { c.label } else { String::new() })).collect();
     let img = contact_sheet(&laid, sheet).ok_or_else(|| bad(CMD, "the board would be too large; lower `width`, `max` or `count`"))?;
-    let bytes = filmcraft_export::still::encode(&img, filmcraft_export::still::StillFormat::Png, 8).map_err(|e| EngineError::Other(e.to_string()))?;
+    let bytes = filmagic_export::still::encode(&img, filmagic_export::still::StillFormat::Png, 8).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({
         "path": path,
@@ -1355,7 +1355,7 @@ fn split_edit(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(CMD, "the clips have no spare media beyond the cut to extend into (no handles)"));
         }
         for &(l, r) in &rolled {
-            filmcraft_edit::roll(q, l, r, d, ctx)?;
+            filmagic_edit::roll(q, l, r, d, ctx)?;
         }
         Ok(d)
     })?;
@@ -1526,7 +1526,7 @@ pub(crate) fn change_json(before: &[Option<Frame>], after: &[Option<Frame>]) -> 
             if (a.1, a.2) != (b.1, b.2) {
                 return None;
             }
-            filmcraft_render::story::picture_change(&a.0, &b.0, a.1, a.2)
+            filmagic_render::story::picture_change(&a.0, &b.0, a.1, a.2)
         })
         .max_by(|x, y| x.strongest.total_cmp(&y.strongest));
     match worst {
@@ -1564,8 +1564,8 @@ fn shown(q: &Sequence, sh: &Shot) -> Option<Shown> {
 /// One sequence's frame at `t`, reduced, as RGBA8.
 fn sequence_rgba(s: &Session, id: ItemId, q: &Sequence, t: Tick) -> (Vec<u8>, usize, usize) {
     let provider = s.media.provider(s.project.clone(), s.services.clone());
-    let opts = filmcraft_render::RenderOptions { scale: analysis_scale(q), captions: true, ..Default::default() };
-    let img = filmcraft_render::render_sequence(&s.project, id, q.frame_rate().snap(t.max(Tick::ZERO)), opts, &provider);
+    let opts = filmagic_render::RenderOptions { scale: analysis_scale(q), captions: true, ..Default::default() };
+    let img = filmagic_render::render_sequence(&s.project, id, q.frame_rate().snap(t.max(Tick::ZERO)), opts, &provider);
     (img.over_black_rgba8(), img.w, img.h)
 }
 
@@ -1688,7 +1688,7 @@ fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId
         }
         if compared < pictures && listed {
             compared += 1;
-            let mut worst: Option<filmcraft_render::story::PictureChange> = None;
+            let mut worst: Option<filmagic_render::story::PictureChange> = None;
             for k in 1..=3 {
                 // a quarter, a half and three quarters of the way through what both show
                 let x = lo + Tick((hi - lo).0 / 4 * k);
@@ -1697,7 +1697,7 @@ fn compare_shots(s: &Session, here: (ItemId, &Sequence, &[Shot]), there: (ItemId
                     unlike_frames = true;
                     continue;
                 }
-                if let Some(c) = filmcraft_render::story::picture_change(&a.0, &b.0, a.1, a.2)
+                if let Some(c) = filmagic_render::story::picture_change(&a.0, &b.0, a.1, a.2)
                     && worst.is_none_or(|w| c.strongest > w.strongest)
                 {
                     worst = Some(c);

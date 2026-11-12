@@ -1,12 +1,12 @@
 //! The faster decoder and pipeline must give exactly what the reference implementation of PR
-//! #1068 (`filmcraft_dng::reference`) gives: the same raw samples, and the same f32 bit patterns
+//! #1068 (`filmagic_dng::reference`) gives: the same raw samples, and the same f32 bit patterns
 //! after development, over every Bayer phase, both demosaic qualities, crops with odd origins and
 //! at the borders, active-area offsets, linearisation tables, black-level deltas, lossless-JPEG
 //! codes above the stated bit depth, LinearRaw, other CFA patterns and tiny pictures.
 
-use filmcraft_dng::tiff::tags;
-use filmcraft_dng::writer::{Compression, Layout, Options, Value, write};
-use filmcraft_dng::{DemosaicQuality, Dng, ProcessOptions};
+use filmagic_dng::tiff::tags;
+use filmagic_dng::writer::{Compression, Layout, Options, Value, write};
+use filmagic_dng::{DemosaicQuality, Dng, ProcessOptions};
 
 fn noise(n: usize, max: u32, seed: u32) -> Vec<u16> {
     let mut s = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
@@ -186,7 +186,7 @@ fn reduced_resolution_covers_the_target_and_keeps_flat_colours() {
     // LinearRaw and monochrome reduce too
     let lin: Vec<u16> = (0..w * h).flat_map(|_| [500u16, 1500, 2500]).collect();
     let o = Options { width: w, height: h, samples_per_pixel: 3, bits: 12, cfa: None, ..Default::default() };
-    let img = filmcraft_dng::decode_with(&write(&lin, &o), &ProcessOptions { target_size: Some((10, 10)), ..Default::default() }).unwrap();
+    let img = filmagic_dng::decode_with(&write(&lin, &o), &ProcessOptions { target_size: Some((10, 10)), ..Default::default() }).unwrap();
     assert_eq!((img.width, img.height), (16, 10));
     assert!((img.rgba[0] - 500.0 / 4095.0).abs() < 1e-6);
 }

@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-dng"
+name = "filmagic-dng"
 description = "Clean-room DNG / CinemaDNG camera RAW decoder (TIFF container, lossless JPEG, DNG colour pipeline)"
 version.workspace = true
 edition.workspace = true
@@ -23,7 +23,7 @@ serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-filmcraft-dng = { path = ".", features = ["writer", "serde"] }
+filmagic-dng = { path = ".", features = ["writer", "serde"] }
 serde_json.workspace = true
 
 [lints]

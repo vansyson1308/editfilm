@@ -1,4 +1,4 @@
-//! The FilmCraft document model.
+//! The Filmagic document model.
 //!
 //! A [`Project`] owns a tree of bins and a flat map of [`ProjectItem`]s (media clips, sequences,
 //! synthetic items). A [`Sequence`] has video and audio [`Track`]s holding [`TrackItem`]s (clip
@@ -30,9 +30,9 @@ pub mod vtransition;
 
 use std::collections::BTreeMap;
 
-use filmcraft_geom::Vec2;
-use filmcraft_media::{Generator, MediaInfo};
-use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
+use filmagic_geom::Vec2;
+use filmagic_media::{Generator, MediaInfo};
+use filmagic_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
@@ -499,7 +499,7 @@ impl Project {
     }
 
     /// The bare model as JSON. Project *files* add a schema-versioned envelope; read and write them
-    /// with `filmcraft-format`, not with these.
+    /// with `filmagic-format`, not with these.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }

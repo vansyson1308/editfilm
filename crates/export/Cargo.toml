@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-export"
+name = "filmagic-export"
 description = "Export pipeline: parallel render → encode → mux, presets, progress/cancel"
 version.workspace = true
 edition.workspace = true
@@ -10,25 +10,25 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-filmcraft-time = { workspace = true }
-filmcraft-frame = { workspace = true }
-filmcraft-color = { workspace = true }
-filmcraft-media = { workspace = true }
-filmcraft-codecs = { workspace = true }
-filmcraft-project = { workspace = true }
-filmcraft-render = { workspace = true }
-filmcraft-audio-dsp = { workspace = true }
-filmcraft-geom = { workspace = true }
-filmcraft-text = { workspace = true }
-filmcraft-isobmff = { workspace = true }
-filmcraft-prores = { workspace = true }
-filmcraft-dnx = { workspace = true }
-filmcraft-apv = { workspace = true }
-filmcraft-mxf = { workspace = true }
-filmcraft-aac = { workspace = true }
-filmcraft-mp3enc = { workspace = true }
-filmcraft-flac = { workspace = true }
-filmcraft-h264enc = { workspace = true }
+filmagic-time = { workspace = true }
+filmagic-frame = { workspace = true }
+filmagic-color = { workspace = true }
+filmagic-media = { workspace = true }
+filmagic-codecs = { workspace = true }
+filmagic-project = { workspace = true }
+filmagic-render = { workspace = true }
+filmagic-audio-dsp = { workspace = true }
+filmagic-geom = { workspace = true }
+filmagic-text = { workspace = true }
+filmagic-isobmff = { workspace = true }
+filmagic-prores = { workspace = true }
+filmagic-dnx = { workspace = true }
+filmagic-apv = { workspace = true }
+filmagic-mxf = { workspace = true }
+filmagic-aac = { workspace = true }
+filmagic-mp3enc = { workspace = true }
+filmagic-flac = { workspace = true }
+filmagic-h264enc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -37,4 +37,4 @@ web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tiff", "bmp"] }
 
 [dev-dependencies]
-filmcraft-testkit = { workspace = true }
+filmagic-testkit = { workspace = true }

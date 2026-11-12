@@ -1,5 +1,5 @@
 [package]
-name = "filmcraft-render"
+name = "filmagic-render"
 description = "Sequence evaluation and CPU reference compositor (linear-light premultiplied f32)"
 version.workspace = true
 edition.workspace = true
@@ -10,15 +10,15 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-filmcraft-time = { workspace = true }
-filmcraft-geom = { workspace = true }
-filmcraft-color = { workspace = true }
-filmcraft-frame = { workspace = true }
-filmcraft-media = { workspace = true }
-filmcraft-project = { workspace = true }
-filmcraft-audio-dsp = { workspace = true }
-filmcraft-captions = { workspace = true }
-filmcraft-text = { workspace = true }
+filmagic-time = { workspace = true }
+filmagic-geom = { workspace = true }
+filmagic-color = { workspace = true }
+filmagic-frame = { workspace = true }
+filmagic-media = { workspace = true }
+filmagic-project = { workspace = true }
+filmagic-audio-dsp = { workspace = true }
+filmagic-captions = { workspace = true }
+filmagic-text = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

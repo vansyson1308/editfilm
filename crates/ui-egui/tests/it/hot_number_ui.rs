@@ -5,15 +5,15 @@
 use std::sync::mpsc::{Sender, channel};
 
 use egui_kittest::Harness;
-use filmcraft_engine::Session;
-use filmcraft_project::{ClipId, ParamValue};
-use filmcraft_time::Tick;
-use filmcraft_ui_egui::FilmcraftApp;
-use filmcraft_ui_egui::control::ControlRequest;
+use filmagic_engine::Session;
+use filmagic_project::{ClipId, ParamValue};
+use filmagic_time::Tick;
+use filmagic_ui_egui::FilmagicApp;
+use filmagic_ui_egui::control::ControlRequest;
 use serde_json::{Value, json};
 
 struct Driver {
-    harness: Harness<'static, FilmcraftApp>,
+    harness: Harness<'static, FilmagicApp>,
     tx: Sender<ControlRequest>,
     /// The window is in the background: egui sees it focused only on frames carrying control input.
     background: bool,
@@ -24,7 +24,7 @@ impl Driver {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
         let (tx, rx) = channel();
-        let app = FilmcraftApp::new(session).with_control(rx);
+        let app = FilmagicApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx, background: false };
         d.frames(4);
@@ -202,8 +202,8 @@ fn arrow_keys_move_the_caret_in_the_source_text() {
 mod arrow_step {
     use egui::{Event, Key, Modifiers};
     use egui_kittest::Harness;
-    use filmcraft_ui_egui::theme::{ThemeKind, Tokens};
-    use filmcraft_ui_egui::widgets::{HotNumberOptions, hot_number};
+    use filmagic_ui_egui::theme::{ThemeKind, Tokens};
+    use filmagic_ui_egui::widgets::{HotNumberOptions, hot_number};
 
     struct Field {
         value: f64,
