@@ -246,8 +246,31 @@ const UPSTREAM_NOTES: [(&str, &str); 15] = [
 /// Tests that name the upstream terms to check they appear nowhere else; any term is allowed there.
 const UPSTREAM_CHECKS: [&str; 2] = ["crates/ui-egui/tests/it/links_ui.rs", "apps/filmagic/src/app_id_tests.rs"];
 
+/// This repository's files, relative to its root: what `git ls-files` tracks, or, where git or the
+/// `.git` folder is missing (a source tarball), a walk of the tree. Either way, `vendor/` and other
+/// checkouts placed inside the tree (CI puts craft-fonts there for `CRAFT_FONTS_DIR`) are left out.
+fn repository_files(root: &Path) -> Vec<PathBuf> {
+    let tracked = std::process::Command::new("git").arg("-C").arg(root).args(["ls-files", "-z"]).output();
+    if let Ok(out) = tracked
+        && out.status.success()
+        && !out.stdout.is_empty()
+    {
+        return out
+            .stdout
+            .split(|b| *b == 0)
+            .filter_map(|name| std::str::from_utf8(name).ok())
+            .filter(|name| !name.is_empty() && !name.starts_with("vendor/"))
+            .map(PathBuf::from)
+            .collect();
+    }
+    let mut files = Vec::new();
+    files_under(root, Path::new(""), 0, &mut files);
+    files
+}
+
 /// Every file under `dir` (relative to the repository), skipping build output, the vendored
-/// code, the local notebook and version control. Bounded in depth so a link loop can't run away.
+/// code, the local notebook, version control and any other checkout inside the tree (a folder
+/// with its own `.git`). Bounded in depth so a link loop can't run away.
 fn files_under(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     const SKIP: [&str; 5] = [".git", "target", "vendor", "plan", "node_modules"];
     if depth > 16 {
@@ -258,7 +281,8 @@ fn files_under(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let rel = dir.join(entry.file_name());
         let Ok(kind) = entry.file_type() else { continue };
         if kind.is_dir() {
-            if !(depth == 0 && SKIP.iter().any(|s| entry.file_name() == *s)) {
+            let skipped = depth == 0 && SKIP.iter().any(|s| entry.file_name() == *s);
+            if !skipped && !root.join(&rel).join(".git").exists() {
                 files_under(root, &rel, depth + 1, out);
             }
         } else if kind.is_file() {
@@ -270,9 +294,12 @@ fn files_under(root: &Path, dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 #[test]
 fn only_the_listed_notes_name_the_upstream_company() {
     let root = repo();
-    let mut files = Vec::new();
-    files_under(&root, Path::new(""), 0, &mut files);
+    let files = repository_files(&root);
     assert!(files.iter().any(|f| f == Path::new("packaging/linux/package.sh")), "the walk found the packaging");
+    // The walk used without git leaves out other checkouts in the tree, as `git ls-files` does.
+    let mut walked = Vec::new();
+    files_under(&root, Path::new(""), 0, &mut walked);
+    assert!(walked.iter().any(|f| f == Path::new("packaging/linux/package.sh")), "the fallback walk found the packaging");
     let mut found = Vec::new();
     for file in &files {
         let Ok(bytes) = std::fs::read(root.join(file)) else { continue };
