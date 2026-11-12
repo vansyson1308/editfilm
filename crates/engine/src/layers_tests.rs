@@ -54,7 +54,10 @@ fn refuses(s: &mut Session, id: &str, cases: &[Value]) {
     for p in cases {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute(id, p.clone())));
         assert!(r.is_ok(), "{id} panicked on {p}");
-        assert!(r.unwrap().is_err(), "{id} accepted {p}");
+        let r = r.unwrap();
+        assert!(r.is_err(), "{id} accepted {p}");
+        // `execute` turns a panic inside a command into an error: that is a crash, not a refusal
+        assert!(!r.unwrap_err().to_string().contains("internal error"), "{id} panicked on {p}");
         assert_eq!(*s.project, snap, "{id} changed the project on {p}");
         assert_eq!(s.history.undo.len(), undo, "{id} left an undo step on {p}");
     }
@@ -1163,14 +1166,21 @@ fn a_layer_grows_where_it_stands() {
     assert!(is(px(&s, 47, 253, 95), RED) && is(px(&s, 47, 307, 95), RED) && is(px(&s, 47, 246, 95), GREY3));
     // nothing of it is left where a scale about the middle of the picture would have thrown it
     assert!(is(px(&s, 47, 318, 95), GREY3));
-    // asked again, nothing moves
+    assert_eq!(r["changed"], true);
+    // asked again, nothing moves, and there is nothing to undo: the history is as it was, redo included
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    let again = s.execute("layers.transform", json!({"layer": layer, "offset": [0, 0]})).unwrap();
+    assert_eq!((again["changed"].as_bool(), s.history.undo.len(), s.history.redo.len()), (Some(false), undo, 1), "{again}");
+    s.execute("edit.redo", json!({})).unwrap();
     let again = s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap();
-    assert_eq!(again["pictureChange"]["reads"], "none", "{again}");
+    assert_eq!((again["pictureChange"]["reads"].as_str(), again["changed"].as_bool()), (Some("none"), Some(false)), "{again}");
+    assert_eq!(s.history.undo.len(), undo + 1, "no undo step for a change that is none");
     assert_eq!(motion(&s, layer).params["position"], m.params["position"]);
     // back to 100: the layer is where it was cut from
     s.execute("layers.transform", json!({"layer": layer, "scale": 100})).unwrap();
     assert_eq!([(0, 40), (24, 162), (47, 280)].map(|(f, x)| red_rows(&s, f, x)).to_vec(), stood);
-    s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("edit.undo", json!({})).unwrap();
     let m = motion(&s, layer);
@@ -1303,6 +1313,9 @@ fn transform_refuses_what_it_cannot_do() {
             json!({"layer": layer, "anchor": "top"}),
             json!({"layer": 999_999, "scale": 150}),
             json!({"layer": "block", "scale": 150}),
+            // `clip` names the layer too, but not in place of a `layer` that is no id
+            json!({"layer": "block", "clip": layer, "scale": 150}),
+            json!({"layer": [layer], "clip": layer, "scale": 150}),
             json!({"layer": sound, "scale": 150}),
             // the shot itself has no mask: there is no subject to hold in place
             json!({"layer": c, "scale": 150}),
@@ -1366,6 +1379,12 @@ fn transform_refuses_what_it_cannot_do() {
         }
         assert_eq!(motion(&s, broken).params["scale"].value, ParamValue::Float(100.0));
     }
+    // an adjustment layer's mask is drawn on the frame and its Motion does not move it: there is no subject in it
+    let item = s.execute("file.newAdjustmentLayer", json!({"seconds": 1.0})).unwrap()["item"].as_u64().unwrap();
+    let adjustment = s.execute("timeline.place", json!({"item": item, "track": "new", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
+    s.execute("masks.add", json!({"clip": adjustment, "effect": "opacity", "shape": "rectangle", "center": [100.0, 100.0], "size": [50.0, 50.0]})).unwrap();
+    refuses(&mut s, "layers.transform", &[json!({"layer": adjustment, "scale": 50})]);
+    assert!(s.execute("layers.transform", json!({"layer": adjustment, "scale": 50})).unwrap_err().to_string().contains("adjustment layer"));
     // a locked track is left alone
     let track = s.active_sequence().unwrap().video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == layer)).unwrap();
     s.execute("timeline.setTrack", json!({"track": format!("V{}", track + 1), "locked": true})).unwrap();
@@ -1374,4 +1393,229 @@ fn transform_refuses_what_it_cannot_do() {
     assert!(Session::default().execute("layers.transform", json!({"layer": 1, "scale": 150})).is_err(), "without a sequence");
     let spec = crate::commands::find("layers.transform").unwrap();
     assert!(spec.journal && spec.params.contains("\"layer\":id"));
+}
+
+/// Where the bottom centre of a layer's first opacity mask is in the frame at sequence frame
+/// `frame`, through the layer's own Motion: its picture's size and pixel shape, and its own clock.
+fn feet(s: &Session, layer: u64, frame: i64) -> filmcraft_geom::Vec2 {
+    let it = clip(s, layer);
+    let t = it.effect_time_at(s.sequence_rate().tick_of(frame));
+    let size = filmcraft_render::source_size(&s.project, it.item).unwrap();
+    let m = filmcraft_render::motion_matrix(s.active_sequence().unwrap(), it, size, filmcraft_render::source_par(&s.project, it.item), t);
+    let pts: Vec<filmcraft_geom::Vec2> = it.effect("opacity").unwrap().masks[0].path_at(t).vertices.iter().map(|v| m.apply(v.p)).collect();
+    let (left, right) = pts.iter().fold((f64::MAX, f64::MIN), |b, p| (b.0.min(p.x), b.1.max(p.x)));
+    filmcraft_geom::Vec2::new((left + right) / 2.0, pts.iter().fold(f64::MIN, |b, p| b.max(p.y)))
+}
+
+/// The frames of the sequence a clip is on screen for.
+fn frames_of(s: &Session, id: u64) -> std::ops::Range<i64> {
+    let (it, rate) = (clip(s, id), s.sequence_rate());
+    rate.frame_at(it.start)..rate.frame_at(it.end() - Tick(1)) + 1
+}
+
+/// Transform `layer` with `p` and return how far its feet strayed, at worst, over every frame it
+/// is on screen for from where they were plus `offset`.
+fn strays(s: &mut Session, layer: u64, mut p: Value, offset: (f64, f64)) -> (f64, Value) {
+    let stood: Vec<filmcraft_geom::Vec2> = frames_of(s, layer).map(|f| feet(s, layer, f)).collect();
+    p["layer"] = json!(layer);
+    let r = s.execute("layers.transform", p).unwrap();
+    let worst =
+        frames_of(s, layer).zip(stood).map(|(f, was)| (feet(s, layer, f) - was - filmcraft_geom::Vec2::new(offset.0, offset.1)).length()).fold(0.0, f64::max);
+    (worst, r)
+}
+
+fn key(s: &mut Session, id: u64, param: &str, frame: i64, value: Value) {
+    let time = s.sequence_rate().tick_of(frame).0;
+    s.execute("effects.setParam", json!({"clip": id, "effect": "motion", "param": param, "value": value, "time": time, "keyframe": true})).unwrap();
+}
+
+#[test]
+fn a_layer_that_turns_keeps_its_feet_between_the_keyframes_too() {
+    // a quarter turn across the shot, about the middle of the picture: the feet swing through an arc
+    let (mut s, c, _) = shot();
+    let region = json!({"x": 0.03125, "y": 0.35, "w": 0.1875, "h": 0.2125});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    key(&mut s, layer, "rotation", 0, json!(0.0));
+    key(&mut s, layer, "rotation", 47, json!(90.0));
+    let (swing, there) = (feet(&s, layer, 24) - feet(&s, layer, 0), feet(&s, layer, 47) - feet(&s, layer, 0));
+    assert!((swing - there * (24.0 / 47.0)).length() > 10.0, "not a straight line: two keyframes of the position could not follow it");
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 150}), (0.0, 0.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+    // a position for each frame the layer is on screen
+    assert_eq!(r["keyframes"].as_u64(), Some(48), "{r}");
+    assert_eq!(motion(&s, layer).params["rotation"].keyframes.len(), 2, "the turn is as it was");
+
+    // the layer slides with an ease of its own while its mask follows the block at an even pace
+    let (mut s, c, _) = shot();
+    let layer = block_layer(&mut s, c);
+    key(&mut s, layer, "position", 0, json!([160.0, 90.0]));
+    key(&mut s, layer, "position", 47, json!([360.0, 60.0]));
+    s.edit_sequence("Ease", |q, _, _| {
+        let pos = q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("motion").unwrap().params.get_mut("position").unwrap();
+        pos.keyframes.iter_mut().for_each(|k| k.interp = filmcraft_project::Interpolation::Bezier);
+        Ok(())
+    })
+    .unwrap();
+    let eased = feet(&s, layer, 12) - feet(&s, layer, 0);
+    let even = (feet(&s, layer, 47) - feet(&s, layer, 0)) * (12.0 / 47.0);
+    assert!((eased - even).length() > 10.0, "the ease shows a quarter of the way in");
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 150, "offset": [8, -6]}), (8.0, -6.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+    // only a shift: the layer's own keyframes and their easing are kept, and it is exact everywhere
+    let (worst, r) = strays(&mut s, layer, json!({"offset": [-20, 5]}), (-20.0, 5.0));
+    assert!(worst < 1e-9 && r["keyframes"].as_u64() == Some(48), "{worst}: {r}");
+    // a layer too long to place frame by frame is refused whole
+    let (mut s, _, shot_seq) = shot();
+    s.execute("file.newSequence", json!({"name": "long", "width": 320, "height": 180, "fps": 24.0})).unwrap();
+    let c = s.execute("timeline.place", json!({"item": shot_seq, "track": "V1", "seconds": 0.0, "audio": false})).unwrap()["clips"][0].as_u64().unwrap();
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    key(&mut s, layer, "rotation", 0, json!(0.0));
+    key(&mut s, layer, "rotation", 47, json!(90.0));
+    s.execute("clip.speedDuration", json!({"clips": [layer], "speed": 0.2, "ripple": false})).unwrap();
+    assert!(frames_of(&s, layer).end > 20_000);
+    refuses(&mut s, "layers.transform", &[json!({"layer": layer, "scale": 150})]);
+    assert!(s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap_err().to_string().contains("every frame"));
+}
+
+#[test]
+fn a_path_that_is_held_holds_the_layer_too() {
+    let (mut s, c, _) = shot();
+    let region = json!({"x": 0.03125, "y": 0.35, "w": 0.1875, "h": 0.2125});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    // a box, then a triangle 240 px on: with another number of points the path does not move from one to the other, it jumps
+    let last = s.sequence_rate().tick_of(47);
+    s.edit_sequence("Key Mask", |q, _, _| {
+        let v = filmcraft_geom::Vec2::new;
+        let m = &mut q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("opacity").unwrap().masks[0];
+        m.path.put_keyframe(Tick::ZERO, ParamValue::Path(filmcraft_project::MaskPath::rect(10.0, 63.0, 70.0, 101.25)));
+        m.path.put_keyframe(last, ParamValue::Path(filmcraft_project::MaskPath::polygon(&[v(250.0, 101.25), v(310.0, 101.25), v(280.0, 63.0)])));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!((feet(&s, layer, 46).x, feet(&s, layer, 47).x), (40.0, 280.0));
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 150}), (0.0, 0.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+    let keys = &motion(&s, layer).params["position"].keyframes;
+    assert_eq!((keys.len(), keys[0].interp), (2, filmcraft_project::Interpolation::Hold));
+}
+
+#[test]
+fn transform_reads_the_clips_own_picture_size_and_shape() {
+    // a 160 by 90 picture in a 320 by 180 frame: it sits in the middle, x 80…240 and y 45…135
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "small", "width": 320, "height": 180, "fps": 24.0})).unwrap();
+    let m = s.execute("file.newColorMatte", json!({"color": "#ff0000", "width": 160, "height": 90, "seconds": 1.0})).unwrap()["item"].as_u64().unwrap();
+    let c = s.execute("timeline.place", json!({"item": m, "track": "V1", "seconds": 0.0})).unwrap()["clips"][0].as_u64().unwrap();
+    assert!(!clip(&s, c).scale_to_frame && is(px(&s, 0, 85, 50), RED) && px(&s, 0, 70, 50)[3] == 0.0);
+    // its lower middle: the clip's pixels 40…120 by 45…90, the frame's 120…200 by 90…135
+    let layer =
+        s.execute("layers.extract", json!({"clip": c, "region": {"x": 0.25, "y": 0.5, "w": 0.5, "h": 0.5}, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    assert!(is(px(&s, 0, 125, 95), RED) && px(&s, 0, 115, 95)[3] == 0.0 && px(&s, 0, 125, 85)[3] == 0.0);
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 200})).unwrap();
+    // twice the size on the same ground line: x 80…240, y 45…135
+    assert_eq!((&r["anchorAt"], &r["position"]), (&json!([160.0, 135.0]), &json!([160.0, 45.0])), "{r}");
+    assert!(is(px(&s, 0, 85, 50), RED) && is(px(&s, 0, 235, 130), RED), "{:?}", px(&s, 0, 85, 50));
+    assert!(px(&s, 0, 75, 100)[3] == 0.0 && px(&s, 0, 245, 100)[3] == 0.0 && px(&s, 0, 160, 40)[3] == 0.0 && px(&s, 0, 160, 138)[3] == 0.0);
+
+    // a scale that is not uniform keeps its proportion: half as wide as tall before, and after
+    let (mut s, c, _) = shot();
+    let layer = block_layer(&mut s, c);
+    s.execute("effects.setParam", json!({"clip": layer, "effect": "motion", "param": "uniform_scale", "value": false})).unwrap();
+    s.execute("effects.setParam", json!({"clip": layer, "effect": "motion", "param": "scale_width", "value": 50.0})).unwrap();
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 150}), (0.0, 0.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+    let m = motion(&s, layer);
+    assert_eq!((&m.params["scale"].value, &m.params["scale_width"].value), (&ParamValue::Float(150.0), &ParamValue::Float(75.0)));
+    // the mask is 60 px wide in the clip: 45 px in the frame at 75 per cent
+    let width = |f: i64| {
+        let it = clip(&s, layer);
+        let t = it.effect_time_at(s.sequence_rate().tick_of(f));
+        let m = filmcraft_render::motion_matrix(s.active_sequence().unwrap(), it, (320, 180), None, t);
+        let xs: Vec<f64> = it.effect("opacity").unwrap().masks[0].path_at(t).vertices.iter().map(|v| m.apply(v.p).x).collect();
+        xs.iter().copied().fold(f64::MIN, f64::max) - xs.iter().copied().fold(f64::MAX, f64::min)
+    };
+    assert!((width(0) - 45.0).abs() < 1e-9 && (width(30) - 45.0).abs() < 1e-9);
+}
+
+#[test]
+fn transform_keeps_to_the_clips_own_clock() {
+    // the second half of the shot, starting half a second into the sequence: frame 12 shows the shot's frame 24
+    let (mut s, c, shot_seq) = shot();
+    s.execute("edit.clear", json!({"clips": [c]})).unwrap();
+    let c =
+        s.execute("timeline.place", json!({"item": shot_seq, "track": "V1", "seconds": 0.5, "audio": false, "sourceIn": {"seconds": 1.0}})).unwrap()["clips"]
+            [0]
+        .as_u64()
+        .unwrap();
+    let rate = s.sequence_rate();
+    assert_eq!((clip(&s, c).start, clip(&s, c).source_in, frames_of(&s, c)), (rate.tick_of(12), rate.tick_of(24), 12..36));
+    let region = json!({"x": 0.4, "y": 0.35, "w": 0.2, "h": 0.2125});
+    let layer = s.execute("layers.extract", json!({"clip": c, "region": region, "feather": 0})).unwrap()["layer"].as_u64().unwrap();
+    // the mask goes with the block, keyed at the shot's own frames 24 and 47: mask keyframes are at media times
+    let block_x = |shot_frame: i64| 40.0 + 240.0 * shot_frame as f64 / 47.0;
+    s.edit_sequence("Key Mask", |q, _, _| {
+        let m = &mut q.find_item_mut(ClipId(layer)).unwrap().1.effect_mut("opacity").unwrap().masks[0];
+        for f in [24, 47] {
+            m.path.put_keyframe(rate.tick_of(f), ParamValue::Path(filmcraft_project::MaskPath::rect(block_x(f) - 30.0, 63.0, block_x(f) + 30.0, 101.25)));
+        }
+        Ok(())
+    })
+    .unwrap();
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 150})).unwrap();
+    assert_eq!(r["keyframes"].as_u64(), Some(2), "{r}");
+    assert_eq!(motion(&s, layer).params["position"].keyframes.iter().map(|k| k.time).collect::<Vec<_>>(), vec![rate.tick_of(24), rate.tick_of(47)]);
+    // at the sequence's frames 12, 23 and 35 the block is where the shot's frames 24, 35 and 47 have it, grown on its line
+    for (frame, shot_frame) in [(12, 24), (23, 35), (35, 47)] {
+        let (top, bottom) = red_rows(&s, frame, block_x(shot_frame).round() as usize);
+        assert!(bottom == BLOCK_ROWS.1 && (10..=12).contains(&(BLOCK_ROWS.0 - top)), "frame {frame}: rows {top} to {bottom}");
+    }
+
+    // played backward, with a turn keyed on the layer: every frame is placed at the media time it shows
+    let (mut s, c, _) = shot();
+    s.execute("clip.speedDuration", json!({"clips": [c], "speed": 100, "reverse": true})).unwrap();
+    let layer = block_layer(&mut s, c);
+    assert!(clip(&s, layer).reverse);
+    key(&mut s, layer, "rotation", 0, json!(0.0));
+    key(&mut s, layer, "rotation", 47, json!(-30.0));
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 60, "anchor": "bottom"}), (0.0, 0.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+    // half speed as well: two frames of the sequence for each of the shot's
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("clip.speedDuration", json!({"clips": [layer], "speed": 50, "reverse": true, "ripple": false})).unwrap();
+    assert_eq!(frames_of(&s, layer), 0..96);
+    let (worst, r) = strays(&mut s, layer, json!({"scale": 60}), (0.0, 0.0));
+    assert!(worst < 1e-6, "{worst} px off at worst: {r}");
+}
+
+#[test]
+fn only_a_plate_over_the_clip_hides_the_place_the_subject_stood() {
+    let (mut s, c, _) = shot();
+    let dir = tmp_dir("layers-transform-backdrop");
+    // a still under the shot for the whole of it (a backdrop), and the shot's layer above the shot
+    let still =
+        s.execute("layers.cleanPlate", json!({"clip": c, "path": dir.join("still.png").to_string_lossy(), "samples": 5, "place": false})).unwrap()["item"]
+            .as_u64()
+            .unwrap();
+    s.execute("timeline.move", json!({"moves": [{"clip": c, "track": "V2", "time": 0}]})).unwrap();
+    s.execute("timeline.place", json!({"item": still, "track": "V1", "seconds": 0.0, "duration": clip(&s, c).duration.0, "audio": false})).unwrap();
+    let layer = block_layer(&mut s, c);
+    let q = s.active_sequence().unwrap();
+    let on = |id: u64| q.video_tracks.iter().position(|t| t.items.iter().any(|i| i.id.0 == id)).unwrap();
+    assert_eq!((on(c), on(layer), q.video_tracks[0].items.len()), (1, 2, 1), "still, shot, layer from the bottom up");
+    // the shot is between the still and the layer: its block shows behind the smaller copy, and the result says so
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert_eq!(r["warnings"].as_array().unwrap().len(), 1, "{r}");
+    assert!(is(px(&s, 0, 40, 80), RED), "the double");
+    s.execute("edit.undo", json!({})).unwrap();
+    // with the shot switched off nothing stands behind the layer to be seen twice
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // nor with the shot gone
+    s.execute("edit.clear", json!({"clips": [c]})).unwrap();
+    let r = s.execute("layers.transform", json!({"layer": layer, "scale": 50})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
+    let _ = std::fs::remove_dir_all(dir);
 }
