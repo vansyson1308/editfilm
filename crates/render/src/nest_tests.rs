@@ -535,19 +535,111 @@ fn frame_blending_on_a_slowed_nest_mixes_the_two_neighbouring_frames_of_its_sequ
 #[test]
 fn frame_blending_mixes_whole_frames_of_a_nest_that_animates_between_them() {
     // Opacity keyframes inside the nest are evaluated at any time asked for, so the two pictures
-    // mixed must be the nest's frames, not the nest at the in-between time and its next frame
+    // mixed must be the nest's frames, not the nest at the in-between time and its next frame.
+    // The fade here is over a quarter of the way from frame 1 to frame 2: opaque on frame 1, 40 %
+    // from 1¼ frames on. At 1⅓ frames the nest itself is at 40 %, the mix of its frames at 80 %.
     let mut r = Rig::new();
     let (inner, outer, nest, _) = slowed_steps(&mut r);
     let f = |n: i64| FrameRate::FPS_24.tick_of(n);
     let inside = r.p.sequence(inner).unwrap().video_tracks[0].items[0].id;
     let opacity = r.clip(inner, inside).effect_mut("opacity").unwrap().param_mut("opacity").unwrap();
-    opacity.keyframes = vec![filmcraft_project::Keyframe::new(f(0), ParamValue::Float(100.0)), filmcraft_project::Keyframe::new(f(10), ParamValue::Float(0.0))];
+    let key = |t: Tick, v: f64| filmcraft_project::Keyframe::new(t, ParamValue::Float(v));
+    opacity.keyframes = vec![key(f(1), 100.0), key(Tick(f(1).0 * 5 / 4), 40.0), key(f(2), 40.0)];
     let alpha = |img: &Image| img.get(32, 18)[3];
     let (one, two) = (alpha(&r.frame(inner, f(1))), alpha(&r.frame(inner, f(2))));
-    assert!(one - two > 0.05, "the nest fades: {one} {two}");
+    assert!((one - 1.0).abs() < 1e-3 && (two - 0.4).abs() < 1e-3, "the nest fades: {one} {two}");
+    assert!((alpha(&r.frame(inner, Tick(f(1).0 * 4 / 3))) - 0.4).abs() < 1e-3, "and has faded a third of a frame in");
     r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
-    let got = alpha(&r.frame(outer, f(4)));
-    assert!((got - (one + (two - one) / 3.0)).abs() < 2e-3, "{got} is a third of the way from {one} to {two}");
+    for (n, want) in [(4, 0.8), (5, 0.6)] {
+        let got = alpha(&r.frame(outer, f(n)));
+        assert!((got - want).abs() < 2e-3, "frame {n}: {got} for {want}, between {one} and {two}");
+    }
+}
+
+#[test]
+fn a_reversed_blended_nest_renders_one_picture_on_a_frame_of_its_sequence() {
+    // A reversed clip's time is a tick short of its mirrored position, so on a frame of the nest
+    // the later frame of the pair weighs everything: that frame alone is rendered, not two
+    // pictures with the first thrown away.
+    let mut r = Rig::new();
+    let (inner, outer, nest, fetched) = slowed_steps(&mut r);
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    let grey = |img: &Image| img.get(32, 18)[0];
+    let c = r.clip(outer, nest);
+    c.time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    c.reverse = true;
+    let fifteen = grey(&r.frame(inner, f(15)));
+    let count = |r: &Rig, n: i64| {
+        fetched.store(0, std::sync::atomic::Ordering::Relaxed);
+        let img = r.frame(outer, f(n));
+        (grey(&img), fetched.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    // programme frame 3 is one frame back from frame 16 of the nest: frame 15, rendered once
+    let (got, n) = count(&r, 3);
+    assert!((got - fifteen).abs() < 1e-4, "frame 15 of the nest: {got} for {fifteen}");
+    assert_eq!(n, 1, "one picture of the nest");
+    // and the plan draws that frame's layers itself (no image of the nest)
+    assert_eq!(layer_count(&r, outer, f(3)), Some(1));
+    assert!(worst(&r.planned(outer, f(3)), &r.frame(inner, f(15))) < 1e-3);
+    // a third of a frame further back, two frames of the nest are mixed
+    let (got, n) = count(&r, 4);
+    assert!(got < fifteen - 0.003, "between frames 14 and 15: {got}");
+    assert_eq!(n, 2, "two pictures of the nest");
+}
+
+#[test]
+fn frame_blending_on_a_nest_follows_its_speed_and_its_frame_rate() {
+    use filmcraft_project::TimeInterpolation;
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    let grey = |img: &Image| img.get(32, 18)[0];
+    // 150 %: programme frame 1 shows the nest 1½ frames in
+    let mut r = Rig::new();
+    let (inner, outer, nest, _) = slowed_steps(&mut r);
+    let (one, two, three) = (grey(&r.frame(inner, f(1))), grey(&r.frame(inner, f(2))), grey(&r.frame(inner, f(3))));
+    let c = r.clip(outer, nest);
+    c.speed = 1.5;
+    c.duration = f(20);
+    assert!((grey(&r.frame(outer, f(1))) - one).abs() < 1e-4, "frame sampling at 150 %");
+    r.clip(outer, nest).time_interpolation = TimeInterpolation::FrameBlending;
+    let got = r.frame(outer, f(1));
+    assert!((grey(&got) - (one + two) / 2.0).abs() < 2e-3, "150 %: {} half-way between {one} and {two}", grey(&got));
+    assert!(worst(&r.planned(outer, f(1)), &got) < 1e-3, "150 %: the plan differs");
+    assert!((grey(&r.frame(outer, f(2))) - three).abs() < 1e-4, "150 %: frame 2 is frame 3 of the nest");
+    // 100 % in a 30 fps sequence: its frame 1 is 0.8 of a frame into the 24 fps nest
+    let mut r = Rig::new();
+    let (inner, _, _, _) = slowed_steps(&mut r);
+    let (zero, one) = (grey(&r.frame(inner, f(0))), grey(&r.frame(inner, f(1))));
+    let outer = r.seq("thirty", 64, 36, FrameRate::FPS_30);
+    let nest = r.put(outer, inner, 30);
+    let t = FrameRate::FPS_30.tick_of(1);
+    assert!((grey(&r.frame(outer, t)) - zero).abs() < 1e-4, "frame sampling at another rate");
+    r.clip(outer, nest).time_interpolation = TimeInterpolation::FrameBlending;
+    let got = r.frame(outer, t);
+    assert!((grey(&got) - (zero + (one - zero) * 0.8)).abs() < 2e-3, "another rate: {} at 0.8 between {zero} and {one}", grey(&got));
+    assert!(worst(&r.planned(outer, t), &got) < 1e-3, "another rate: the plan differs");
+    // frame 5 of the 30 fps sequence is frame 4 of the nest
+    assert!(worst(&r.frame(outer, FrameRate::FPS_30.tick_of(5)), &r.frame(inner, f(4))) < 1e-4);
+}
+
+#[test]
+fn a_blended_nest_too_deep_to_render_twice_shows_the_frame_of_frame_sampling() {
+    let mut r = Rig::new();
+    let (inner, outer, nest, fetched) = slowed_steps(&mut r);
+    let f = |n: i64| FrameRate::FPS_24.tick_of(n);
+    let grey = |img: &Image| img.get(32, 18)[0];
+    let (one, two) = (grey(&r.frame(inner, f(1))), grey(&r.frame(inner, f(2))));
+    r.clip(outer, nest).time_interpolation = filmcraft_project::TimeInterpolation::FrameBlending;
+    let at = |depth: u32| {
+        fetched.store(0, std::sync::atomic::Ordering::Relaxed);
+        let img = render_sequence(&r.p, outer, f(4), RenderOptions { depth, ..Default::default() }, &r.map);
+        (grey(&img), fetched.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    // with two levels left under it the nest is mixed
+    let (got, n) = at(MAX_NEST_DEPTH - 2);
+    assert!(got > one + 0.003 && got < two - 0.003 && n == 2, "mixed: {got} from {n} pictures");
+    // with one level left it shows frame 1 of its sequence, as Frame Sampling does
+    let (got, n) = at(MAX_NEST_DEPTH - 1);
+    assert!((got - one).abs() < 1e-4 && n == 1, "sampled: {got} for {one} from {n} pictures");
 }
 
 #[test]
