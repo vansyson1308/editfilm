@@ -236,7 +236,7 @@ impl filmcraft_media::MediaSource for Adrift {
         let k = filmcraft_time::FrameRate::FPS_24.frame_at(req.time) as f64;
         let (w, h) = (320usize, 240usize);
         let mut px = vec![255u8; w * h * 4];
-        for (i, o) in px.chunks_exact_mut(4).enumerate() {
+        for (i, o) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, y) = ((i % w) as f64, (i / w) as f64);
             let c = if (x - 160.0).abs() < 13.0 && (y - 120.0).abs() < 34.0 {
                 [0.78, 0.72, 0.6]
