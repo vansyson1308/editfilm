@@ -177,7 +177,7 @@ fn table_cases() {
         ("fives", "fˈIvz"),
         // Letter-to-sound for unknown words.
         ("kokoro", "kˈɑkɑɹɑ"),
-        ("filmagic", "fˈɪlmkɹæft"),
+        ("filmcraft", "fˈɪlmkɹæft"),
         ("knight", "nˈIt"),
         // Punctuation attachment, kept and dropped.
         ("hello, world.", "həlˈO, wˈɜɹld."),
@@ -221,7 +221,7 @@ fn speak_with(ov: &Overrides, text: &str) -> String {
 #[test]
 fn letter_to_sound_cases() {
     let cases: [(&str, &str); 36] = [
-        ("filmagic", "fˈɪlmkɹæft"),
+        ("filmcraft", "fˈɪlmkɹæft"),
         ("narration", "næɹˈæʃən"),
         ("kokoro", "kˈɑkɑɹɑ"),
         ("phone", "fˈOn"),
@@ -338,7 +338,7 @@ fn every_output_char_is_in_symbols() {
         "999999999999999999999999",
         "007",
         "12345678901234",
-        "filmagic narration kokoro",
+        "filmcraft narration kokoro",
         "Dr. Smith lives on Main St. in 1999.",
         "The TDA project for NASA costs $1,234,567.",
     ];

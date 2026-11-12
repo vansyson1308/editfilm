@@ -97,7 +97,11 @@ pub(crate) fn dpx(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>> {
     put32(&mut hd, 24, 1664); // generic header length
     put32(&mut hd, 28, 384); // industry header length
     put32(&mut hd, 32, 0); // user data length
-    hd[160..169].copy_from_slice(b"Filmagic");
+    // creator (a 100-byte field): the name at whatever length it has, the rest stays zero
+    const CREATOR: &[u8] = b"Filmagic";
+    if let Some(field) = hd.get_mut(160..160 + CREATOR.len()) {
+        field.copy_from_slice(CREATOR);
+    }
     // image information header
     put16(&mut hd, 768, 0); // orientation: left to right, top to bottom
     put16(&mut hd, 770, 1); // one image element
@@ -328,6 +332,8 @@ mod tests {
         assert_eq!(be32(&f, 4), 2048);
         assert_eq!(be32(&f, 16), f.len() as u32);
         assert_eq!((be32(&f, 772), be32(&f, 776)), (2, 1));
+        // the creator field holds the app's name, NUL-terminated, whatever its length
+        assert_eq!(&f[160..169], b"Filmagic\0");
         assert_eq!((f[800], f[803]), (50, 10));
         assert_eq!(be32(&f, 2048), 1023 << 22);
         let p = be32(&f, 2052);
