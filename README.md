@@ -18,7 +18,7 @@
 <br>
 
 <p align="center">
-  <img src="docs/images/filmagic-hero.png" alt="Filmagic in the Color workspace, mid-way through an Apollo 11 documentary cut from NASA footage: the Program monitor on the Saturn V clearing the launch tower with a Launch Complex 39A lower third and an air-to-ground subtitle, Effect Controls with color grading and Scale keyframes on the shot, the color grading panel, bins of NASA selects, and a timeline with 49 picture cuts, B-roll, titles, a caption track, mission audio, a ducked music bed, named markers, a rendered section and live loudness meters" width="100%">
+  <img src="docs/images/filmagic-hero.png" alt="Filmagic in the Color workspace, mid-way through an Apollo 11 documentary cut from NASA footage: the Program monitor on the Saturn V's swing arms falling away at liftoff, with a Launch Complex 39A lower third and an air-to-ground subtitle, Effect Controls with color grading and Scale keyframes on the shot, the color grading panel, bins of NASA selects, and a timeline with 49 picture cuts, B-roll, titles, a caption track, mission audio, a ducked music bed, named markers, a rendered section and live loudness meters" width="100%">
 </p>
 
 <p align="center"><sub><i>Apollo 11 - Tranquility</i>: a three-minute documentary edit of NASA's 1969 launch, landing and moonwalk film, with subtitles from the mission transcript. Every frame in these screenshots comes from public-domain footage, decoded, composited and graded by the app's own code.</sub></p>
@@ -95,7 +95,7 @@ Every command that changes the picture reports how much a viewer will see of it 
 ## Color
 
 <p align="center">
-  <img src="docs/images/filmagic-color.png" alt="Color workspace on Charade (1963): Cary Grant and Audrey Hepburn in the Program monitor, the waveform and vectorscope on the left, and the trailer bins and timeline below" width="100%">
+  <img src="docs/images/filmagic-color.png" alt="Color workspace on Charade (1963): Audrey Hepburn and Cary Grant in the Program monitor, the RGB waveform and vectorscope on the left, the Color Grading panel with the clip's Basic Correction on the right, and the project's media and the graded Charade sequence below" width="100%">
 </p>
 
 <p align="center"><sub>The Color workspace on <i>Charade</i> (1963), with live scopes beside the Program monitor.</sub></p>
@@ -116,7 +116,7 @@ Every command that changes the picture reports how much a viewer will see of it 
       <sub><b>The color grading panel.</b> Basic Correction, Color Wheels and every other section, each with its own on/off switch.</sub>
     </td>
     <td width="66%" valign="top" align="center">
-      <img src="docs/images/filmagic-scopes.png" alt="The video scopes: a green luma waveform and a vectorscope of a Charade (1963) frame"><br>
+      <img src="docs/images/filmagic-scopes.png" alt="The video scopes: an RGB waveform and a YUV vectorscope of a graded Charade (1963) frame"><br>
       <sub><b>Scopes that tell the truth.</b> The waveform and vectorscope are computed from the graded frame. All grading happens in linear light, in 32-bit float.</sub>
     </td>
   </tr>
@@ -127,7 +127,7 @@ Every command that changes the picture reports how much a viewer will see of it 
 ## Effects and motion
 
 <p align="center">
-  <img src="docs/images/filmagic-effects.png" alt="Effects workspace: Effect Controls with Motion, Opacity, Time Remapping and a colour grade, NASA's Earth Views from the ISS in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
+  <img src="docs/images/filmagic-effects.png" alt="Effects workspace: Effect Controls with Motion and Opacity, NASA's Earth Views from the ISS with a warm look in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
 </p>
 
 <p align="center"><sub>NASA's <i>Earth Views from the ISS</i> with a look applied, and the Effects browser open on the dissolves.</sub></p>
@@ -192,7 +192,7 @@ Also imported: MPEG-2 / MPEG-1 video, AC-3, MP2, MXF (OP1a / OP-Atom), MPEG tran
 ## Export
 
 <p align="center">
-  <img src="docs/images/filmagic-export.png" alt="Export mode: destinations for Media File, YouTube, Vimeo, TikTok, Instagram and FTP on the left, a Night of the Living Dead frame in the preview, and H.264 settings on the right (1440x1080 at 23.976 fps, 48000 Hz stereo, entire sequence)" width="100%">
+  <img src="docs/images/filmagic-export.png" alt="Export mode: the Media File destination and the export queue on the left, the Match Source preset with H.264 video and AAC audio settings in the middle, and on the right a Night of the Living Dead frame in the preview above the summary (1440x1080 at 23.976 fps, AAC 48000 Hz stereo, the entire 32-second trailer)" width="100%">
 </p>
 
 <p align="center"><sub>Export mode, set to write the trailer as H.264 MP4.</sub></p>

@@ -28,15 +28,15 @@ iconography, images or other Adobe assets; open licences only; every asset attri
 | `assets/fonts/Inter-Italic.ttf` | The Inter Project Authors | https://github.com/rsms/inter | OFL-1.1 (`assets/fonts/OFL-Inter.txt`) |
 | `assets/fonts/NotoSerif-Regular.ttf` | The Noto Project Authors | https://github.com/notofonts/latin-greek-cyrillic | OFL-1.1 (`assets/fonts/OFL-NotoSerif.txt`) |
 | `assets/fonts/JetBrainsMono-Regular.ttf` | The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono | OFL-1.1 (`assets/fonts/OFL-JetBrainsMono.txt`) |
-| `docs/images/filmagic-hero.png` | FilmCraft contributors | Original work: FilmCraft screenshot; NASA Apollo 11 film and TV footage (images.nasa.gov; US Government work, public domain; NASA does not endorse this project), subtitles from the NASA Apollo 11 air-to-ground transcript (public domain), CC0 Chopin (Musopen) | MIT OR Apache-2.0; footage and transcript public domain |
-| `docs/images/filmagic-color.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frames from Charade (1963, public domain) | MIT OR Apache-2.0; film frames public domain |
-| `docs/images/filmagic-keyframes.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frames from Night of the Living Dead (1968, public domain) | MIT OR Apache-2.0; film frames public domain |
-| `docs/images/filmagic-export.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frame from Night of the Living Dead (1968, public domain) | MIT OR Apache-2.0; film frames public domain |
-| `docs/images/filmagic-assembly.png` | FilmCraft contributors | Original work: FilmCraft screenshot; frames from Carnival of Souls (1962), Night of the Living Dead (1968), thumbnails of all demo media | MIT OR Apache-2.0; film frames public domain |
-| `docs/images/filmagic-color-panel.png` | FilmCraft contributors | Original work: FilmCraft UI crop (color grading panel) | MIT OR Apache-2.0 |
-| `docs/images/filmagic-scopes.png` | FilmCraft contributors | Original work: FilmCraft UI crop (scopes of a Charade (1963) frame, public domain) | MIT OR Apache-2.0 |
-| `docs/images/filmagic-effects.png` | FilmCraft contributors | Original work: FilmCraft screenshot crop; NASA Earth Views (US Government work, public domain) | MIT OR Apache-2.0; footage public domain |
-| `docs/images/filmagic-timeline.png` | FilmCraft contributors | Original work: FilmCraft UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-hero.png` | Filmagic contributors | Original work: Filmagic screenshot; NASA Apollo 11 film and TV footage (images.nasa.gov; US Government work, public domain; NASA does not endorse this project), subtitles from the NASA Apollo 11 air-to-ground transcript (public domain), CC0 Chopin (Musopen) | MIT OR Apache-2.0; footage and transcript public domain |
+| `docs/images/filmagic-color.png` | Filmagic contributors | Original work: Filmagic screenshot; frames from Charade (1963, public domain), thumbnails of the trailer project's media, CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-keyframes.png` | Filmagic contributors | Original work: Filmagic screenshot; frames from Night of the Living Dead (1968, public domain), thumbnails of the trailer project's media, CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-export.png` | Filmagic contributors | Original work: Filmagic screenshot; frame from Night of the Living Dead (1968, public domain) | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-assembly.png` | Filmagic contributors | Original work: Filmagic screenshot; frames from Carnival of Souls (1962), Night of the Living Dead (1968), thumbnails of all the trailer project's media (incl. Charade (1963), NASA Earth Views), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-color-panel.png` | Filmagic contributors | Original work: Filmagic UI crop (Color Grading panel) | MIT OR Apache-2.0 |
+| `docs/images/filmagic-scopes.png` | Filmagic contributors | Original work: Filmagic UI crop (Video Scopes of a Charade (1963) frame, public domain) | MIT OR Apache-2.0; film frames public domain |
+| `docs/images/filmagic-effects.png` | Filmagic contributors | Original work: Filmagic screenshot crop; NASA Earth Views (US Government work, public domain; NASA does not endorse this project) | MIT OR Apache-2.0; footage public domain |
+| `docs/images/filmagic-timeline.png` | Filmagic contributors | Original work: Filmagic UI crop; thumbnails from Night of the Living Dead (1968) and Carnival of Souls (1962), CC0 Chopin waveform | MIT OR Apache-2.0; film frames public domain |
 | `assets/app-icon/filmagic.svg` | Brandon Thomas (FilmCraft owner) | Original work: FilmCraft app icon (owl with ear tufts), drawn by the owner in ArtCraft and vectorised; canonical vector | MIT OR Apache-2.0 (`assets/app-icon/LICENSE.txt`) |
 | `packaging/macos/dmg/background.svg` | @XusBadia | Original work: FilmCraft macOS DMG window background, derived from the FilmCraft app icon (`assets/app-icon/filmagic.svg`); rendered to `background.tiff` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
 | `packaging/macos/dmg/background.tiff` | @XusBadia | Rendered from `packaging/macos/dmg/background.svg` by `packaging/macos/dmg/generate.py` | MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`) |
@@ -105,6 +105,11 @@ repository; each screenshot's sidecar lists exactly which appear.
 | Charade (1963) | Stanley Donen / Universal | US public domain (defective notice) | https://archive.org/details/charade-1963-cary-grant-audrey-hepburn-comedy-mystery-romance-thriller-full-movie |
 | Earth Views from the ISS (NHQ_2020_1221) | NASA | US Government work, public domain (no NASA endorsement implied) | https://images.nasa.gov/details/NHQ_2020_1221_Earth%20Views |
 | Chopin: Nocturne Op. 48 No. 1, Ballade No. 1 | Musopen | CC0-1.0 | https://archive.org/details/musopen-chopin |
+| Apollo 11 25th Anniversary "B" Roll Footage | NASA (KSC) | US Government work, public domain (no NASA endorsement implied) | https://images.nasa.gov/details/KSC-19690716-MH-NAS01-0001-Apollo_11_Historical_Footage_and_Broll-DVC_1560 |
+| Apollo 11 Activities (launch count and launch, HM_0083) | NASA (KSC) | US Government work, public domain (no NASA endorsement implied) | https://images.nasa.gov/details/KSC-19690716-MH-NAS01-0001-Apollo_11_Breakfast_C7Exit_Convoy_WhiteRmHatchClosing_Launch-HM_0083 |
+| Apollo 11 Mission Control Center - Film Rolls | NASA (KSC) | US Government work, public domain (no NASA endorsement implied) | https://images.nasa.gov/details/KSC-19690716-MH-NAS01-0001-Apollo_11_Mission_Control_Center_Film_Rolls1 |
+| Apollo 11 moonwalk montage | NASA (HQ) | US Government work, public domain (no NASA endorsement implied) | https://images.nasa.gov/details/Apollo_11_moonwalk_montage_720p |
+| Apollo 11 Technical Air-to-Ground Voice Transcription (subtitle text) | NASA Manned Spacecraft Center | US Government work, public domain | https://www.nasa.gov/wp-content/uploads/static/history/alsj/a11/a11transcript_tec.html |
 
 ## Assets drawn or generated in code
 
