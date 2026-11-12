@@ -104,7 +104,8 @@ The app's log is still written to `Logs/filmagic.log` in its data directory
 On Windows (PowerShell):
 
 ```powershell
-$env:FILMAGIC_CONTROL_TOKEN = -join ([Security.Cryptography.RandomNumberGenerator]::GetBytes(32) | ForEach-Object { $_.ToString('x2') })
+$b = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+$env:FILMAGIC_CONTROL_TOKEN = -join ($b | ForEach-Object { $_.ToString('x2') })
 Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
 claude                    # or codex
 ```
