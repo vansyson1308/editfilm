@@ -3,8 +3,9 @@
 Use a **Cross Dissolve** transition to fade a picture in or out. Use **Volume** keyframes
 to make a clip's sound gradually louder or quieter.
 
-These instructions follow Filmagic's current `main` branch, checked on 24 October 2026
-([source revision](https://github.com/storytold/filmcraft/commit/552f008d2757e307194256b3e672c9c1de4fa9b2)).
+These instructions were checked on 24 October 2026 against FilmCraft's `main` branch at
+[552f008d](https://github.com/storytold/filmcraft/commit/552f008d2757e307194256b3e672c9c1de4fa9b2),
+before Filmagic was forked from it.
 An older installed release may differ. The [planned fade handles](#whats-coming-timeline-fade-handles)
 are separate from the operations available now.
 

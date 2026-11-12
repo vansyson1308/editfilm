@@ -464,7 +464,7 @@
 	A cut sequence with transitions, effects and music	Une séquence montée avec transitions, effets et musique
 	Bars and Tone	Barres et tonalité
 	SMPTE HD bars with 1 kHz reference tone	Barres SMPTE HD avec tonalité de référence à 1 kHz
-	Community	Communauté
+	Links	Liens
 	OMF Export Settings	Paramètres d'exportation OMF
 	AAF Export Settings	Paramètres d'exportation AAF
 	OMF Title:	Titre OMF :
@@ -3688,7 +3688,7 @@
 	Opens in your web browser: {url}	S'ouvre dans votre navigateur : {url}
 	Saves this session's log and shows it in your file manager.	Enregistre le journal de cette session et l'affiche dans votre gestionnaire de fichiers.
 	Shows a report on this computer.	Affiche un rapport sur cet ordinateur.
-	Shows the version, community links and credits in a Filmagic window.	Affiche la version, les liens de la communauté et les crédits dans une fenêtre Filmagic.
+	Shows the version, project links and credits in a Filmagic window.	Affiche la version, les liens du projet et les crédits dans une fenêtre Filmagic.
 	Couldn't open your web browser	Impossible d'ouvrir votre navigateur
 	Open this address in your browser yourself:	Ouvrez vous-même cette adresse dans votre navigateur :
 	Delete Redoable Actions	Supprimer les actions rétablissables

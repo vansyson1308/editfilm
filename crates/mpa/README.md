@@ -65,7 +65,7 @@ requires 70 dB, and a wrong table entry or misread field costs tens of dB.
 
 No installed encoder writes Layer I, so Layer I is checked on synthetic frames (random
 allocations, scalefactors and samples) that FFmpeg decodes as it would any stream. Through
-`filmagic-codecs` (`tests/mpeg_oracle.rs`), mono 384 kbit/s MP2 in MPEG-TS, Matroska and a raw
+`filmagic-codecs` (`crates/codecs/tests/it/mpeg_oracle.rs`), mono 384 kbit/s MP2 in MPEG-TS, Matroska and a raw
 `.mp2` file is within 3.1·10⁻⁵ of FFmpeg's decode.
 
 ## Gaps

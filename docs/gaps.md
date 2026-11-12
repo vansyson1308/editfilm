@@ -60,7 +60,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 - **Impact:** the beta bar requires opening the target's main format; every switching editor's
   existing work is behind this.
 - **Approach:** `.prproj` is gzip-compressed XML. Clean-room from projects we author ourselves in
-  Premiere (the owner has `plan/premiere/fixtures/filmagic_ref.prproj`): sequences, tracks, clips,
+  Premiere (the owner has `plan/premiere/fixtures/filmcraft_ref.prproj`): sequences, tracks, clips,
   in/out, speed, transitions, markers, bins, labels, then the common effect parameters (Motion,
   Opacity, Color Grading basic, Volume). Report what was not imported. Export later. **60–120 h.**
   Doc: [file-format-parity.md](file-format-parity.md).

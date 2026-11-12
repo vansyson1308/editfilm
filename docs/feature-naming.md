@@ -4,7 +4,7 @@ Status: draft, 2026-11-08. This is an engineering naming policy and rollout plan
 
 ## Scheme and selected names
 
-Use the existing ArtCraft app identity with short, descriptive feature names. Share names across apps when they describe the same function. Use stable identifiers for dispatch and persistence; translate display labels without changing those identifiers. Preserve interoperability labels and required notices.
+Use the Filmagic app identity with short, descriptive feature names. Share names across apps when they describe the same function. Use stable identifiers for dispatch and persistence; translate display labels without changing those identifiers. Preserve interoperability labels and required notices.
 
 | Previous display label | Selected display label | Stable key |
 | --- | --- | --- |

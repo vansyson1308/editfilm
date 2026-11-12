@@ -67,7 +67,7 @@ B-frames, 1–4 slices and automatic slicing at 1080p, odd sizes, `testsrc2` and
 length-prefixed output re-wrapped with the avcC parameter sets. B-frame display order is checked with ffprobe. A
 negative control drops and truncates slices and checks that the oracle reports them.
 
-High 10 (`tests/high10_oracle.rs`) is decoded as `yuv420p10le` (`yuv420p9le` at 9 bits) and must equally be
+High 10 (`tests/it/high10_oracle.rs`) is decoded as `yuv420p10le` (`yuv420p9le` at 9 bits) and must equally be
 bit-identical to the reconstruction: all presets, 0–3 B-frames, 1–4 slices, odd sizes, QP 22–46, CRF down to −12
 (QP' 0), CBR, intra-only, 8-bit input, High 10 at 8 bits and length-prefixed output with the avcC. ffprobe reports
 `High 10` / `High 10 Intra` and `yuv420p10le`. On a smooth 10-bit source, High 10 at CRF −12 measures 75 dB luma

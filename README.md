@@ -246,14 +246,53 @@ The trailer and the grades in these screenshots were built exactly this way, by 
 
 ## Get started
 
-Filmagic is built from source with a stable Rust toolchain:
+Filmagic is built from source with a stable Rust toolchain (1.95 or newer); no releases are published yet. On Linux, first install the ALSA and GTK 3 development packages (Debian and Ubuntu: `sudo apt install build-essential pkg-config libasound2-dev libgtk-3-dev`; others in [docs/contributing.md](docs/contributing.md#1-setup)).
 
 ```sh
-cargo run --release -p filmagic                            # the desktop app, with a demo project
-cargo run --release -p filmagic -- --control 9876          # plus the JSON-lines control server
-cargo run --release -p filmagic-cli -- commands            # list every engine command
-cargo run --release -p filmagic-cli -- mcp                 # the MCP server (headless): connect your agent to this
+git clone https://github.com/vansyson1308/editfilm && cd editfilm
+cargo build --release -p filmagic -p filmagic-cli    # the desktop app and the command-line tool
+./target/release/filmagic                            # open the desktop app on a demo project
 ```
+
+### Connect an agent
+
+The agent starts the MCP server itself, over stdio: you do not run `filmagic-cli mcp` in a terminal. There are two servers. **Headless** (`filmagic-cli mcp --demo`, or `--project <file.fcproj>`) edits a project in the background, with no window. **Bridge** (`filmagic-cli mcp --bridge 127.0.0.1:9876`) drives the desktop app you have open.
+
+**Inside this repository.** The checkout's [`.mcp.json`](.mcp.json) registers both servers for Claude Code (`filmagic-headless` and `filmagic`, the bridge). Start Claude Code in the checkout and approve them when asked:
+
+```sh
+claude                    # in the editfilm folder; /mcp lists the servers
+```
+
+Codex reads [`AGENTS.md`](AGENTS.md) on its own but not `.mcp.json`. Add the server once (it is saved in `~/.codex/config.toml`) and start Codex in the checkout:
+
+```sh
+codex mcp add filmagic-headless -- "$PWD/target/release/filmagic-cli" mcp --demo
+codex                     # /mcp lists the servers
+```
+
+**From any folder.** Use the absolute path of the binary you built:
+
+```sh
+# Claude Code (add --scope user to have it in every project)
+claude mcp add filmagic-headless -- /path/to/editfilm/target/release/filmagic-cli mcp --demo
+# Codex
+codex mcp add filmagic-headless -- /path/to/editfilm/target/release/filmagic-cli mcp --demo
+```
+
+Use `mcp --project /path/to/film.fcproj` instead of `--demo` to edit your own project.
+
+**Drive the desktop app.** The app's control server stays closed until it has a token: 64 random hex characters, shared by the app and the bridge through `FILMAGIC_CONTROL_TOKEN`. Start the app and the agent from the same shell so both inherit it:
+
+```sh
+export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+./target/release/filmagic --control 9876 &
+claude                    # inside the checkout: the `filmagic` server in .mcp.json is the bridge
+```
+
+From another folder, add the bridge with `claude mcp add filmagic -- /path/to/editfilm/target/release/filmagic-cli mcp --bridge 127.0.0.1:9876`. For Codex, see [docs/agents.md](docs/agents.md#codex): Codex passes only the variables it is told to, so the token is named in its configuration.
+
+The command-line tool works without an agent too: `./target/release/filmagic-cli commands` lists every engine command, and `./target/release/filmagic-cli --help` shows the rest.
 
 New to editing here? Follow [Getting started: video fades and audio volume keyframes](docs/getting-started-fades.md). The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md), and the loop an agent works in is in [docs/agents.md](docs/agents.md).
 

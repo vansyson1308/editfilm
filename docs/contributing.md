@@ -28,7 +28,7 @@ macOS.
 ```sh
 cargo run --release -p filmagic                      # desktop app with the demo project
 cargo run --release -p filmagic -- --empty           # start without the demo project
-cargo run --release -p filmagic -- --control 9876    # plus the JSON-lines control server
+cargo run --release -p filmagic -- --control 9876    # plus the control server (needs FILMAGIC_CONTROL_TOKEN, below)
 cargo run --release -p filmagic -- a.mp4 b.wav       # import media (or open a .fcproj)
 cargo run --release -p filmagic-cli -- commands      # list engine commands
 cargo run --release -p filmagic-cli -- render --demo --seconds 3 --out frame.png

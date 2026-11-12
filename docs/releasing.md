@@ -133,7 +133,7 @@ After packaging, the job prints the `.deb`'s metadata and contents, runs `ldd` o
 runs each AppImage with `--version`.
 
 **AppImage updates.** Each AppImage embeds update information,
-`gh-releases-zsync|storytold|filmagic|latest|filmagic-*-linux-<arch>.AppImage.zsync`, and
+`gh-releases-zsync|vansyson1308|editfilm|latest|filmagic-*-linux-<arch>.AppImage.zsync`, and
 `appimagetool` writes the matching `.zsync` beside it (the job installs `zsync` for
 `zsyncmake`). [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) and
 AppImageLauncher then fetch only the changed blocks from the newest published (non-pre-release)

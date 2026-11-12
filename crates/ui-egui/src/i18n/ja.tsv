@@ -468,7 +468,7 @@
 	A cut sequence with transitions, effects and music	トランジション、エフェクト、音楽を含む編集済みのシーケンス
 	Bars and Tone	カラーバーとトーン
 	SMPTE HD bars with 1 kHz reference tone	1 kHz 基準トーン付きの SMPTE HD カラーバー
-	Community	コミュニティ
+	Links	リンク
 	OMF Export Settings	OMF 書き出し設定
 	AAF Export Settings	AAF 書き出し設定
 	OMF Title:	OMF タイトル:
@@ -3629,7 +3629,7 @@
 	Delete this preset	このプリセットを削除
 	Saves this session's log and shows it in your file manager.	このセッションのログを保存し、ファイルマネージャーで表示します。
 	Shows a report on this computer.	このコンピューターのレポートを表示します。
-	Shows the version, community links and credits in a Filmagic window.	バージョン、コミュニティへのリンク、クレジットを Filmagic のウィンドウに表示します。
+	Shows the version, project links and credits in a Filmagic window.	バージョン、プロジェクトへのリンク、クレジットを Filmagic のウィンドウに表示します。
 	Looks for a newer Filmagic release and offers to update.	Filmagic の新しいリリースを確認し、アップデートを提案します。
 	Couldn't open your web browser	ウェブブラウザーを開けませんでした
 	Open this address in your browser yourself:	このアドレスをご自身でブラウザーで開いてください：

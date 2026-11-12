@@ -445,7 +445,7 @@
 	A cut sequence with transitions, effects and music	Смонтированная последовательность с переходами, эффектами и музыкой
 	Bars and Tone	Полосы и тон
 	SMPTE HD bars with 1 kHz reference tone	Полосы SMPTE HD с опорным тоном 1 кГц
-	Community	Сообщество
+	Links	Ссылки
 	OMF Export Settings	Настройки экспорта OMF
 	AAF Export Settings	Настройки экспорта AAF
 	OMF Title:	Название OMF:
@@ -3588,7 +3588,7 @@
 	Opens in your web browser: {url}	Откроется в браузере: {url}
 	Saves this session's log and shows it in your file manager.	Сохраняет журнал этого сеанса и показывает его в файловом менеджере.
 	Shows a report on this computer.	Показывает отчёт о компьютере.
-	Shows the version, community links and credits in a Filmagic window.	Показывает версию, ссылки сообщества и список участников в окне Filmagic.
+	Shows the version, project links and credits in a Filmagic window.	Показывает версию, ссылки проекта и список участников в окне Filmagic.
 	Couldn't open your web browser	Не удалось открыть браузер
 	Open this address in your browser yourself:	Этот адрес нужно открыть в браузере вручную:
 	Reset Interface Zoom	Сбросить масштаб интерфейса
