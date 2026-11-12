@@ -1,8 +1,8 @@
 asset:        filmagic-small.svg
-title:        FilmCraft app icon, lighter vector
-author:       Brandon Thomas (FilmCraft owner), for the FilmCraft project
-source:       original work (drawn by the owner in ArtCraft, then vectorised)
+title:        Filmagic app icon, simplified vector for small sizes
+author:       Filmagic contributors
+source:       original work
 license:      MIT OR Apache-2.0
 license-file: assets/app-icon/LICENSE.txt
-added:        2026-10-02 by Claude (agent) for Brandon Thomas
-notes:        The same drawing traced at 1024 px (smaller file).
+added:        2026-11-12 by @vansyson1308
+notes:        Drawn from scratch as hand-written SVG shapes: the same motif with fewer, larger sprocket holes and one larger sparkle, for 32 px and below and the scalable Linux icon.
