@@ -91,7 +91,7 @@ check the bundle and the DMG on your own Mac (`packaging/macos/package.sh`).
 nor the portable zip needs the Visual C++ redistributable.
 
 - `filmagic.wxs` (WiX) is a dual-scope package: per-user by default into
-  `%LOCALAPPDATA%\Programs\ArtCraft\Filmagic`, per-machine into `Program Files\ArtCraft\Filmagic` (`Program Files (x86)` for the 32-bit build)
+  `%LOCALAPPDATA%\Programs\Filmagic`, per-machine into `Program Files\Filmagic` (`Program Files (x86)` for the 32-bit build)
   (see `packaging/windows/INSTALLATION.md`). It has a Start Menu shortcut and
   an App Paths entry (Win+R `filmagic`). Same-version upgrades are allowed, so release candidates
   replace each other.

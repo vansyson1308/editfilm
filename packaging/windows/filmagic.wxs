@@ -18,9 +18,7 @@
     <Property Id="ARPHELPLINK" Value="https://github.com/vansyson1308/editfilm/issues" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
-      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
-        <Directory Id="INSTALLFOLDER" Name="Filmagic" />
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="Filmagic" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
 

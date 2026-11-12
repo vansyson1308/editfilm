@@ -60,13 +60,13 @@ The release packages ship `filmagic-cli` alongside the desktop app, so no build 
 
 | Install | CLI |
 |---|---|
-| Windows (MSI) | `%LOCALAPPDATA%\Programs\ArtCraft\Filmagic\filmagic-cli.exe` by default (`C:\Program Files\ArtCraft\Filmagic\filmagic-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
+| Windows (MSI) | `%LOCALAPPDATA%\Programs\Filmagic\filmagic-cli.exe` by default (`C:\Program Files\Filmagic\filmagic-cli.exe` for an all-users install, under `Program Files (x86)` instead for the 32-bit build, or wherever you installed it otherwise), not on `PATH` |
 | Linux (deb, rpm) | `/usr/bin/filmagic-cli` |
 | macOS | the separate `filmagic-cli-<version>-macos-<arch>.zip` release asset (the `.app` holds only the desktop app) |
 
 ```sh
 # Windows (PowerShell), default install folder
-claude mcp add filmagic -- "$env:LOCALAPPDATA\Programs\ArtCraft\Filmagic\filmagic-cli.exe" mcp
+claude mcp add filmagic -- "$env:LOCALAPPDATA\Programs\Filmagic\filmagic-cli.exe" mcp
 # Linux, or macOS with the CLI unzipped onto PATH
 claude mcp add filmagic -- filmagic-cli mcp
 ```
