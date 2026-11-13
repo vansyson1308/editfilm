@@ -454,6 +454,27 @@ impl Default for LoudnessNormalization {
     }
 }
 
+/// Export ▸ Effects ▸ True-Peak Limiter: a look-ahead limiter that keeps the exported audio at or
+/// under `ceiling_dbtp` when no loudness target is set (Loudness Normalization has its own
+/// limiter, so this one stands aside then). **On by default**: a draft peaked at +2.7 dBFS and
+/// clipped audibly with nothing to warn (#15). Audio under the ceiling passes bit for bit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeakLimiter {
+    pub enabled: bool,
+    /// Ceiling (dBTP), −24…0.
+    pub ceiling_dbtp: f64,
+}
+
+/// The default true-peak ceiling (dBTP), the delivery ceiling most platforms ask for.
+pub const PEAK_CEILING_DBTP: f64 = -1.0;
+
+impl Default for PeakLimiter {
+    fn default() -> Self {
+        PeakLimiter { enabled: true, ceiling_dbtp: PEAK_CEILING_DBTP }
+    }
+}
+
 /// Export ▸ Effects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -463,6 +484,7 @@ pub struct ExportEffects {
     pub timecode_overlay: TextOverlay,
     pub video_limiter: VideoLimiter,
     pub loudness: LoudnessNormalization,
+    pub peak_limiter: PeakLimiter,
 }
 
 impl ExportEffects {

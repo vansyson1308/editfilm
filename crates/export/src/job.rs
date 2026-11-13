@@ -502,6 +502,9 @@ impl Exporter {
         if filmagic_media::pending::take() {
             return Ok(Step::Pending);
         }
+        if let Some(a) = self.audio.as_ref() {
+            *progress.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(a.report());
+        }
         if self.mux.is_none() && self.mxf.is_none() {
             self.open_mux()?;
         }

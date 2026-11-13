@@ -2928,6 +2928,10 @@
 	Luma Min / Max	Мин. / макс. яркости
 	Loudness Normalization	Нормализация громкости
 	True Peak Limit	Ограничение истинного пика
+	True-Peak Limiter	Ограничитель истинного пика
+	Ceiling	Потолок
+	Find Speech Segments	Найти речевые фрагменты
+	Check Mix Loudness	Проверить громкость микса
 	Audio only	Только звук
 	Scaling	Масштабирование
 	Scale To Fit	Вписать в размер

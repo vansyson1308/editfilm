@@ -144,6 +144,7 @@ fn export_here(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, s
                     progress.done.fetch_add(1, Ordering::Relaxed);
                 }
             }
+            *progress.audio.lock().unwrap_or_else(PoisonError::into_inner) = Some(a.report());
             match &mut writer {
                 AudioWriter::Pcm(_) => out.write_all(pcm::pad(frames, ch, fmt)).map_err(io)?,
                 AudioWriter::Flac(enc) => {

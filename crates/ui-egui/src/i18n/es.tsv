@@ -2953,6 +2953,10 @@
 	Luma Min / Max	Luminancia mín. / máx.
 	Loudness Normalization	Normalización de sonoridad
 	True Peak Limit	Límite de pico real
+	True-Peak Limiter	Limitador de pico real
+	Ceiling	Techo
+	Find Speech Segments	Buscar segmentos de voz
+	Check Mix Loudness	Comprobar sonoridad de la mezcla
 	Audio only	Solo audio
 	Scaling	Escalado
 	Scale To Fit	Escalar para ajustar

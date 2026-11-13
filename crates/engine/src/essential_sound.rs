@@ -12,8 +12,8 @@
 //! | `essentialSound.setType` / `clearType` | assign / clear the audio type (clearing removes its effects and gain) |
 //! | `essentialSound.set` | one setting by dotted key (`repair.noise.amount`), or several (`values`) |
 //! | `essentialSound.applyPreset` / `savePreset` / `deletePreset` | built-in and user presets |
-//! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770, mono clips as one channel) and set the match gain to the target |
-//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types |
+//! | `essentialSound.autoMatch` | measure integrated loudness (BS.1770, mono clips as one channel; Dialogue only where there is speech) and set the match gain to the target of the clip's type, capped at ±12 dB |
+//! | `essentialSound.generateDucking` | Volume keyframes that duck Music / Ambience under the trigger types (`depthDb`; under detected speech when the triggers are Dialogue, `by: "level"` for the level detector) |
 
 use serde_json::{Value, json};
 
@@ -24,7 +24,7 @@ use filmagic_render::SourceProvider;
 use filmagic_time::Tick;
 
 use crate::autosave::UserSoundPreset;
-use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, has_seq, str_p, with_links};
+use crate::commands::{CommandSpec, always, bad, bool_p, has_seq, str_p, with_links};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -287,35 +287,115 @@ pub fn clip_loudness(item: &TrackItem, sr: u32, sources: &dyn SourceProvider) ->
     Some(meter.integrated()).filter(|v| v.is_finite())
 }
 
+/// The largest gain change Auto-Match makes by default (dB, either way). A clip that would need
+/// more is matched by this much and reported: such a jump is usually a wrong type or a near-silent
+/// clip (a car door pushed +27.8 dB towards a dialogue target, #15), not a level to trust.
+pub const AUTO_MATCH_MAX_GAIN_DB: f64 = 12.0;
+/// The upper bound of `maxGainDb`.
+const AUTO_MATCH_GAIN_LIMIT_DB: f64 = 48.0;
+
+/// A `targets` override (`{"music": -28}`) or the `target` for Dialogue.
+fn auto_match_targets(p: &Value, cmd: &str) -> Result<Vec<(AudioType, f64)>> {
+    let mut out = Vec::new();
+    let check = |k: &str, v: &Value| -> Result<f64> {
+        v.as_f64().filter(|x| x.is_finite() && (-60.0..=0.0).contains(x)).ok_or_else(|| bad(cmd, format!("`{k}` must be a loudness in LUFS from -60 to 0")))
+    };
+    if let Some(v) = p.get("target").filter(|v| !v.is_null()) {
+        out.push((AudioType::Dialogue, check("target", v)?));
+    }
+    if let Some(v) = p.get("targets").filter(|v| !v.is_null()) {
+        let m = v.as_object().ok_or_else(|| bad(cmd, "`targets` must be an object like {\"dialogue\": -16, \"music\": -30}"))?;
+        for (k, v) in m {
+            let t = AudioType::parse(k).ok_or_else(|| bad(cmd, format!("unknown audio type `{k}` in `targets` (dialogue, music, sfx, ambience)")))?;
+            out.retain(|(x, _)| *x != t);
+            out.push((t, check(&format!("targets.{k}"), v)?));
+        }
+    }
+    Ok(out)
+}
+
+/// `essentialSound.autoMatch`: match each typed clip to the loudness target of its type.
+///
+/// * **Dialogue** clips are measured only where [`crate::audio_check`] finds speech, so room tone
+///   and pauses do not lower the reading; a Dialogue clip with no speech is skipped with a
+///   warning (it is probably an effect or ambience).
+/// * Other types are matched to their own target (`targets`, else Preferences ▸ Audio), never to
+///   the dialogue `target`.
+/// * The gain change is capped at `maxGainDb` (default [`AUTO_MATCH_MAX_GAIN_DB`]) either way;
+///   a capped clip is reported in `warnings`.
 fn auto_match(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "essentialSound.autoMatch";
     let clips = targets(s, p);
-    let target_p = f64_p(p, "target");
+    let overrides = auto_match_targets(p, cmd)?;
+    let cap = match p.get("maxGainDb").filter(|v| !v.is_null()) {
+        None => AUTO_MATCH_MAX_GAIN_DB,
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.is_finite() && (0.0..=AUTO_MATCH_GAIN_LIMIT_DB).contains(x))
+            .ok_or_else(|| bad(cmd, format!("`maxGainDb` must be a number of dB from 0 to {AUTO_MATCH_GAIN_LIMIT_DB} (default {AUTO_MATCH_MAX_GAIN_DB})")))?,
+    };
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let sr = seq.settings.sample_rate.max(1);
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     // measure first (read-only), then write every match in one undo step
     let mut matches: Vec<(ClipId, f64, f64, f64)> = Vec::new(); // clip, measured (without match gain), target, new match gain
     let mut report = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for it in seq.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| clips.contains(&i.id)) {
         let Some(st) = it.essential.as_ref() else {
             report.push(json!({"clip": it.id.0, "skipped": "no audio type"}));
+            warnings.push(format!("clip {} (\"{}\") has no audio type and was not matched: set one with essentialSound.setType", it.id.0, it.name));
             continue;
         };
-        let target = target_p.unwrap_or_else(|| s.prefs.audio.loudness_target(st.kind)).clamp(-60.0, 0.0);
-        let Some(l) = clip_loudness(it, sr, &provider) else {
+        let target = overrides.iter().find(|(t, _)| *t == st.kind).map(|(_, v)| *v).unwrap_or_else(|| s.prefs.audio.loudness_target(st.kind)).clamp(-60.0, 0.0);
+        let (l, speech_s) = if st.kind == AudioType::Dialogue {
+            let Some(a) = crate::audio_check::clip_speech_whole(it, sr, &provider) else {
+                report.push(json!({"clip": it.id.0, "skipped": "no audio"}));
+                continue;
+            };
+            if a.segments.is_empty() {
+                report.push(json!({"clip": it.id.0, "skipped": "no speech"}));
+                warnings.push(format!(
+                    "clip {} (\"{}\") is typed Dialogue but no speech was found in it, so it was not matched to the dialogue target: if it is a sound effect or ambience, set its type (essentialSound.setType) and match it again",
+                    it.id.0, it.name
+                ));
+                continue;
+            }
+            (crate::audio_check::clip_speech_loudness(it, &a.segments, sr, &provider), Some(a.speech_s()))
+        } else {
+            (clip_loudness(it, sr, &provider), None)
+        };
+        let Some(l) = l else {
             report.push(json!({"clip": it.id.0, "skipped": "silent"}));
             continue;
         };
         // the clip gain (including any earlier match gain) applies linearly after the effects
         let current = st.loudness_gain_db();
         let measured = l - current;
-        let gain = filmagic_audio_dsp::normalize_gain_db(measured, target);
+        let wanted = filmagic_audio_dsp::normalize_gain_db(measured, target);
+        let gain = wanted.clamp(-cap, cap);
+        let capped = (gain - wanted).abs() > 1e-9;
+        if capped {
+            warnings.push(format!(
+                "clip {} (\"{}\") needs {wanted:+.1} dB to reach {target:.1} LUFS; the change was capped at {gain:+.1} dB. Check its type and content, or pass a larger `maxGainDb`",
+                it.id.0, it.name
+            ));
+        }
         matches.push((it.id, measured, target, gain));
-        report.push(json!({"clip": it.id.0, "measuredLufs": measured, "targetLufs": target, "gainDb": gain}));
+        let mut r = json!({"clip": it.id.0, "type": st.kind.label(), "measuredLufs": measured, "targetLufs": target, "gainDb": gain});
+        if let Some(sec) = speech_s {
+            r["measuredOver"] = json!("speech");
+            r["speechSeconds"] = json!((sec * 1000.0).round() / 1000.0);
+        }
+        if capped {
+            r["capped"] = json!(true);
+            r["wantedGainDb"] = json!(wanted);
+        }
+        report.push(r);
     }
     if matches.is_empty() {
-        return Err(bad(cmd, "no clips with an audio type and audible audio in the selection"));
+        let why = if warnings.is_empty() { String::new() } else { format!(": {}", warnings.join("; ")) };
+        return Err(bad(cmd, format!("no clips with an audio type and audible audio in the selection{why}")));
     }
     let ids: Vec<ClipId> = matches.iter().map(|m| m.0).collect();
     update(s, cmd, "Auto-Match Loudness", None, &ids, |it, e| {
@@ -327,7 +407,7 @@ fn auto_match(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"clips": report}))
+    Ok(json!({"clips": report, "maxGainDb": cap, "warnings": warnings}))
 }
 
 // ------------------------------------------------------------------------------------- ducking
@@ -382,11 +462,29 @@ fn trigger_envelope(triggers: &[&TrackItem], a0: i64, a1: i64, sr: u32, sources:
 fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "essentialSound.generateDucking";
     let clips = targets(s, p);
+    let depth = match p.get("depthDb").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|x| x.is_finite() && x.abs() <= 40.0)
+                .map(f64::abs)
+                .ok_or_else(|| bad(cmd, "`depthDb` must be how many dB to lower the music under the trigger, 0 to 40 (e.g. 18)"))?,
+        ),
+    };
+    let by = match str_p(p, "by") {
+        None => None,
+        Some("speech") => Some(true),
+        Some("level") => Some(false),
+        Some(x) => return Err(bad(cmd, format!("`by` must be \"speech\" (duck where the triggers speak) or \"level\" (duck where they are loud), not `{x}`"))),
+    };
+    if p.get("by").is_some_and(|v| !v.is_null() && !v.is_string()) {
+        return Err(bad(cmd, "`by` must be \"speech\" or \"level\""));
+    }
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let sr = seq.settings.sample_rate.max(1);
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let all: Vec<&TrackItem> = seq.audio_tracks.iter().flat_map(|t| t.items.iter()).collect();
-    let mut plans: Vec<(ClipId, Vec<(Tick, f64)>, f64)> = Vec::new();
+    let mut plans: Vec<(ClipId, Vec<(Tick, f64)>, f64, f64)> = Vec::new();
     let mut report = Vec::new();
     for it in all.iter().copied().filter(|i| clips.contains(&i.id)) {
         let Some(st) = it.essential.as_ref().filter(|e| e.kind.has(Section::Ducking)) else { continue };
@@ -401,27 +499,52 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
             })
             .collect();
         let (a0, a1) = (it.start.to_units_floor(sr as i64), it.end().to_units_floor(sr as i64));
-        let env = trigger_envelope(&triggers, a0, a1, sr, &provider);
-        let thr = filmagic_audio_dsp::ducking::sensitivity_threshold_db(d.sensitivity as f32);
-        let regions = filmagic_audio_dsp::ducking::activity(&env, DUCK_HOP_S as f32, thr, DUCK_MIN_ON_S, DUCK_BRIDGE_S);
         let start_s = a0 as f64 / sr as f64;
         let end_s = a1 as f64 / sr as f64;
-        let abs: Vec<(f64, f64)> = regions.iter().map(|(x, y)| (start_s + x, start_s + y)).collect();
+        // speech by default when every trigger is Dialogue: room tone and noise in the dialogue
+        // track then do not hold the music down
+        let speech = by.unwrap_or(!triggers.is_empty() && triggers.iter().all(|t| t.essential.as_ref().is_some_and(|e| e.kind == AudioType::Dialogue)));
+        let abs: Vec<(f64, f64)> = if speech {
+            let mut v: Vec<(f64, f64)> = Vec::new();
+            for t in &triggers {
+                let Some(a) = crate::audio_check::clip_speech(
+                    t,
+                    a0.max(t.start.to_units_floor(sr as i64)),
+                    a1.min(t.end().to_units_floor(sr as i64)),
+                    sr,
+                    &provider,
+                    Default::default(),
+                ) else {
+                    continue;
+                };
+                v.extend(a.segments.iter().map(|g| (g.start_s, g.end_s)));
+            }
+            v.sort_by(|x, y| x.0.total_cmp(&y.0));
+            v
+        } else {
+            let env = trigger_envelope(&triggers, a0, a1, sr, &provider);
+            let thr = filmagic_audio_dsp::ducking::sensitivity_threshold_db(d.sensitivity as f32);
+            let regions = filmagic_audio_dsp::ducking::activity(&env, DUCK_HOP_S as f32, thr, DUCK_MIN_ON_S, DUCK_BRIDGE_S);
+            regions.iter().map(|(x, y)| (start_s + x, start_s + y)).collect()
+        };
+        let reduce = depth.map(|x| -x).unwrap_or(d.reduce_db);
         let lvl = it.effect("volume").and_then(|e| e.param("level"));
         let base = match lvl {
             Some(p) if p.is_animated() => p.keyframes.iter().filter_map(|k| k.value.as_f64()).fold(f64::NEG_INFINITY, f64::max),
             Some(p) => p.value.as_f64().unwrap_or(0.0),
             None => 0.0,
         };
-        let kfs = filmagic_audio_dsp::ducking::duck_keyframes(&abs, start_s, end_s, base, d.reduce_db, d.fade_s);
+        let kfs = filmagic_audio_dsp::ducking::duck_keyframes(&abs, start_s, end_s, base, reduce, d.fade_s);
         let ticks: Vec<(Tick, f64)> = kfs.iter().map(|(t, v)| (Tick::from_seconds_f64(*t).clamp(it.start, it.end()), *v)).collect();
         report.push(json!({
             "clip": it.id.0,
             "triggers": triggers.iter().map(|t| t.id.0).collect::<Vec<_>>(),
+            "by": if speech { "speech" } else { "level" },
+            "depthDb": reduce.abs(),
             "regions": abs.iter().map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
             "keyframes": ticks.iter().map(|(t, v)| json!({"time": t.0, "seconds": t.seconds(), "levelDb": v})).collect::<Vec<_>>(),
         }));
-        plans.push((it.id, ticks, base));
+        plans.push((it.id, ticks, base, reduce));
     }
     if plans.is_empty() {
         return Err(bad(cmd, "select Music or Ambience clips (ducking applies to those types)"));
@@ -429,10 +552,11 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     s.edit("Generate Ducking Keyframes", |pr, _| {
         let seq = pr.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
-        for (c, ticks, base) in &plans {
+        for (c, ticks, base, reduce) in &plans {
             let Some((_, it)) = seq.find_item_mut(*c) else { continue };
             if let Some(e) = it.essential.as_mut() {
                 e.ducking.enabled = true;
+                e.ducking.reduce_db = *reduce;
             }
             let at: Vec<(Tick, f64)> = ticks.iter().map(|(t, v)| (mt_of(it, *t), *v)).collect();
             let Some(par) = it.effect_mut("volume").and_then(|e| e.param_mut("level")) else { continue };
@@ -474,7 +598,21 @@ pub fn commands() -> Vec<CommandSpec> {
         ),
         spec("essentialSound.savePreset", "Save Sound Preset", r#"{"clips":[id]?,"name":str}"#, has_seq, save_preset, true),
         spec("essentialSound.deletePreset", "Delete Sound Preset", r#"{"name":str,"type":"dialogue|music|sfx|ambience"?}"#, always, delete_preset, true),
-        spec("essentialSound.autoMatch", "Auto-Match Loudness", r#"{"clips":[id]?,"target":lufs?}"#, has_seq, auto_match, true),
-        spec("essentialSound.generateDucking", "Generate Ducking Keyframes", r#"{"clips":[id]?}"#, has_seq, generate_ducking, true),
+        spec(
+            "essentialSound.autoMatch",
+            "Auto-Match Loudness",
+            r#"{"clips":[id]?,"target":lufs?,"targets":{"dialogue|music|sfx|ambience":lufs}?,"maxGainDb":0..48=12}"#,
+            has_seq,
+            auto_match,
+            true,
+        ),
+        spec(
+            "essentialSound.generateDucking",
+            "Generate Ducking Keyframes",
+            r#"{"clips":[id]?,"depthDb":0..40?,"by":"speech|level"?}"#,
+            has_seq,
+            generate_ducking,
+            true,
+        ),
     ]
 }

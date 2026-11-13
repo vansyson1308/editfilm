@@ -28,7 +28,7 @@ pub mod presets;
 mod raster;
 pub mod settings;
 pub mod still;
-pub use audio_out::LoudnessReport;
+pub use audio_out::{AudioReport, LoudnessReport, PEAK_WARNING_DBTP};
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};
@@ -110,6 +110,8 @@ pub struct Progress {
     pub error: Mutex<Option<String>>,
     /// What loudness normalization measured (when it ran).
     pub loudness: Mutex<Option<LoudnessReport>>,
+    /// The written audio's true peak, loudness and limiter (when the export has audio).
+    pub audio: Mutex<Option<AudioReport>>,
     /// Readings of `done` over time, for [`Progress::eta`].
     pace: Mutex<pace::Pace>,
 }

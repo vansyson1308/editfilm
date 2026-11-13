@@ -9,6 +9,7 @@
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`resample`] — streaming, block-invariant rate conversion for playback on a device at another rate.
 //! * [`stretch`] — WSOLA time stretch that keeps the pitch (Speed/Duration ▸ Maintain Audio Pitch).
+//! * [`speech`] — a light, model-free speech detector (voicing + adaptive level + syllabic modulation).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
 //!
 //! Conventions: audio is **planar f32** (`&mut [&mut [f32]]`, one slice per channel, all the same
@@ -35,6 +36,7 @@ pub(crate) mod oversample;
 pub mod remix;
 pub mod resample;
 mod smooth;
+pub mod speech;
 pub mod stretch;
 pub mod sync;
 

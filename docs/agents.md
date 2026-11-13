@@ -299,6 +299,49 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Audio: speech, loudness and the mix
+
+These need no transcript model and no ffmpeg: measure inside Filmagic instead of on an exported file.
+
+- **`audio.speechSegments`** finds where someone speaks: `{"clip": id}` (sequence seconds),
+  `{"item": id, "stream": n?}` (source seconds) or a range `{"startSeconds", "endSeconds",
+  "track": "A1"?}` of the mix. It returns `segments` (`start`, `end`, `confidence` 0–1), the
+  `pauses` between them and `speechSeconds`. The detector is light and model-free (voicing of a
+  70–400 Hz pitch, a level threshold set from the clip's own noise floor, syllabic modulation):
+  car doors, noise bursts, steady tones and hum are not speech; sung or very rhythmic music can
+  be, so prefer a Dialogue `clip` or `track` over the full mix. `bridgeSeconds` (default 0.25)
+  sets how long a pause stays inside one segment; `minConfidence` filters.
+- **Cuts inside a sentence warn.** `timeline.razor`, `sequence.addEdit` and `timeline.trim` add
+  `warnings` and `speechCuts` (`clip`, `seconds`, `segment`, `pauseBefore`, `pauseAfter`) when a
+  cut or a trimmed edge lands inside speech on a Dialogue or untyped audio clip. The edit is still
+  made: `edit.undo` and cut at `pauseBefore` or `pauseAfter`.
+- **`essentialSound.autoMatch`** matches each clip to the target of its own type. Dialogue clips
+  are measured only where they speak (`measuredOver: "speech"`), and a Dialogue clip with no speech
+  is skipped with a warning (it is likely an effect: set its type). `target` applies to Dialogue
+  only; `targets: {"music": -28, …}` sets the others (else Preferences ▸ Audio). The gain change is
+  capped at `maxGainDb` (default ±12 dB, up to 48); a capped clip has `capped: true`,
+  `wantedGainDb` and a warning.
+- **`mix.check`** (`startSeconds`, `endSeconds`, `targetDb: [min, max]`, default `[15, 20]`)
+  reports `integratedLufs`, `maxShortTermLufs`, `truePeakDbtp` and `lraLu` for the mix, for each
+  audio track (through its fader and the master) and for each Essential Sound role. Dialogue is
+  also measured over its speech only (`roles.Dialogue.speech`), so room tone does not skew it, and
+  music where the dialogue speaks (`roles.Music.underSpeech`). `musicUnderDialogue` gives
+  `differenceDb`, the `verdict` (`ok`, `musicTooLoud`, `musicTooQuiet`, `unknown`) and
+  `musicGainChangeDb`, the change that brings the music into range. Roles need types
+  (`essentialSound.setType`).
+- **`essentialSound.generateDucking`** takes `depthDb` (0–40, stored as the clip's ducking
+  amount) and ducks under detected speech when every trigger is a Dialogue clip (`by: "speech"`),
+  so noise in the dialogue track does not hold the music down; `by: "level"` uses the level
+  detector. A loop: `mix.check` → `essentialSound.generateDucking {"depthDb": 18}` → `mix.check`.
+- **Export peaks.** Without a loudness target the export runs a True-Peak Limiter at -1 dBTP, on by
+  default (`truePeakLimiter: false` on `file.exportMedia`, or `effects.peak_limiter` in the
+  settings, turns it off; Loudness Normalization has its own limiter and the two never stack).
+  Audio under the ceiling is written bit for bit. Every export with audio reports
+  `result.audio`: `truePeakDbtp`, `integratedLufs`, `limiter` (`truePeak`, `loudness`, `off`),
+  `ceilingDbtp` and `limitedDb` (how far the mix went over the ceiling). Peaks above -1 dBTP with
+  the limiter off, or more than 6 dB of limiting, add `result.warnings` (also merged into
+  `warnings` with `wait: true`).
+
 ## 2. Control channel
 
 `filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

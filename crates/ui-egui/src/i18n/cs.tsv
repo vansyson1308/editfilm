@@ -2926,6 +2926,10 @@
 	Luma Min / Max	Minimální / maximální jasová složka
 	Loudness Normalization	Normalizace vnímané hlasitosti
 	True Peak Limit	Limit skutečných špiček
+	True-Peak Limiter	Limiter skutečných špiček
+	Ceiling	Strop
+	Find Speech Segments	Najít úseky řeči
+	Check Mix Loudness	Zkontrolovat hlasitost mixu
 	Audio only	Pouze zvuk
 	Scaling	Změna měřítka
 	Scale To Fit	Přizpůsobit měřítko

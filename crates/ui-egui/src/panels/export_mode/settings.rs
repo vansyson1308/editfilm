@@ -846,6 +846,21 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
                     DragOptions { range: -9.0..=0.0, speed: 0.1, suffix: " dBTP", decimals: 1 },
                 );
             });
+        } else {
+            // Loudness Normalization limits the peaks itself; without it this limiter keeps
+            // drafts from clipping (on by default)
+            check(ui, reg, "export.effects.peakLimiter", &mut fx.peak_limiter.enabled, tl!("True-Peak Limiter"));
+            if fx.peak_limiter.enabled {
+                row(ui, t, tl!("Ceiling"), |ui| {
+                    drag(
+                        ui,
+                        reg,
+                        "export.effects.peakLimiter.ceiling",
+                        &mut fx.peak_limiter.ceiling_dbtp,
+                        DragOptions { range: -9.0..=0.0, speed: 0.1, suffix: " dBTP", decimals: 1 },
+                    );
+                });
+            }
         }
     }
     browse

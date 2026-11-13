@@ -249,8 +249,18 @@ Volume, Channel Volume and Panner in Effect Controls and Properties, and the Vol
 clips in the Timeline (a drag is one undo step, Pen-tool keyframes, keyframe drags, a click or
 right-click on the line still reaches the clip; `FILMAGIC_UI_SHOTS=<dir>` writes `volume-*.png`).
 
+Audio safety tests (`crates/engine/src/audio_check_tests.rs`, #15) use generated signals only
+(speech-like voiced tones with pauses, decaying noise bursts as car doors, room-tone noise, steady
+tones): a no-speech Dialogue clip is not matched and an SFX clip gets its own target with the ±12 dB
+cap; speech segments of a clip, an item and a range land within 60 ms; razor, Add Edit and trim warn
+inside a sentence with the pauses around it; ducking follows speech, not room tone, at `depthDb`;
+`mix.check` measures dialogue over its speech and the music under it. The export tests
+(`true_peak_limiter_*` in `crates/export/src/settings_tests.rs`) check that a +2.7 dBFS tone is
+written at -1.0 dBTP by default, that audio under the ceiling is byte-identical with the limiter on
+or off, and that every export reports its true peak.
+
 Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
-generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
+generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target over the speech (measured: 0.02 LU,
 with and without a repair/clarity chain) and measures a mono clip as one channel (3.01 LU below the
 same signal as dual mono, within 0.1 LU of a one-channel meter over the file); ducking on a dialogue +
 music project gives keyframes within 60 ms of the expected times (measured 20 ms) and −15.00 dB in the
