@@ -371,6 +371,87 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Assets: music, sound effects, ambience and memes
+
+Filmagic ships no media. Music beds, sound effects, ambience, meme pictures, GIFs and videos, and
+overlays come as **asset packs**: folders installed under `<data dir>/Packs/<id>/` (headless: the
+`--data-dir` given to `filmagic-cli`, else the app's data directory), each with a `pack.json`
+manifest, and one `Packs/index.json` across them. A pack is removed with one command and nothing
+of it is left in a project or in this repository. Use packs rather than synthesising sound.
+
+| Command | Does |
+|---|---|
+| `assets.catalog` | the packs Filmagic can download (licence checked, pinned by SHA-256), and which are installed |
+| `assets.install` | `{"catalog": id}`, `{"path": folder \| file.zip \| pack.json}`, or `{"url": …, "sha256": …}`; `replace: true` updates an installed pack. A download (`catalog`, `url`) runs as a job: poll `jobs.list` until it is finished (`wait: true` blocks; the CLI always waits) |
+| `assets.fetch` | `{"asset": "pack/item"}` or `{"pack": id}`: download items a manifest lists by URL but that are not on disk yet, as a job |
+| `assets.list` | installed packs (`{"pack": id}`: that pack's items) |
+| `assets.search` | `query` (words; accents optional: `nhac` finds `Nhạc`), `kind`, `mood`, `pack`, `alpha`, `minSeconds`, `maxSeconds`, `limit` |
+| `assets.place` | `{"asset": …, "time": {"seconds": 12}}` puts it on the timeline (below); copy `asset` from a search result |
+| `assets.buildPack` | `{"from": folder}` makes a pack from a folder of your own files |
+| `assets.remove` | `{"pack": id}` |
+
+Kinds: `music`, `sfx`, `ambience`, `meme-image`, `meme-gif`, `meme-video`, `overlay`. Each item
+carries `tags`, `mood`, `duration` (s), `loudness` (LUFS), `alpha`, `keyColor` (the colour of a
+green or blue screen), and its pack's `license`, `source` and `attribution`.
+
+`assets.place` imports the file (once, however often it is placed) and, as one undo step:
+
+- puts it at `time` (ticks or a time object such as `{"seconds": 12}`, see
+  [Time values](#time-values); `seconds`, `frame` and `timecode` work too; default the playhead) on a free track of
+  its kind: pictures above V1 so they land over the footage, sound on the first audio track with
+  nothing there, a new track when none is free (or name one: `track`, `audioTrack`, `"new"`);
+- `duration` (ticks or a time object) cuts it to length; `untilEnd: true` runs music to the
+  end of the sequence;
+- keys out the green screen of an item with a `keyColor` (Ultra Key; `key: false` skips it,
+  `keyColor` overrides it); a transparent picture is left as it is;
+- sets the Essential Sound type (Music, SFX, Ambience) and ducks music and ambience under
+  Dialogue clips (`essentialSound.generateDucking`; `duck: false` skips it). Mark speech with
+  `essentialSound.setType {"type": "dialogue"}` first, or the result's `notes` say nothing ducked.
+
+An item's id is made from its whole path in the pack (`memes/green screen/bruh.png` is
+`memes-green-screen-bruh`), so copy `asset` from a search result rather than guessing it.
+
+A meme at 12 s: `assets.search {"query": "bruh", "kind": ["meme-video", "meme-image"]}` →
+`assets.place {"asset": "my-memes/memes-green-screen-bruh", "time": {"seconds": 12}, "duration":
+{"seconds": 2}}`. A hit on a cut, from the default catalogue: `assets.install {"catalog":
+"kenney-sci-fi-sounds"}` → `assets.search {"query": "impact"}` → `assets.place` a few frames before
+the cut. The default packs hold UI sounds (clicks, toggles, errors) and sci-fi effects (impacts,
+explosions, lasers, engines), but no whooshes or music beds: those come from packs you build or
+install.
+
+**Your own memes and sounds.** Put the files in a folder; subfolders and file names become kinds
+and tags (`music/`, `sfx/`, `ambience/`, `overlays/`, `memes/green screen/bruh.mp4`), and words like
+`epic`, `funny`, `sad` become moods. Then:
+
+1. `assets.buildPack {"from": "D:/Memes"}`: probes every file (duration, loudness, transparency, a
+   green or blue screen), tags it, and installs a copy as the pack `memes` (`id` to name it).
+2. `assets.search` and `assets.place` as above.
+
+To review the tags first, pass `"install": false`: the manifest is written to the folder as
+`pack.json`. Edit kinds, tags or moods there, then `assets.install {"path": "D:/Memes"}`. Building
+the folder again keeps what you edited. The licence is recorded as `LicenseRef-Own-Files` unless
+you pass `license`; publish only what you may. An archive downloaded from a `url` without a
+`pack.json` is recorded as `LicenseRef-Unknown`, with a warning, unless you pass `license`. When a
+pack has its own `pack.json`, its name and licence are the manifest's: `name` and `license`
+parameters are not used (a note says so).
+
+**Light installs.** A `pack.json` may list items with their own `url`, `sha256` and `size`.
+Installing such a manifest (`{"path": "pack.json"}`, or a `url` that serves one) downloads
+nothing. `assets.fetch` downloads the items you need, each checked against its SHA-256;
+`assets.place` of an item not downloaded yet says to fetch it first (a download is never made
+while a command waits for it).
+
+**Untrusted input.** Archives, manifests and downloads are checked before anything is
+installed: entry names must stay inside the pack on every operating system (no `..`, absolute
+paths, drive letters, Windows device names), only media, the manifest and licence text are kept,
+sizes and counts are capped (20 000 entries, 2 GiB a file, 4 GiB a pack, counted on the bytes
+really unpacked), and a pack is staged and renamed into place, so it is either installed whole or
+not at all; a pack an interrupted update had moved aside comes back. Downloads must match their
+SHA-256, use HTTPS all the way (redirects included) to a public host (never this machine or a
+private network), and are given up when the server sends nothing for 60 seconds; `jobs.cancel`
+stops one. Builds without the `pack-download` feature cannot download; the error says how to
+install the file by `path` instead.
+
 ## 2. Control channel
 
 `filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
