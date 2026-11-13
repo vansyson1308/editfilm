@@ -657,6 +657,7 @@ fn run_actions(app: &mut FilmagicApp, actions: Vec<(String, Value)>) {
             Some(c) => (c.to_string(), true),
             None => (cmd, false),
         };
+        let p = super::interactive_params(&cmd, p);
         match app.session.execute(&cmd, p) {
             Ok(r) => {
                 if then_edit && let (Some(c), Some(l)) = (r["clip"].as_u64(), r["layer"].as_u64()) {

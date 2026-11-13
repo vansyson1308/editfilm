@@ -46,6 +46,32 @@ mod overlay;
 mod properties;
 mod text_edit;
 
+/// `graphics.set` from the interface skips measuring how much the picture changed: that renders
+/// several frames, which a click, a colour pick or the end of a drag must not wait for. Agents get
+/// it; a person sees the change.
+pub(crate) fn interactive_params(cmd: &str, mut p: serde_json::Value) -> serde_json::Value {
+    if cmd == "graphics.set"
+        && let Some(o) = p.as_object_mut()
+    {
+        o.entry("pictureChange").or_insert(serde_json::Value::Bool(false));
+    }
+    p
+}
+
+#[cfg(test)]
+mod interactive_params_tests {
+    use serde_json::json;
+
+    #[test]
+    fn the_interface_skips_measuring_graphics_set_and_nothing_else() {
+        let p = super::interactive_params("graphics.set", json!({"clip": 1, "props": {"opacity": 50}}));
+        assert_eq!(p["pictureChange"], false);
+        // a caller that asked for it keeps it
+        assert_eq!(super::interactive_params("graphics.set", json!({"pictureChange": true}))["pictureChange"], true);
+        assert!(super::interactive_params("graphics.newText", json!({"text": "a"})).get("pictureChange").is_none());
+    }
+}
+
 pub use canvas::visible_layers;
 pub(crate) use canvas::{frame_to_screen, unscale};
 use canvas::{screen_scale, sp};

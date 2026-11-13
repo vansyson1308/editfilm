@@ -248,7 +248,9 @@ impl TrackItem {
     }
 }
 
-fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {
+/// Whether a parameter value is its default: a point default of NaN means "automatic" (the
+/// frame or the source's centre), which every resolved value matches.
+pub fn param_eq_default(v: &ParamValue, d: &ParamValue) -> bool {
     match (v, d) {
         (ParamValue::Vec2(_), ParamValue::Vec2(dd)) if dd.x.is_nan() => true,
         _ => v == d,
