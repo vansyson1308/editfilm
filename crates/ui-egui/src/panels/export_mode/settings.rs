@@ -788,6 +788,7 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     let mut browse = false;
     let audio = s.has_audio() || !s.has_video();
     let video = s.has_video();
+    let float_audio = s.audio.sample_format().is_float();
     let fx = &mut s.effects;
     if video {
         check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, tl!("Image Overlay"));
@@ -849,8 +850,12 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         } else {
             // Loudness Normalization limits the peaks itself; without it this limiter keeps
             // drafts from clipping (on by default)
-            check(ui, reg, "export.effects.peakLimiter", &mut fx.peak_limiter.enabled, tl!("True-Peak Limiter"));
-            if fx.peak_limiter.enabled {
+            // unset follows the format (off for 32-bit float); a click sets it either way
+            let mut on = fx.peak_limiter.enabled.unwrap_or(!float_audio);
+            if check(ui, reg, "export.effects.peakLimiter", &mut on, tl!("True-Peak Limiter")) {
+                fx.peak_limiter.enabled = Some(on);
+            }
+            if on {
                 row(ui, t, tl!("Ceiling"), |ui| {
                     drag(
                         ui,

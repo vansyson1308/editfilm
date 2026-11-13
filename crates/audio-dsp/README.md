@@ -44,14 +44,21 @@ crates' tests.
 ## Speech detection (`speech`)
 
 `speech::detect(mono, sample_rate, SpeechParams::default())` (or the streaming `SpeechDetector`)
-returns `SpeechSegment { start_s, end_s, confidence }`. No model: the input is band-limited to
-70 Hz–3.4 kHz and decimated to ~8 kHz; each 10 ms frame gets a level and a voicing score (the peak
-normalised autocorrelation over 70–400 Hz pitch lags, Rabiner & Schafer 1978, ch. 4); a level
-threshold is set from the signal's own noise floor and speech level (energy endpointing after
-Rabiner & Sambur 1975); loud voiced cores grow over neighbouring consonants, pauses under 0.25 s are
-bridged, and voiced segments whose level hardly moves (no syllabic modulation, Houtgast &
-Steeneken) are dropped as tones or hum. Tested on synthetic voiced signals with pauses, over noise,
-and against noise bursts, steady noise, tones, hum, beeps and silence, at 8–48 kHz.
+returns `SpeechSegment { start_s, end_s, confidence }`. No model:
+- the input is band-limited to 70 Hz–3.4 kHz and decimated to ~8 kHz;
+- each 10 ms frame gets a level and a voicing score: the peak normalised autocorrelation over
+  70–400 Hz pitch lags (Rabiner & Schafer 1978, ch. 4);
+- a level threshold is set from the signal's own noise floor and speech level (energy
+  endpointing after Rabiner & Sambur 1975), or from the speech level alone when the clip has no
+  pause;
+- loud voiced cores grow over neighbouring consonants, and pauses under 0.25 s are bridged;
+- a run is dropped when its level envelope is not speech-like: steady (tones, hum), dying away
+  from a struck start (thunks), or a row of fast-rising, slow-falling peaks (plucked notes).
+  Speech rises and falls with its syllables (Houtgast & Steeneken).
+
+Tested on synthetic voiced signals with and without pauses, over noise and under plucked music,
+and against noise bursts, thunks, plucked notes, steady noise, tones, hum, beeps and silence, at
+8–48 kHz.
 
 ## Effects (`effects`)
 

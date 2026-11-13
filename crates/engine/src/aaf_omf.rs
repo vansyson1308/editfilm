@@ -210,6 +210,8 @@ fn render_clip(s: &Session, seq: ItemId, need: &AudioNeed, sample_rate: u32, bit
             *sink_buf.lock().unwrap_or_else(|e| e.into_inner()) = d;
             Ok(())
         }))),
+        // clip audio handed to a mixing app keeps its peaks: no limiter
+        effects: filmagic_export::ExportEffects { peak_limiter: filmagic_export::PeakLimiter::OFF, ..Default::default() },
         ..Default::default()
     };
     settings.audio.sample_rate = Some(sample_rate);

@@ -1662,26 +1662,31 @@ fn thirty_two_bit_audio_in_every_container() {
 }
 
 /// The mix is 32-bit float: 32-bit float export keeps a +6 dB tone's peaks of 2.0, integers clip
-/// them at full scale. That is the sample formats with the True-Peak Limiter off; with it on (the
-/// default since #15) the float export is held at -1 dBTP like every other.
+/// them at full scale. The True-Peak Limiter (#15) is off by default for float, which people
+/// choose to keep overs; turned on, it holds float at -1 dBTP like every other format.
 #[test]
 fn float_export_keeps_peaks_above_full_scale() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(6.0));
     let dir = Scratch::new("pcm-hot");
     let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4)));
-    let limited = {
-        let path = dir.path("f_limited.wav");
+    let float_peak = |limiter: Option<bool>, name: &str| {
+        let path = dir.path(name);
         let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
         s.audio.set_sample_format(SampleFormat::Float32);
+        s.effects.peak_limiter.enabled = limiter;
+        assert_eq!(s.peak_limiter_on(), limiter == Some(true), "{name}");
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
-        let src = filmagic_codecs::open_bytes("f_limited.wav", std::fs::read(&path).unwrap().into()).unwrap();
+        let src = filmagic_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
         src.audio(0, 12_000, 48_000).unwrap().channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()))
     };
-    assert!(limited <= 0.892, "the default limiter holds -1 dBTP: {limited}");
+    let float = float_peak(None, "f.wav");
+    assert!((float - 2.0).abs() < 0.02, "float keeps +6 dBFS by default: {float}");
+    let limited = float_peak(Some(true), "f_limited.wav");
+    assert!(limited <= 0.892, "the limiter, turned on, holds -1 dBTP: {limited}");
     let peak = |sf: SampleFormat, name: &str| {
         let path = dir.path(name);
         let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
-        s.effects.peak_limiter.enabled = false;
+        s.effects.peak_limiter.enabled = Some(false);
         s.audio.set_sample_format(sf);
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let src = filmagic_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
@@ -1843,7 +1848,7 @@ fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error(
 fn true_peak_limiter_is_on_by_default_and_every_export_reports_its_peak() {
     let dir = Scratch::new("peak");
     let (hot, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(2.7));
-    assert!(ExportSettings::default().effects.peak_limiter.enabled, "on by default");
+    assert!(ExportSettings::default().peak_limiter_on(), "on by default");
     // default settings: limited to -1 dBTP
     let path = dir.path("hot.wav");
     let s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
@@ -1855,13 +1860,13 @@ fn true_peak_limiter_is_on_by_default_and_every_export_reports_its_peak() {
     assert!(tp <= -0.9, "true peak {tp:.2} dBTP");
     assert_eq!(rep.limiter, "truePeak");
     assert_eq!(rep.ceiling_dbtp, Some(-1.0));
-    assert!((rep.limited_db - 3.7).abs() < 0.1, "{rep:?}");
+    assert!((rep.limited_db - 3.8).abs() < 0.1, "3.7 dB over, plus the 0.1 dB margin: {rep:?}");
     assert!(rep.true_peak_dbtp.is_some_and(|v| v <= -0.9), "{rep:?}");
     assert!(rep.warnings.is_empty(), "{rep:?}");
     // off: the peak is reported with a warning
     let path = dir.path("hot_off.wav");
     let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
-    s.effects.peak_limiter.enabled = false;
+    s.effects.peak_limiter.enabled = Some(false);
     let prog = Progress::default();
     export(&hot, seq, &s, &m, &prog).unwrap();
     let rep = prog.audio.lock().unwrap().clone().unwrap();
@@ -1901,7 +1906,7 @@ fn true_peak_limiter_leaves_audio_under_the_ceiling_untouched() {
     for on in [true, false] {
         let path = dir.path(&format!("q{on}.wav"));
         let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
-        s.effects.peak_limiter.enabled = on;
+        s.effects.peak_limiter.enabled = Some(on);
         let prog = Progress::default();
         export(&quiet, seq, &s, &m, &prog).unwrap();
         let rep = prog.audio.lock().unwrap().clone().unwrap();
@@ -1910,6 +1915,20 @@ fn true_peak_limiter_leaves_audio_under_the_ceiling_untouched() {
         files.push(std::fs::read(&path).unwrap());
     }
     assert!(files[0] == files[1], "the limiter changed audio under its ceiling");
+    // the same at 44.1 kHz, in mono and in 5.1
+    for (rate, channels) in [(44_100, 2), (48_000, 1), (48_000, 6), (44_100, 6)] {
+        let mut out = Vec::new();
+        for on in [true, false] {
+            let path = dir.path(&format!("q{rate}_{channels}_{on}.wav"));
+            let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+            s.audio.sample_rate = Some(rate);
+            s.audio.channels = channels;
+            s.effects.peak_limiter.enabled = Some(on);
+            export(&quiet, seq, &s, &m, &Progress::default()).unwrap();
+            out.push(std::fs::read(&path).unwrap());
+        }
+        assert!(out[0].len() > 44 && out[0] == out[1], "{rate} Hz, {channels} channels: the limiter changed audio under its ceiling");
+    }
     // a ceiling that is not a number falls back to -1 dBTP, never a panic
     let mut s = ExportSettings { format: Format::Wav, path: dir.path("nan.wav"), ..Default::default() };
     s.effects.peak_limiter.ceiling_dbtp = f64::NAN;

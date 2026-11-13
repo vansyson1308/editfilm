@@ -515,6 +515,13 @@ pub struct Session {
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
     pub browser: media_browser::BrowserState,
+    /// Whether razor, Add Edit and trim check for a cut inside speech (#15). On for agents
+    /// (headless, MCP, CLI); the desktop app turns it off for its own clicks and keys, which
+    /// discard the warnings, and on again around control-channel requests. A command's
+    /// `speechCheck` parameter overrides it.
+    pub cut_speech_check: bool,
+    /// Recent speech analyses of source media for the cut check ([`audio_check`]).
+    pub(crate) speech_cache: std::sync::Mutex<audio_check::SpeechCache>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
     /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
@@ -628,6 +635,8 @@ impl Session {
             transcriber: None,
             log: Default::default(),
             browser: Default::default(),
+            cut_speech_check: true,
+            speech_cache: Default::default(),
             exec_depth: 0,
             command_origin: None,
             media_stamps: Default::default(),

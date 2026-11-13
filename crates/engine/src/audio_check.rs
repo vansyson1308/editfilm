@@ -38,8 +38,13 @@ const CUT_EDGE_S: f64 = 0.03;
 const CHUNK: i64 = 48_000;
 /// Default music-to-dialogue target range (dB the music sits under the dialogue).
 pub const MUSIC_UNDER_DIALOGUE_DB: (f64, f64) = (15.0, 20.0);
-/// Longest range `mix.check` and range `audio.speechSegments` analyse (seconds): six hours.
+/// Longest project item `audio.speechSegments` analyses (seconds): six hours.
 const MAX_RANGE_S: f64 = 6.0 * 3600.0;
+/// Longest sequence range one `mix.check` or range `audio.speechSegments` call analyses
+/// (seconds). Both run synchronously, `mix.check` renders the range once per track and role, and
+/// an MCP client gives up on a tool call after its own timeout (Claude Code can be 60 s), so a
+/// longer film is checked in parts.
+pub const MAX_CHECK_RANGE_S: f64 = 600.0;
 
 fn segment_json(s: &SpeechSegment, offset: f64) -> Value {
     json!({"start": round3(s.start_s + offset), "end": round3(s.end_s + offset), "confidence": (s.confidence as f64 * 1000.0).round() / 1000.0})
@@ -64,27 +69,6 @@ fn params_p(p: &Value, cmd: &str) -> Result<SpeechParams> {
         sp.bridge_s = b;
     }
     Ok(sp)
-}
-
-/// A copy of `item` that plays the same source over timeline `[a0, a1)` (ticks), so the audio on
-/// both sides of a cut or trim edge can be analysed, including material the clip no longer uses.
-/// Reversed, frame-held and nonsensical-speed clips are analysed over their own range only.
-fn widened(item: &TrackItem, a0: Tick, a1: Tick) -> TrackItem {
-    let mut w = item.clone();
-    if item.reverse || item.frame_hold.is_some() || !item.speed.is_finite() || item.speed <= 0.0 || a1 <= a0 {
-        return w;
-    }
-    let mut start = a0;
-    // never before the media's start
-    let back = Tick(((item.start - a0).0 as f64 * item.speed).round() as i64);
-    if item.source_in - back < Tick::ZERO {
-        start = item.start - Tick((item.source_in.0 as f64 / item.speed).floor() as i64);
-    }
-    let shift = Tick(((item.start - start).0 as f64 * item.speed).round() as i64);
-    w.start = start;
-    w.source_in = (item.source_in - shift).max(Tick::ZERO);
-    w.duration = (a1 - start).max(Tick(1));
-    w
 }
 
 /// Speech in a clip's own signal (clip gain and clip effects) over timeline samples `[a0, a1)` at
@@ -149,9 +133,84 @@ fn speaks(item: &TrackItem) -> bool {
     item.essential.as_ref().is_none_or(|e| e.kind == AudioType::Dialogue)
 }
 
-/// For each `(clip, cut)` — a clip as it is (before a razor, after a trim) and a timeline time —
-/// whether the cut lands inside speech, with the nearest pauses before and after it.
-/// Returns (warnings, speechCuts).
+/// Grid (seconds of source time) the cut check's analysis windows start on, and their length:
+/// a window covers at least [`CUT_WINDOW_S`] on both sides of any cut it is used for, and cuts
+/// near one another reuse it from [`SpeechCache`].
+const CUT_GRID_S: f64 = 2.0;
+const CUT_SPAN_S: f64 = 2.0 * CUT_WINDOW_S + CUT_GRID_S;
+/// Analyses the cache keeps.
+const CACHE_LEN: usize = 32;
+
+/// Which source audio an analysis is of: the media item and stream, what the source says it
+/// is (so relinked or replaced media is analysed afresh), and the window start (ms).
+#[derive(Clone, Debug, PartialEq)]
+struct SpeechKey {
+    item: u64,
+    stream: usize,
+    media: String,
+    window_ms: i64,
+}
+
+/// Recent analyses of source windows (most recent last).
+#[derive(Default)]
+pub struct SpeechCache(std::collections::VecDeque<(SpeechKey, std::sync::Arc<SpeechAnalysis>)>);
+
+/// Speech of the source of `item` over source seconds `[w0, w0 + CUT_SPAN_S)`, with segment
+/// times in source seconds: the plain media as recorded (no clip effects, no gain: the threshold
+/// adapts to the level), all channels averaged, rendered at [`CUT_SR`]. Cached.
+fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &TrackItem, w0: f64) -> Option<std::sync::Arc<SpeechAnalysis>> {
+    let src = provider.source(item.item)?;
+    let info = src.info();
+    if !info.has_audio() {
+        return None;
+    }
+    let key = SpeechKey {
+        item: item.item.0,
+        stream: item.audio_stream,
+        media: format!("{}|{}|{}", info.name, info.duration.0, info.audio_streams.len()),
+        window_ms: (w0 * 1000.0).round() as i64,
+    };
+    {
+        let cache = s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, a)) = cache.0.iter().find(|(k, _)| *k == key) {
+            return Some(a.clone());
+        }
+    }
+    let sr = CUT_SR;
+    let start = (w0 * sr as f64).floor().max(0.0) as i64;
+    let end = ((w0 + CUT_SPAN_S).min(info.duration.seconds().max(0.0)) * sr as f64).ceil() as i64;
+    if end <= start {
+        return None;
+    }
+    let mut d = SpeechDetector::new(sr as f64, SpeechParams::default());
+    let mut pos = start;
+    while pos < end {
+        let n = (end - pos).min(sr as i64) as usize;
+        let buf = src.audio_stream(item.audio_stream, pos, n, sr).ok()?;
+        let refs: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
+        d.process_planar(&refs);
+        pos += n as i64;
+    }
+    let mut a = d.finish();
+    let off = start as f64 / sr as f64;
+    for g in &mut a.segments {
+        g.start_s += off;
+        g.end_s += off;
+    }
+    a.duration_s += off; // the window's end, in source seconds
+    let a = std::sync::Arc::new(a);
+    let mut cache = s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.0.retain(|(k, _)| *k != key);
+    cache.0.push_back((key, a.clone()));
+    while cache.0.len() > CACHE_LEN {
+        cache.0.pop_front();
+    }
+    Some(a)
+}
+
+/// For each `(clip, cut)` (a clip as it is, before a razor or after a trim, and a timeline
+/// time), whether the cut lands inside speech, with the pauses before and after it.
+/// Returns (warnings, speechCuts). Reversed and frame-held clips are not checked.
 pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<String>, Vec<Value>) {
     if s.active_sequence().is_none() {
         return (Vec::new(), Vec::new());
@@ -159,52 +218,75 @@ pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<Stri
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let mut warnings = Vec::new();
     let mut found = Vec::new();
-    let mut seen: HashSet<(u64, i64)> = HashSet::new();
+    // a linked pair (a stereo L/R breakout) is one recording: checked once
+    let mut seen: HashSet<(u64, u64, i64)> = HashSet::new();
     for (it, t) in cuts {
-        if !speaks(it) || !seen.insert((it.id.0, t.0)) {
+        if !speaks(it) || it.reverse || it.frame_hold.is_some() || !it.speed.is_finite() || it.speed <= 0.0 {
             continue;
         }
-        let w = Tick::from_seconds_f64(CUT_WINDOW_S);
-        let (lo, hi) = (*t - w, *t + w);
-        let mut wide = widened(it, lo.max(Tick::ZERO), hi);
-        // the source as recorded is enough to hear speech: no clip effects (a denoiser alone would
-        // cost more than the razor) and no gain (the threshold adapts to the level)
-        wide.effects.clear();
-        wide.gain_db = 0.0;
-        let sr = CUT_SR;
-        let a0 = wide.start.to_units_floor(sr as i64);
-        let a1 = wide.end().to_units_floor(sr as i64);
-        let Some(a) = clip_speech(&wide, a0, a1, sr, &provider, SpeechParams::default()) else { continue };
+        if !seen.insert((it.link.unwrap_or(u64::MAX - it.id.0), it.item.0, t.0)) {
+            continue;
+        }
+        // timeline ↔ source seconds for this clip
+        let speed = it.speed;
+        let to_src = |tl: f64| it.source_in.seconds() + (tl - it.start.seconds()) * speed;
+        let to_tl = |src: f64| it.start.seconds() + (src - it.source_in.seconds()) / speed;
         let ts = t.seconds();
-        let Some(seg) = a.segments.iter().find(|g| g.start_s + CUT_EDGE_S < ts && ts < g.end_s - CUT_EDGE_S) else { continue };
-        // the window may have cut the segment short: then the pause lies beyond what was looked at
-        let before = (seg.start_s > a0 as f64 / sr as f64 + 0.01).then_some(seg.start_s);
-        let after = (seg.end_s < a1 as f64 / sr as f64 - 0.01).then_some(seg.end_s);
+        let src_t = to_src(ts);
+        let w0 = (((src_t - CUT_WINDOW_S * speed) / CUT_GRID_S).floor() * CUT_GRID_S).max(0.0);
+        let Some(a) = source_window_speech(s, &provider, it, w0) else { continue };
+        let edge = CUT_EDGE_S * speed;
+        let Some(k) = a.segments.iter().position(|g| g.start_s + edge < src_t && src_t < g.end_s - edge) else { continue };
+        let seg = a.segments[k];
+        let (win_lo, win_hi) = (w0, a.duration_s);
+        // the pause before: from the previous segment's end (or the window start, when the
+        // speech starts well inside the window) to this segment's start; a cut belongs in its
+        // middle, or 0.1 s before the speech when the pause runs past the window
+        let before: Option<(Option<f64>, f64)> = if k > 0 {
+            Some((Some(a.segments[k - 1].end_s), seg.start_s))
+        } else if seg.start_s > win_lo + 0.05 {
+            Some((None, seg.start_s))
+        } else {
+            None
+        };
+        let after: Option<(f64, Option<f64>)> = if let Some(n) = a.segments.get(k + 1) {
+            Some((seg.end_s, Some(n.start_s)))
+        } else if seg.end_s < win_hi - 0.05 {
+            Some((seg.end_s, None))
+        } else {
+            None
+        };
+        let cut_before = before.map(|(a0, b0)| to_tl(a0.map_or(b0 - 0.1 * speed, |x| (x + b0) / 2.0).max(win_lo)));
+        let cut_after = after.map(|(a0, b0)| to_tl(b0.map_or(a0 + 0.1 * speed, |x| (a0 + x) / 2.0).min(win_hi)));
         let fmt = |v: Option<f64>| v.map(|x| format!("{x:.2} s")).unwrap_or_else(|| format!("more than {CUT_WINDOW_S:.0} s away"));
+        let (seg_a, seg_b) = (to_tl(seg.start_s), to_tl(seg.end_s));
         warnings.push(format!(
-            "the cut at {ts:.2} s on clip {} (\"{}\") lands inside speech ({:.2}–{:.2} s): the nearest pauses are at {} before and {} after. Undo (edit.undo) and cut at a pause, or check with audio.speechSegments",
+            "the cut at {ts:.2} s on clip {} (\"{}\") lands inside speech ({seg_a:.2}–{seg_b:.2} s): cut in the pause before it at {} or after it at {} instead (edit.undo, then cut there; audio.speechSegments lists every segment)",
             it.id.0,
             it.name,
-            seg.start_s,
-            seg.end_s,
-            fmt(before),
-            fmt(after)
+            fmt(cut_before),
+            fmt(cut_after),
         ));
+        let range = |x: Option<f64>| x.map(|v| json!(round3(to_tl(v)))).unwrap_or(Value::Null);
         found.push(json!({
             "clip": it.id.0,
             "seconds": round3(ts),
-            "segment": [round3(seg.start_s), round3(seg.end_s)],
+            "segment": [round3(seg_a), round3(seg_b)],
             "confidence": (seg.confidence as f64 * 1000.0).round() / 1000.0,
-            "pauseBefore": before.map(round3),
-            "pauseAfter": after.map(round3),
+            "pauseBefore": cut_before.map(round3),
+            "pauseBeforeRange": before.map(|(x, y)| json!([range(x), round3(to_tl(y))])),
+            "pauseAfter": cut_after.map(round3),
+            "pauseAfterRange": after.map(|(x, y)| json!([round3(to_tl(x)), range(y)])),
         }));
     }
     (warnings, found)
 }
 
-/// Add the speech warnings of `cuts` to a razor / trim result.
-pub(crate) fn annotate_cuts(s: &Session, out: &mut Value, cuts: &[(TrackItem, Tick)]) {
-    if cuts.is_empty() {
+/// Add the speech warnings of `cuts` to a razor / trim result, unless the check is off for this
+/// call (`speechCheck: false`, or [`Session::cut_speech_check`]).
+pub(crate) fn annotate_cuts(s: &Session, p: &Value, out: &mut Value, cuts: &[(TrackItem, Tick)]) {
+    let on = p.get("speechCheck").and_then(Value::as_bool).unwrap_or(s.cut_speech_check);
+    if cuts.is_empty() || !on {
         return;
     }
     let (warnings, found) = cut_warnings(s, cuts);
@@ -252,17 +334,26 @@ fn sequence_range_p(s: &Session, p: &Value, cmd: &str) -> Result<(f64, f64)> {
     if b <= a {
         return Err(bad(cmd, format!("the range {a:.3}–{b:.3} s is empty (the sequence is {end_all:.3} s long): pass `startSeconds` < `endSeconds`")));
     }
-    if b - a > MAX_RANGE_S {
-        return Err(bad(cmd, format!("the range is {:.0} s; analyse at most {MAX_RANGE_S:.0} s at a time", b - a)));
+    if b - a > MAX_CHECK_RANGE_S {
+        return Err(bad(
+            cmd,
+            format!(
+                "the range {a:.1}–{b:.1} s is {:.0} s long; check at most {MAX_CHECK_RANGE_S:.0} s per call: pass startSeconds and endSeconds (e.g. {{\"startSeconds\": {a:.0}, \"endSeconds\": {:.0}}}) and call again for the next part",
+                b - a,
+                a + MAX_CHECK_RANGE_S
+            ),
+        ));
     }
     Ok((a, b))
 }
 
 /// A copy of `seq` that keeps only the audio items `keep` says yes to (video untouched).
+/// Solo is ignored: a soloed track would make every other track and role read as silence.
 fn filtered(seq: &Sequence, keep: impl Fn(usize, &TrackItem) -> bool) -> Sequence {
     let mut q = seq.clone();
     for (k, t) in q.audio_tracks.iter_mut().enumerate() {
         t.items.retain(|i| keep(k, i));
+        t.solo = false;
     }
     q
 }
@@ -463,7 +554,13 @@ fn mix_check(s: &mut Session, p: &Value) -> Result<Value> {
     let sr = seq.settings.sample_rate.max(1);
     let mut warnings: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
-    let mix = measure(s, &seq, a, b, &provider);
+    if seq.audio_tracks.iter().any(|t| t.solo) {
+        notes.push("a track is soloed: mix.check ignores solo and measures every track as if none were".into());
+    }
+    if seq.settings.audio_master == filmagic_project::AudioChannels::Surround51 {
+        notes.push("the 5.1 mix is measured as its ITU-R BS.775 stereo downmix".into());
+    }
+    let mix = measure(s, &filtered(&seq, |_, _| true), a, b, &provider);
     // tracks: each track's own items, through the whole mixer (its fader, mute, the master)
     let mut tracks = Vec::new();
     for (k, t) in seq.audio_tracks.iter().enumerate() {
@@ -534,11 +631,21 @@ fn mix_check(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             ("ok", 0.0)
         };
-        if verdict != "ok" {
-            warnings.push(format!(
-                "the music sits {diff:.1} dB under the dialogue (target {lo:.0}–{hi:.0} dB): change the music by {change:+.1} dB (its clip volume or track fader), or duck it with essentialSound.generateDucking {{\"depthDb\": {:.0}}}",
-                (lo + hi) / 2.0
-            ));
+        let mid = (lo + hi) / 2.0;
+        match verdict {
+            // ducking lowers the music by its depth under the speech: the depth that lands in the
+            // middle of the range is how far short of it the music is now (on top of any ducking
+            // the music already has)
+            "musicTooLoud" => warnings.push(format!(
+                "the music sits only {diff:.1} dB under the dialogue (target {lo:.0}–{hi:.0} dB): lower it by {:.1} dB (its clip volume or track fader), or duck it under the speech with essentialSound.generateDucking {{\"depthDb\": {:.0}}} (add the depth it is already ducked by, if any)",
+                -change,
+                mid - diff
+            )),
+            "musicTooQuiet" => warnings.push(format!(
+                "the music sits {diff:.1} dB under the dialogue (target {lo:.0}–{hi:.0} dB): raise it by {:.1} dB (its clip volume or track fader), or lessen its ducking (essentialSound.generateDucking with a smaller depthDb)",
+                -change
+            )),
+            _ => {}
         }
         json!({
             "differenceDb": (diff * 100.0).round() / 100.0,

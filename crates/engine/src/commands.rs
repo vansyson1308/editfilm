@@ -2707,7 +2707,7 @@ fn build() -> Vec<CommandSpec> {
             s.state.open_sequences.insert(to, tab);
             Ok(json!({"index": to}))
         }),
-        cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
+        cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?,"speechCheck":bool?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             // Like Premiere: selected clips under the playhead are cut, and only they (#164);
             // with none, the targeted tracks are.
@@ -2723,7 +2723,7 @@ fn build() -> Vec<CommandSpec> {
             };
             let mut out = json!({"cuts": n.len()});
             let cut = crate::audio_check::cut_at(s, before, t);
-            crate::audio_check::annotate_cuts(s, &mut out, &cut);
+            crate::audio_check::annotate_cuts(s, p, &mut out, &cut);
             Ok(out)
         }),
         cmd!("sequence.addEditAllTracks", "Add Edit to All Tracks", ["Sequence"], Some("Cmd+Shift+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
@@ -3401,7 +3401,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?,"speechCheck":bool?}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -3461,7 +3461,7 @@ fn build() -> Vec<CommandSpec> {
                 let mut out = json!({"delta": applied.0});
                 if applied != Tick::ZERO {
                     let edges = crate::audio_check::trim_edges(s, &clips, edge == Edge::Out);
-                    crate::audio_check::annotate_cuts(s, &mut out, &edges);
+                    crate::audio_check::annotate_cuts(s, p, &mut out, &edges);
                 }
                 Ok(out)
             }
@@ -3613,7 +3613,7 @@ fn build() -> Vec<CommandSpec> {
             let sp = s.edit_sequence("Rate Stretch", |q, ctx, _| Ok(edit::rate_stretch_items(q, &clips, edge, d, ctx)?))?;
             Ok(json!({"speed": sp}))
         }),
-        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
+        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?,"speechCheck":bool?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
@@ -3627,7 +3627,7 @@ fn build() -> Vec<CommandSpec> {
             };
             let mut out = json!({"cuts": n.len()});
             let cut = crate::audio_check::cut_at(s, before, t);
-            crate::audio_check::annotate_cuts(s, &mut out, &cut);
+            crate::audio_check::annotate_cuts(s, p, &mut out, &cut);
             Ok(out)
         }),
         cmd!(

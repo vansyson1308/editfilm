@@ -24,6 +24,9 @@ impl FilmagicApp {
     /// directory and seeding IME epoch/sequence identity.
     pub fn new(mut session: Session) -> Self {
         session.shortcuts.register_external(menus::external_commands());
+        // a click or key does not wait for the speech check of its cuts, whose warnings the UI
+        // does not show; the control channel turns it on for agents' commands (#15)
+        session.cut_speech_check = false;
         let recovery = !session.recovery_candidates().is_empty();
         let frames = Arc::new(FrameServer::new(session.media.clone(), session.services.clone(), session.previews.clone(), FrameServer::default_workers()));
         let workspaces =

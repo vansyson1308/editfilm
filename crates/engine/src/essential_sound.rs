@@ -407,7 +407,26 @@ fn auto_match(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
-    Ok(json!({"clips": report, "maxGainDb": cap, "warnings": warnings}))
+    let mut notes: Vec<String> = Vec::new();
+    if p.get("target").is_some_and(|v| !v.is_null()) {
+        let others: Vec<String> = matches
+            .iter()
+            .filter_map(|m| {
+                report
+                    .iter()
+                    .find(|r| r["clip"] == m.0.0)
+                    .filter(|r| r["type"] != "Dialogue")
+                    .map(|r| format!("clip {} ({})", m.0.0, r["type"].as_str().unwrap_or("?")))
+            })
+            .collect();
+        if !others.is_empty() {
+            notes.push(format!(
+                "`target` applies to Dialogue clips only; {} used the target of their own type: pass `targets` (e.g. {{\"music\": -28}}) to set those",
+                others.join(", ")
+            ));
+        }
+    }
+    Ok(json!({"clips": report, "maxGainDb": cap, "warnings": warnings, "notes": notes}))
 }
 
 // ------------------------------------------------------------------------------------- ducking
@@ -466,9 +485,8 @@ fn generate_ducking(s: &mut Session, p: &Value) -> Result<Value> {
         None => None,
         Some(v) => Some(
             v.as_f64()
-                .filter(|x| x.is_finite() && x.abs() <= 40.0)
-                .map(f64::abs)
-                .ok_or_else(|| bad(cmd, "`depthDb` must be how many dB to lower the music under the trigger, 0 to 40 (e.g. 18)"))?,
+                .filter(|x| x.is_finite() && (0.0..=40.0).contains(x))
+                .ok_or_else(|| bad(cmd, "`depthDb` must be how many dB to lower the music under the trigger, a positive number from 0 to 40 (e.g. 18)"))?,
         ),
     };
     let by = match str_p(p, "by") {

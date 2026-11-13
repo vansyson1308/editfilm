@@ -327,7 +327,7 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
     }
     match p.get("truePeakLimiter") {
         None | Some(Value::Null) => {}
-        Some(Value::Bool(on)) => settings.effects.peak_limiter.enabled = *on,
+        Some(Value::Bool(on)) => settings.effects.peak_limiter.enabled = Some(*on),
         Some(_) => return Err(bad(cmd, "truePeakLimiter: true (default: keep the audio under -1 dBTP) or false")),
     }
     Ok(())

@@ -10,20 +10,25 @@
 //!   analysis, Rabiner & Schafer, *Digital Processing of Speech Signals*, 1978, ch. 4).
 //! * **An adaptive level threshold**, as in energy-based endpoint detection (Rabiner & Sambur,
 //!   1975): set from the signal's own noise floor (10th percentile of the frame levels, digital
-//!   silence counted as −100 dBFS) and speech level (95th percentile), 30 % of the way up and at least 6 dB above the
-//!   floor, and never below −60 dBFS.
+//!   silence counted as −100 dBFS) and speech level (95th percentile), 30 % of the way up and at
+//!   least 6 dB above the floor, and never below −60 dBFS. A clip with no pause at all (trimmed
+//!   tight to the words) spans less than 20 dB: its floor is then put 30 dB under the speech.
 //! * **Segments.** A frame that is loud and voiced is a speech core. Cores grow over the loud
 //!   frames next to them (unvoiced consonants, up to 200 ms) and above a low threshold 3 dB over
 //!   the floor; gaps shorter than [`SpeechParams::bridge_s`] (the pauses between words) are
 //!   bridged, and a segment needs at least [`SpeechParams::min_voiced_s`] of voiced frames.
-//! * **Syllabic modulation.** Speech rises and falls with its syllables, 3–8 times a second
-//!   (the 4 Hz peak of the speech modulation spectrum, Houtgast & Steeneken). A voiced segment
-//!   whose level hardly moves (spread of its frame levels under 2 dB over 300 ms or more) is a
-//!   steady tone, a hum or a held note, not speech, and is dropped.
+//! * **The level envelope's shape.** Speech rises and falls with its syllables, about 1–12
+//!   times a second (the 4 Hz peak of the speech modulation spectrum, Houtgast & Steeneken), and
+//!   its vowels swell in and out. Peaks are counted with a 3 dB hysteresis. A run is not speech
+//!   when it is steady (level spread under 2 dB over 300 ms or more: a tone, hum or held note),
+//!   when it dies away from a struck start (a car door's thunk, a footstep), or when its peaks
+//!   fall more than 3.5 times slower than they rise (plucked or struck notes). Runs longer than
+//!   1.5 s are also judged in 1 s windows, so music before and after the words drops out; with
+//!   music under the speech, a segment's edges can stretch by up to about a second.
 //!
-//! A car door, a footstep or a noise burst is loud but not voiced; a steady tone or hum is voiced
-//! but not modulated: neither is speech. Music with a sung or strongly rhythmic melody can still
-//! read as speech; a clip's Essential Sound type is the better guide there.
+//! Noise bursts are loud but not voiced; tones and hum are voiced but steady; thunks and plucks
+//! are voiced but struck: none of them is speech. A sung melody can still read as speech; a
+//! clip's Essential Sound type is the better guide there.
 //!
 //! [`SpeechSegment::confidence`] (0…1) is the mean voicing of the segment's voiced frames times
 //! how strongly its level is modulated (full at a 4 dB spread).
@@ -305,8 +310,14 @@ fn segments(frames: &[Frame], hop_s: f64, win_s: f64, duration_s: f64, p: &Speec
     // absolute gate, a noisy one a threshold above its own noise
     let mut lv: Vec<f32> = frames.iter().map(|f| f.db.max(-100.0)).collect();
     lv.sort_by(f32::total_cmp);
-    let floor = percentile(&lv, 0.10);
+    let mut floor = percentile(&lv, 0.10);
     let top = percentile(&lv, 0.95);
+    // A clip trimmed tight to the words, or continuous speech, has no pauses: its 10th
+    // percentile is the troughs between syllables, not a noise floor. When the levels span less
+    // than a speech-to-pause contrast, the floor is put that far under the speech level instead.
+    if top - floor < UNIMODAL_SPAN_DB {
+        floor = top - UNIMODAL_SPAN_DB - 10.0;
+    }
     let thr = (floor + 0.3 * (top - floor)).max(floor + 6.0).max(p.min_level_db);
     let low = (floor + 3.0).max(p.min_level_db);
     let mut out = SpeechAnalysis { segments: Vec::new(), duration_s, threshold_db: thr, floor_db: floor, truncated };
@@ -359,26 +370,186 @@ fn segments(frames: &[Frame], hop_s: f64, win_s: f64, duration_s: f64, p: &Speec
     let min_voiced = (p.min_voiced_s / hop_s).round().max(1.0) as usize;
     // frame k is centred on k·hop + win/2
     let centre = win_s / 2.0;
+    // Long runs are looked at in 1 s windows as well: a window that is clearly not speech (a
+    // row of plucked notes, a held note, a decay) is cut out, so music before and after the
+    // words under the same level does not join the segment.
+    let mut parts: Vec<(usize, usize)> = Vec::new();
     for (a, b) in merged {
+        if b - a <= SPLIT_FRAMES {
+            parts.push((a, b));
+            continue;
+        }
+        let mut keep = vec![false; b - a];
+        let mut w0 = a;
+        loop {
+            let w1 = (w0 + WINDOW_FRAMES).min(b);
+            let env: Vec<f32> = (w0..w1).map(|k| frames[k].db.max(low)).collect();
+            let sh = Shape::of(&env);
+            if !sh.clearly_not_speech(hop_s) {
+                keep[w0 - a..w1 - a].iter_mut().for_each(|x| *x = true);
+            }
+            if w1 >= b {
+                break;
+            }
+            w0 += WINDOW_HOP_FRAMES;
+        }
+        let mut start = None;
+        for (k, on) in keep.iter().chain(std::iter::once(&false)).enumerate() {
+            match (*on, start) {
+                (true, None) => start = Some(a + k),
+                (false, Some(s0)) => {
+                    parts.push((s0, a + k));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    for (a, b) in parts {
         let voiced: Vec<usize> = (a..b).filter(|k| core[*k]).collect();
         if voiced.len() < min_voiced {
             continue;
         }
-        // the spread of the voiced frames' levels, without the window-long ramps at the edges
-        let edge = (win_s / hop_s).ceil() as usize;
-        let inner = voiced.get(edge..voiced.len().saturating_sub(edge)).filter(|v| !v.is_empty()).unwrap_or(&voiced);
-        let levels: Vec<f32> = inner.iter().map(|k| frames[*k].db).collect();
-        let spread = spread_db(&levels);
-        if b - a >= STEADY_FRAMES && spread < STEADY_SPREAD_DB {
+        // the level envelope of the whole run (floored at `low`)
+        let env: Vec<f32> = (a..b).map(|k| frames[k].db.max(low)).collect();
+        let shape = Shape::of(&env);
+        if b - a >= STEADY_FRAMES && shape.spread < STEADY_SPREAD_DB {
+            continue; // a steady tone, hum or held note
+        }
+        if !shape.speech_like(hop_s) {
             continue;
         }
+        let spread = shape.spread;
         let mean_v = voiced.iter().map(|k| frames[*k].voicing).sum::<f32>() / voiced.len() as f32;
-        let confidence = (mean_v * (spread / FULL_SPREAD_DB).min(1.0)).clamp(0.0, 1.0);
+        let syllables = if shape.peaks >= 2 { 1.0 } else { 0.7 };
+        let confidence = (mean_v * (spread / FULL_SPREAD_DB).min(1.0) * syllables).clamp(0.0, 1.0);
         let start_s = (a as f64 * hop_s + centre - hop_s / 2.0).max(0.0);
         let end_s = (b as f64 * hop_s + centre - hop_s / 2.0).min(duration_s).max(start_s);
         out.segments.push(SpeechSegment { start_s, end_s, confidence });
     }
     out
+}
+
+/// How a run's level envelope moves: what tells speech from a struck or held sound.
+struct Shape {
+    /// Standard deviation of the levels (dB).
+    spread: f32,
+    /// Syllable-like peaks: rises of at least [`PEAK_HYSTERESIS_DB`] after a fall of as much.
+    peaks: usize,
+    /// Frames from the start to the loudest frame, and from it to the end.
+    to_max: usize,
+    after_max: usize,
+    /// Whether the level never rises again by [`PEAK_HYSTERESIS_DB`] after its maximum.
+    decays_from_max: bool,
+    /// Median over the peaks of (frames falling to the next trough) / (frames rising from the
+    /// previous trough). A struck or plucked note jumps up and dies away slowly (a large ratio);
+    /// a syllable swells in and out.
+    fall_rise: f32,
+}
+
+/// Hysteresis of the syllable-peak count (dB).
+const PEAK_HYSTERESIS_DB: f32 = 3.0;
+/// A median fall/rise ratio above this is a run of struck or plucked notes.
+const STRUCK_FALL_RISE: f32 = 3.5;
+/// Runs longer than this (frames) are also judged in windows of [`WINDOW_FRAMES`].
+const SPLIT_FRAMES: usize = 150;
+const WINDOW_FRAMES: usize = 100;
+const WINDOW_HOP_FRAMES: usize = 25;
+/// Below this span between the 10th and 95th percentile levels there is no pause in the clip.
+const UNIMODAL_SPAN_DB: f32 = 20.0;
+
+impl Shape {
+    fn of(env: &[f32]) -> Shape {
+        let n = env.len();
+        // 3-frame mean
+        let sm: Vec<f32> = (0..n)
+            .map(|k| {
+                let (lo, hi) = (k.saturating_sub(1), (k + 2).min(n));
+                env[lo..hi].iter().sum::<f32>() / (hi - lo).max(1) as f32
+            })
+            .collect();
+        // alternating troughs and peaks with a 3 dB hysteresis
+        let mut extrema: Vec<(usize, bool)> = vec![(0, false)]; // (frame, is_peak)
+        let (mut rising, mut lo_i, mut hi_i) = (true, 0usize, 0usize);
+        for (k, &v) in sm.iter().enumerate() {
+            let (lo, hi) = (sm.get(lo_i).copied().unwrap_or(v), sm.get(hi_i).copied().unwrap_or(v));
+            if rising {
+                if v > hi {
+                    hi_i = k;
+                }
+                if v < sm.get(hi_i).copied().unwrap_or(v) - PEAK_HYSTERESIS_DB {
+                    extrema.push((hi_i, true));
+                    rising = false;
+                    lo_i = k;
+                }
+            } else {
+                if v < lo {
+                    lo_i = k;
+                }
+                if v > sm.get(lo_i).copied().unwrap_or(v) + PEAK_HYSTERESIS_DB {
+                    extrema.push((lo_i, false));
+                    rising = true;
+                    hi_i = k;
+                }
+            }
+            let _ = hi;
+        }
+        if rising {
+            extrema.push((hi_i, true));
+        }
+        extrema.push((n.saturating_sub(1), false));
+        let mut ratios: Vec<f32> = Vec::new();
+        for w in extrema.windows(3) {
+            if let [(a, false), (p, true), (b, false)] = w {
+                let rise = p.saturating_sub(*a).max(1) as f32;
+                let fall = b.saturating_sub(*p).max(1) as f32;
+                ratios.push(fall / rise);
+            }
+        }
+        let peaks = extrema.iter().filter(|e| e.1).count();
+        ratios.sort_by(f32::total_cmp);
+        let fall_rise = ratios.get(ratios.len() / 2).copied().unwrap_or(1.0);
+        let m = sm.iter().enumerate().fold((0, f32::NEG_INFINITY), |acc, (k, v)| if *v > acc.1 { (k, *v) } else { acc }).0;
+        let mut min_after = f32::INFINITY;
+        let mut decays = true;
+        for &v in sm.iter().skip(m) {
+            min_after = min_after.min(v);
+            if v > min_after + PEAK_HYSTERESIS_DB {
+                decays = false;
+                break;
+            }
+        }
+        Shape { spread: spread_db(env), peaks, to_max: m, after_max: n.saturating_sub(m), decays_from_max: decays, fall_rise }
+    }
+
+    /// Positive evidence that a window is not speech: steady, dying away from a struck start,
+    /// or a row of struck notes. (A window with one long vowel is not evidence either way.)
+    fn clearly_not_speech(&self, hop_s: f64) -> bool {
+        let n = self.to_max + self.after_max;
+        (n >= STEADY_FRAMES && self.spread < STEADY_SPREAD_DB)
+            || (self.decays_from_max && self.after_max as f64 * hop_s >= 0.2 && self.to_max * 3 <= self.after_max)
+            || (self.peaks >= 2 && self.fall_rise > STRUCK_FALL_RISE)
+    }
+
+    /// Speech rises and falls with its syllables, about 1–12 times a second, and its vowels swell
+    /// in and out. A struck sound (a car-door thunk, a footstep) jumps to its maximum and dies
+    /// away; a run of plucked notes is a row of such jumps.
+    fn speech_like(&self, hop_s: f64) -> bool {
+        let secs = (self.to_max + self.after_max) as f64 * hop_s;
+        // dies away from an early maximum: a thunk or a single struck note
+        if self.decays_from_max && self.after_max as f64 * hop_s >= 0.2 && self.to_max * 3 <= self.after_max {
+            return false;
+        }
+        if self.peaks >= 2 && self.fall_rise > STRUCK_FALL_RISE {
+            return false;
+        }
+        if self.peaks >= 2 {
+            let rate = self.peaks as f64 / secs.max(1e-3);
+            return (1.0..=12.0).contains(&rate);
+        }
+        // one syllable: a short word
+        secs <= 0.6
+    }
 }
 
 /// Analyse a whole mono signal.
@@ -449,6 +620,38 @@ pub mod test_signals {
         (0..(secs * sr as f64) as usize).map(|_| rng.sample() * amp).collect()
     }
 
+    /// A car-door thunk at `at` seconds: a noise burst over a resonance at `f` Hz, both dying away.
+    pub fn thunk(secs: f64, sr: u32, at: f64, f: f64, amp: f32) -> Vec<f32> {
+        let mut r = Rng(5);
+        (0..(secs * sr as f64) as usize)
+            .map(|i| {
+                let t = i as f64 / sr as f64 - at;
+                if t < 0.0 {
+                    return 0.0;
+                }
+                let n = r.sample() * 0.5 * (-t * 30.0).exp() as f32;
+                let s = (2.0 * std::f64::consts::PI * f * t).sin() as f32 * (-t * 6.0).exp() as f32;
+                (n + s) * amp
+            })
+            .collect()
+    }
+
+    /// Plucked notes (harmonics dying away, the higher faster), `rate` notes a second, each
+    /// struck at once and decaying by `decay` (1/s, fundamental).
+    pub fn plucked(secs: f64, sr: u32, rate: f64, decay: f64, amp: f32) -> Vec<f32> {
+        let notes = [110.0, 147.0, 165.0, 196.0, 247.0, 220.0];
+        (0..(secs * sr as f64) as usize)
+            .map(|i| {
+                let t = i as f64 / sr as f64;
+                let k = (t * rate) as usize;
+                let tt = t - k as f64 / rate;
+                let f = notes[k % notes.len()];
+                let v: f64 = (1..10).map(|h| (2.0 * std::f64::consts::PI * f * h as f64 * tt).sin() / h as f64 * (-tt * decay * h as f64).exp()).sum();
+                (v * amp as f64) as f32
+            })
+            .collect()
+    }
+
     /// A sine at `f` Hz.
     pub fn tone(secs: f64, sr: u32, f: f64, amp: f32) -> Vec<f32> {
         (0..(secs * sr as f64) as usize).map(|i| (amp as f64 * (2.0 * std::f64::consts::PI * f * i as f64 / sr as f64).sin()) as f32).collect()
@@ -512,6 +715,52 @@ mod tests {
             let a = detect(&x, SR as f64, SpeechParams::default());
             println!("{name}: {:?}", a.segments);
             assert!(a.segments.is_empty(), "{name}: {:?}", a.segments);
+        }
+    }
+
+    /// Speech with no pause at all (a clip trimmed tight to the words) has no noise floor to set
+    /// the threshold from: it is still speech, with and without room tone under it.
+    #[test]
+    fn continuous_speech_without_pauses_is_found() {
+        for secs in [0.5, 3.0, 8.0] {
+            let x = speech(secs, SR, 0.3, |_| true);
+            let toned = mix(&x, &noise(secs, SR, 0.0045, 3));
+            for (name, sig) in [("clean", x), ("room tone", toned)] {
+                let a = detect(&sig, SR as f64, SpeechParams::default());
+                println!("{secs} s {name}: {:?}", a.segments);
+                near(&a.segments, &[(0.0, secs)], 0.03);
+                assert!(a.segments[0].confidence > 0.8, "{:?}", a.segments);
+            }
+        }
+        // one short pause: two confident segments
+        let a = detect(&speech(4.0, SR, 0.3, |t| !(2.0..2.4).contains(&t)), SR as f64, SpeechParams::default());
+        near(&a.segments, &[(0.0, 2.0), (2.4, 4.0)], 0.03);
+        assert!(a.segments.iter().all(|g| g.confidence > 0.8), "{:?}", a.segments);
+    }
+
+    /// The #15 case: a car door with a low thunk (a decaying 90 or 120 Hz resonance under a noise
+    /// burst) is voiced but dies away from a struck start; plucked notes are a row of such
+    /// starts. Neither is speech.
+    #[test]
+    fn thunks_and_plucked_notes_are_not_speech() {
+        for (f, amp) in [(90.0, 0.2), (120.0, 0.2), (90.0, 0.9)] {
+            let a = detect(&thunk(3.0, SR, 1.0, f, amp), SR as f64, SpeechParams::default());
+            assert!(a.segments.is_empty(), "thunk {f} Hz: {:?}", a.segments);
+        }
+        for (rate, decay) in [(2.0, 1.0), (3.0, 0.7), (4.0, 1.5), (6.0, 2.0), (4.0, 4.0)] {
+            let a = detect(&plucked(6.0, SR, rate, decay, 0.3), SR as f64, SpeechParams::default());
+            assert!(a.segments.is_empty(), "plucked {rate}/s, decay {decay}: {:?}", a.segments);
+        }
+        // speech over plucked music: found, and the music before and after it is mostly left out
+        // (segment edges are judged in 1 s windows, so they can stretch up to about a second)
+        for rate in [2.0, 4.0, 6.0] {
+            let m: Vec<f32> = plucked(8.0, SR, rate, 1.5, 0.1).iter().zip(speech(8.0, SR, 0.3, |t| (2.0..5.0).contains(&t))).map(|(a, b)| a + b).collect();
+            let a = detect(&m, SR as f64, SpeechParams::default());
+            println!("speech over plucked {rate}/s: {:?}", a.segments);
+            assert_eq!(a.segments.len(), 1, "{:?}", a.segments);
+            let g = a.segments[0];
+            assert!(g.start_s <= 2.05 && g.end_s >= 4.95, "the speech is inside {g:?}");
+            assert!(g.start_s >= 1.0 && g.end_s <= 6.0, "the music is mostly outside {g:?}");
         }
     }
 

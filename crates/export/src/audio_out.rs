@@ -24,7 +24,8 @@ use crate::{ExportError, ExportSettings, Result};
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioReport {
-    /// True peak (dBTP, BS.1770-4 4× oversampled) of the written audio; `None` when silent.
+    /// True peak (dBTP, BS.1770-4 4× oversampled) of the written audio; `None` when silent. For
+    /// AAC and MP3 it is measured on the encoder's input: decoding can add a few tenths of a dB.
     pub true_peak_dbtp: Option<f64>,
     /// Integrated loudness (LUFS) of the written audio; `None` when silent.
     pub integrated_lufs: Option<f64>,
@@ -32,11 +33,14 @@ pub struct AudioReport {
     pub limiter: &'static str,
     /// The ceiling the limiter held (dBTP), when one ran.
     pub ceiling_dbtp: Option<f64>,
-    /// How far the mix went over the ceiling before the limiter (dB, ≥ 0, from its sample peak):
-    /// about the deepest gain reduction the limiter applied.
+    /// The deepest gain reduction the limiter applied (dB, ≥ 0), including its 0.1 dB margin
+    /// under the ceiling.
     pub limited_db: f64,
     pub warnings: Vec<String>,
 }
+
+/// How far under its ceiling the limiter aims (dB), so the written true peak stays at or under it.
+const CEILING_MARGIN_DB: f64 = 0.1;
 
 /// Peaks above this (dBTP) are reported: lossy encoders and players can clip them.
 pub const PEAK_WARNING_DBTP: f64 = -1.0;
@@ -62,8 +66,7 @@ pub(crate) struct AudioOut {
     ceiling_dbtp: f64,
     /// Meters the delivered audio (true peak, loudness) for [`AudioOut::report`].
     meter: filmagic_audio_dsp::LoudnessMeter,
-    /// Largest gain reduction of the limiter so far (dB, ≤ 0), from the input's sample peak over
-    /// the ceiling.
+    /// Deepest gain reduction of the limiter so far (dB, ≤ 0).
     max_reduction_db: f32,
     latency: i64,
     /// Next sample to mix (runs `latency` ahead of `out`).
@@ -92,14 +95,17 @@ impl AudioOut {
         // which the look-ahead handling below removes, so quiet mixes are written bit for bit.
         let (limiter_kind, ceiling_dbtp) = if ln.enabled {
             ("loudness", ceiling(ln.true_peak_dbtp))
-        } else if pk.enabled {
+        } else if settings.peak_limiter_on() {
             ("truePeak", ceiling(pk.ceiling_dbtp))
         } else {
             ("off", 0.0)
         };
         let limiter = (limiter_kind != "off").then(|| {
             let mut l = Limiter::new(sr as f32, r.channels as usize);
-            l.set_param("ceiling", ceiling_dbtp as f32);
+            // The limiter detects true peaks at 4x oversampling and clips the samples at its
+            // ceiling; between those, a reconstructed peak can still sit a few hundredths of a dB
+            // higher. Aiming 0.1 dB under the ceiling keeps the written true peak at or under it.
+            l.set_param("ceiling", (ceiling_dbtp - CEILING_MARGIN_DB) as f32);
             l.set_param("true_peak", 1.0);
             l.set_param("release", 80.0);
             l.reset();
@@ -271,14 +277,9 @@ impl AudioOut {
             buf.iter_mut().for_each(|c| c.iter_mut().for_each(|s| *s *= self.gain));
         }
         if let Some(l) = self.limiter.as_mut() {
-            // how far the input goes over the ceiling: at least what the limiter takes off
-            let peak = buf.iter().flat_map(|c| c.iter()).fold(0.0f32, |m, x| if x.is_finite() { m.max(x.abs()) } else { m });
-            if peak > 0.0 {
-                let over = (self.ceiling_dbtp as f32) - 20.0 * peak.log10();
-                self.max_reduction_db = self.max_reduction_db.min(over.min(0.0));
-            }
             let mut refs: Vec<&mut [f32]> = buf.iter_mut().map(Vec::as_mut_slice).collect();
             l.process(&mut refs);
+            self.max_reduction_db = self.max_reduction_db.min(-l.take_max_reduction_db());
         }
         let n_out = (until - self.out) as usize;
         for c in buf.iter_mut() {

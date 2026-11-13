@@ -456,12 +456,18 @@ impl Default for LoudnessNormalization {
 
 /// Export ▸ Effects ▸ True-Peak Limiter: a look-ahead limiter that keeps the exported audio at or
 /// under `ceiling_dbtp` when no loudness target is set (Loudness Normalization has its own
-/// limiter, so this one stands aside then). **On by default**: a draft peaked at +2.7 dBFS and
-/// clipped audibly with nothing to warn (#15). Audio under the ceiling passes bit for bit.
+/// limiter, so this one stands aside then). A draft peaked at +2.7 dBFS and clipped audibly with
+/// nothing to warn (#15), so it is **on by default**, except for 32-bit float audio: float keeps
+/// peaks above full scale, and that is why people choose it. An export that never reaches the
+/// ceiling is written bit for bit.
+///
+/// Internal renders (proxies, transcodes and Project Manager copies, AAF/OMF clip audio) turn it
+/// off ([`PeakLimiter::OFF`]): they must keep the media as it is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PeakLimiter {
-    pub enabled: bool,
+    /// `None` (the default): on, except for 32-bit float audio. `Some(_)`: as set.
+    pub enabled: Option<bool>,
     /// Ceiling (dBTP), −24…0.
     pub ceiling_dbtp: f64,
 }
@@ -469,9 +475,14 @@ pub struct PeakLimiter {
 /// The default true-peak ceiling (dBTP), the delivery ceiling most platforms ask for.
 pub const PEAK_CEILING_DBTP: f64 = -1.0;
 
+impl PeakLimiter {
+    /// Off whatever the sample format: internal renders that must keep the media as it is.
+    pub const OFF: PeakLimiter = PeakLimiter { enabled: Some(false), ceiling_dbtp: PEAK_CEILING_DBTP };
+}
+
 impl Default for PeakLimiter {
     fn default() -> Self {
-        PeakLimiter { enabled: true, ceiling_dbtp: PEAK_CEILING_DBTP }
+        PeakLimiter { enabled: None, ceiling_dbtp: PEAK_CEILING_DBTP }
     }
 }
 
@@ -535,6 +546,12 @@ pub struct Resolved {
 }
 
 impl ExportSettings {
+    /// Whether the True-Peak Limiter runs ([`PeakLimiter`]): as set, else on except for 32-bit
+    /// float audio. Loudness Normalization's own limiter takes over when that is on.
+    pub fn peak_limiter_on(&self) -> bool {
+        self.effects.peak_limiter.enabled.unwrap_or(!self.audio.sample_format().is_float())
+    }
+
     /// The format whose video encoder runs: the MXF video codec for MXF exports, else the format.
     pub fn video_format(&self) -> Format {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }

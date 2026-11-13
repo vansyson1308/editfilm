@@ -302,45 +302,63 @@ progress and stop it:
 ### Audio: speech, loudness and the mix
 
 These need no transcript model and no ffmpeg: measure inside Filmagic instead of on an exported file.
+Times are sequence seconds (source seconds for an `item`), rounded to 1 ms.
 
-- **`audio.speechSegments`** finds where someone speaks: `{"clip": id}` (sequence seconds),
-  `{"item": id, "stream": n?}` (source seconds) or a range `{"startSeconds", "endSeconds",
-  "track": "A1"?}` of the mix. It returns `segments` (`start`, `end`, `confidence` 0–1), the
-  `pauses` between them and `speechSeconds`. The detector is light and model-free (voicing of a
-  70–400 Hz pitch, a level threshold set from the clip's own noise floor, syllabic modulation):
-  car doors, noise bursts, steady tones and hum are not speech; sung or very rhythmic music can
-  be, so prefer a Dialogue `clip` or `track` over the full mix. `bridgeSeconds` (default 0.25)
-  sets how long a pause stays inside one segment; `minConfidence` filters.
+- **`audio.speechSegments`** finds where someone speaks: `{"clip": id}` (a video clip is read
+  through its linked audio clip), `{"item": id, "stream": n?}` (source seconds) or a range
+  `{"startSeconds", "endSeconds", "track": "A1"?}` of the mix (at most 600 s per call). It returns
+  `segments` (`start`, `end`, `confidence` 0–1), the `pauses` between them and `speechSeconds`.
+  The detector is light and model-free: voicing of a 70–400 Hz pitch, a level threshold from the
+  clip's own noise floor (or, for a clip with no pause, from its speech level), and the shape of
+  the level: syllables rise and fall 1–12 times a second. Car doors (bursts and low thunks),
+  footsteps, plucked or struck notes, steady tones and hum are not speech; a sung melody can be.
+  With music under the words, a segment's edges can stretch by up to about a second, so prefer a
+  Dialogue `clip` or `track` over the full mix. `bridgeSeconds` (default 0.25) sets how long a
+  pause stays inside one segment; `minConfidence` filters.
 - **Cuts inside a sentence warn.** `timeline.razor`, `sequence.addEdit` and `timeline.trim` add
-  `warnings` and `speechCuts` (`clip`, `seconds`, `segment`, `pauseBefore`, `pauseAfter`) when a
-  cut or a trimmed edge lands inside speech on a Dialogue or untyped audio clip. The edit is still
-  made: `edit.undo` and cut at `pauseBefore` or `pauseAfter`.
+  `warnings` and `speechCuts` when a cut or a trimmed edge lands inside speech on a Dialogue or
+  untyped audio clip (a linked pair warns once). Each entry has the `segment`, `pauseBefore` and
+  `pauseAfter` (where to cut instead: the middle of the pause, or 0.1 s before or after the speech
+  when the pause runs past the 3 s looked at; `null` when the speech runs on beyond that) and
+  `pauseBeforeRange` / `pauseAfterRange`. The edit is still made: `edit.undo` and cut there. The
+  check reads the source media, not the clip's effects, and is cached, so it stays quick;
+  `speechCheck: false` skips it. The desktop app skips it for its own clicks and keys, and runs it
+  for commands that come over the control channel.
 - **`essentialSound.autoMatch`** matches each clip to the target of its own type. Dialogue clips
   are measured only where they speak (`measuredOver: "speech"`), and a Dialogue clip with no speech
   is skipped with a warning (it is likely an effect: set its type). `target` applies to Dialogue
-  only; `targets: {"music": -28, …}` sets the others (else Preferences ▸ Audio). The gain change is
-  capped at `maxGainDb` (default ±12 dB, up to 48); a capped clip has `capped: true`,
-  `wantedGainDb` and a warning.
-- **`mix.check`** (`startSeconds`, `endSeconds`, `targetDb: [min, max]`, default `[15, 20]`)
-  reports `integratedLufs`, `maxShortTermLufs`, `truePeakDbtp` and `lraLu` for the mix, for each
-  audio track (through its fader and the master) and for each Essential Sound role. Dialogue is
-  also measured over its speech only (`roles.Dialogue.speech`), so room tone does not skew it, and
-  music where the dialogue speaks (`roles.Music.underSpeech`). `musicUnderDialogue` gives
-  `differenceDb`, the `verdict` (`ok`, `musicTooLoud`, `musicTooQuiet`, `unknown`) and
-  `musicGainChangeDb`, the change that brings the music into range. Roles need types
-  (`essentialSound.setType`).
+  only (a note says when other clips used their own target); `targets: {"music": -28, …}` sets the
+  others (else Preferences ▸ Audio). The gain change is capped at `maxGainDb` (default ±12 dB, up
+  to 48); a capped clip has `capped: true`, `wantedGainDb` and a warning. The Essential Sound
+  panel shows the first warning in the status bar.
+- **`mix.check`** (`startSeconds`, `endSeconds`, at most 600 s per call; `targetDb: [min, max]`,
+  default `[15, 20]`) reports `integratedLufs`, `maxShortTermLufs`, `truePeakDbtp` and `lraLu` for
+  the mix, for each audio track (through its fader and the master) and for each Essential Sound
+  role. Dialogue is also measured over its speech only (`roles.Dialogue.speech`), so room tone does
+  not skew it, and music where the dialogue speaks (`roles.Music.underSpeech`).
+  `musicUnderDialogue` gives `differenceDb`, the `verdict` (`ok`, `musicTooLoud`, `musicTooQuiet`,
+  `unknown`) and `musicGainChangeDb`, the change that brings the music to the edge of the range.
+  Solo is ignored (a note says so); a 5.1 mix is measured as its BS.775 stereo downmix. Roles need
+  types (`essentialSound.setType`).
 - **`essentialSound.generateDucking`** takes `depthDb` (0–40, stored as the clip's ducking
-  amount) and ducks under detected speech when every trigger is a Dialogue clip (`by: "speech"`),
-  so noise in the dialogue track does not hold the music down; `by: "level"` uses the level
-  detector. A loop: `mix.check` → `essentialSound.generateDucking {"depthDb": 18}` → `mix.check`.
-- **Export peaks.** Without a loudness target the export runs a True-Peak Limiter at -1 dBTP, on by
-  default (`truePeakLimiter: false` on `file.exportMedia`, or `effects.peak_limiter` in the
-  settings, turns it off; Loudness Normalization has its own limiter and the two never stack).
-  Audio under the ceiling is written bit for bit. Every export with audio reports
-  `result.audio`: `truePeakDbtp`, `integratedLufs`, `limiter` (`truePeak`, `loudness`, `off`),
-  `ceilingDbtp` and `limitedDb` (how far the mix went over the ceiling). Peaks above -1 dBTP with
-  the limiter off, or more than 6 dB of limiting, add `result.warnings` (also merged into
-  `warnings` with `wait: true`).
+  amount) and ducks under detected speech when every trigger is a Dialogue clip (`by: "speech"`;
+  the union of every Dialogue clip's speech), so noise in the dialogue track does not hold the
+  music down; `by: "level"` uses the level detector. A loop: `mix.check` → for `musicTooLoud`,
+  `essentialSound.generateDucking {"depthDb": D}` with D the depth the warning suggests (the middle
+  of the range minus `differenceDb`, plus any ducking the music already has) → `mix.check`. For
+  `musicTooQuiet`, raise the music (or duck it less), never duck it more.
+- **Export peaks.** Without a loudness target the export runs a True-Peak Limiter at -1 dBTP. It
+  is on by default except for 32-bit float audio, which keeps peaks above full scale on purpose;
+  `truePeakLimiter: true|false` on `file.exportMedia` (or `effects.peak_limiter.enabled` in the
+  settings) sets it either way. Loudness Normalization has its own limiter and the two never stack.
+  An export that never reaches the ceiling is written bit for bit; after an over, the limiter
+  returns to exactly unity. Internal renders (proxies, transcodes and Project Manager copies,
+  AAF/OMF clip audio) never limit. Every export with audio reports `result.audio`:
+  `truePeakDbtp` and `integratedLufs` of what was written (for AAC and MP3, of the encoder's input),
+  `limiter` (`truePeak`, `loudness`, `off`), `ceilingDbtp` and `limitedDb` (the deepest gain
+  reduction, including a 0.1 dB margin under the ceiling). `result.warnings` flags a true peak above
+  -1 dBTP (whichever limiter, or none, ran) and more than 6 dB of True-Peak limiting; with
+  `wait: true` they are merged into `warnings`.
 
 ## 2. Control channel
 
