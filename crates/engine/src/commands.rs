@@ -3283,7 +3283,7 @@ fn build() -> Vec<CommandSpec> {
         // Source panel: Close / Close All, for the clip shown and the list of recent clips (#313)
         cmd!("source.close", "Close", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, false)),
         cmd!("source.closeAll", "Close All", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, true)),
-        cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64}"#, always, |s, p| {
+        cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":mediaTicks|"frame":i64|"seconds":f64}"#, always, |s, p| {
             let item = s.state.source_item.ok_or_else(|| EngineError::Other("no source clip".into()))?;
             let view = crate::clip_ops::source_view(s, item);
             let rate = view.as_ref().map(|v| v.rate).unwrap_or_default();
@@ -5334,6 +5334,21 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
 }
 
 /// JSON description of the project (bins, items) for agents.
+/// The frame rate an item's picture plays at: a subclip's media's, none for sound alone.
+fn picture_rate(p: &filmagic_project::Project, it: &filmagic_project::ProjectItem) -> Option<FrameRate> {
+    let rate = match &it.kind {
+        ItemKind::Media(_) | ItemKind::Subclip { .. } => {
+            let (_, m, _) = p.resolve_media(it.id)?;
+            if !m.info.has_video() {
+                return None;
+            }
+            m.frame_rate()
+        }
+        _ => it.frame_rate(),
+    };
+    (rate.num > 0 && rate.den > 0).then_some(rate)
+}
+
 pub fn inspect_project(s: &Session) -> Value {
     let p = &s.project;
     fn bin(b: &filmagic_project::Bin, p: &filmagic_project::Project) -> Value {
@@ -5344,10 +5359,10 @@ pub fn inspect_project(s: &Session) -> Value {
                 filmagic_project::BinEntry::Item(i) => {
                     let it = p.item(*i);
                     json!({"item": i.0, "name": it.map(|x| x.name.clone()), "type": it.map(|x| x.type_label()), "duration": it.map(|x| x.duration().0),
-                        // the duration in seconds and in frames at the item's own rate (#13)
+                        // the duration in seconds, and in frames at the picture's rate (#13)
                         "durationSeconds": it.map(|x| crate::time_params::secs(x.duration())),
-                        "durationFrames": it.map(|x| x.frame_rate()).filter(|r| r.num > 0 && r.den > 0).and_then(|r| it.map(|x| r.frame_at(Tick(x.duration().0.saturating_add(r.frame_duration().0).saturating_sub(1))))),
-                        "frameRate": it.map(|x| x.frame_rate()).filter(|r| r.num > 0 && r.den > 0).map(|r| r.as_f64()), "label": it.map(|x| x.label.name()), "customLabelColor": it.and_then(|x| x.custom_label_color)})
+                        "durationFrames": it.and_then(|x| picture_rate(p, x).map(|r| r.frame_at(Tick(x.duration().0.saturating_add(r.frame_duration().0).saturating_sub(1))))),
+                        "frameRate": it.and_then(|x| picture_rate(p, x)).map(|r| r.as_f64()), "label": it.map(|x| x.label.name()), "customLabelColor": it.and_then(|x| x.custom_label_color)})
                 }
                 filmagic_project::BinEntry::Bin(b) => bin(b, p),
             }).collect::<Vec<_>>()

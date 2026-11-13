@@ -187,7 +187,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Frame Hold Options…",
             &["Clip", "Video Options"],
             None,
-            r#"{"clips":[id]?,"enabled":bool=true,"holdOn":"sourceTimecode|sequenceTime|in|out|playhead"?,"time":ticks?,"timecode":str?,"holdFilters":bool=false}"#,
+            r#"{"clips":[id]?,"enabled":bool=true,"holdOn":"sourceTimecode|sequenceTime|in|out|playhead"?,"time":ticks? (sequence time; source time with holdOn sourceTimecode),"timecode":str?,"holdFilters":bool=false}"#,
             has_selection,
             frame_hold_options,
         ),
