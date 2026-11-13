@@ -82,6 +82,17 @@ fn composition_offset(pts: i64, dts: i64, den: i64) -> i32 {
 }
 
 impl VideoEncoder for NvencEncoder {
+    fn name(&self) -> &str {
+        match self.enc.codec() {
+            Codec::H264 => "NVENC H.264",
+            Codec::Hevc => "NVENC H.265",
+        }
+    }
+
+    fn hardware(&self) -> bool {
+        true
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let (sps, pps) = self.enc.parameter_sets();
         // `config` declines sizes above u16::MAX
@@ -250,7 +261,7 @@ fn factory_with(
     }
     let declined = |why: &str| {
         log::info!("hardware encoding declined: {why}");
-        filmagic_export::note_hw_encode_declined();
+        filmagic_export::note_hw_encode_declined_because(&format!("NVENC H.264: {why}"));
         None
     };
     let cfg = match config(format, w, h, rate, s) {
@@ -271,7 +282,7 @@ fn factory_with(
 fn hevc_factory(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
     let declined = |why: &str| {
         log::info!("hardware H.265 encoding declined: {why}");
-        filmagic_export::note_hw_encode_declined();
+        filmagic_export::note_hw_encode_declined_because(&format!("NVENC H.265: {why}"));
         Some(Err(ExportError::Unsupported(format!("H.265 export with NVENC: {why}"))))
     };
     let cfg = match config(Format::Hevc, w, h, rate, s) {

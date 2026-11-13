@@ -2,7 +2,7 @@ use super::output::OutputSink;
 use super::run::validate_range;
 use super::{
     Arc, AudioCodec, AudioSettings, BitrateMode, Deserialize, ExportEffects, ExportError, ExportMetadata, ExrCompression, FieldOrder, FrameRate, GpuRendering,
-    H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
+    H264Preset, H264Profile, HardwareEncoding, Multiplexer, MxfVideoCodec, Result, SampleEntry, Scaling, Serialize, Tick, TimeRange,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -327,6 +327,25 @@ pub struct ExportSettings {
     /// becomes High 10 Intra. The keyframe distance is ignored.
     #[serde(default)]
     pub h264_intra_only: bool,
+    /// How hard Filmagic's H.264 encoder searches: `speed` encodes about 1.5× faster than the
+    /// default `balanced` at a little more bitrate for the same quality; `quality` is slower. Draft
+    /// exports use `speed`. Hardware encoders ignore it.
+    #[serde(default)]
+    pub h264_preset: H264Preset,
+    /// Smart render (#18): encode H.264 in independent segments (one keyframe interval each) and
+    /// reuse a segment's packets from the cache when every picture it encodes is the same as last
+    /// time, so a re-export after a small change re-encodes only the segments it touched. Every
+    /// frame is still rendered (that is how a change is found). The file is the one a smart export
+    /// with an empty cache writes, not a normal export's: rate control restarts in every segment.
+    /// Filmagic's own H.264 encoder only: one pass, MP4 / MOV, 8-bit; otherwise the export runs as
+    /// usual and says so.
+    #[serde(default)]
+    pub smart_render: bool,
+    /// Where smart render keeps its segments (None: the user's cache directory, see
+    /// `smart::default_dir`). On Unix it must belong to the user and not be writable by others. At
+    /// most 4 GiB; the least recently used segments go first.
+    #[serde(default)]
+    pub smart_render_dir: Option<String>,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
@@ -456,6 +475,9 @@ impl Default for ExportSettings {
             field_order: FieldOrder::Progressive,
             h264_profile: H264Profile::High,
             h264_intra_only: false,
+            h264_preset: H264Preset::default(),
+            smart_render: false,
+            smart_render_dir: None,
             h264_level: None,
             bitrate_mode: BitrateMode::default(),
             crf: DEFAULT_CRF,

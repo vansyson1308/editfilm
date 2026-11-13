@@ -18,6 +18,32 @@ file. Buffered writes are flushed before reads through that same handle. In-memo
 sinks use their existing seekable byte buffer. Read, write and seek failures propagate as export
 errors.
 
+## Export speed: plain cuts, drafts and smart render (#18)
+
+- **Plain cuts.** A frame that is one opaque 8-bit video picture as it is (one clip at its own size,
+  no effects, no colour management, nothing over it) goes to the encoder as the picture's sRGB
+  bytes (`filmagic_render::render_sequence_frame`), without building and converting its float image.
+  The bytes are the same either way (`render`'s `region_tests` and
+  `speed_tests::plain_cuts_skip_the_float_picture_and_write_the_same_file`, which compares whole
+  files). SDR exports without alpha, export overlays or reframing only.
+- **Drafts.** `presets::draft()` (preset `Draft – Half Size Review`, `file.exportMedia {"draft": true}`):
+  half size, `H264Preset::Speed`, CRF 30, AAC 128 kbps.
+- **Smart render** (`ExportSettings::smart_render`, `smart.rs`): H.264 in independent segments of one
+  keyframe interval, cached by a SHA-256 over the encoder configuration, a probe encode and the
+  digests of the Y'CbCr pictures the encoder is given. A re-export copies the segments whose pictures
+  did not change; the file is byte-identical to one written with an empty cache
+  (`smart_tests`: unchanged, one segment changed, a change across a boundary, other settings,
+  damaged cache files, a mutation fuzz of the cache file parser, and an ffmpeg decode with strict
+  error detection, single-picture segments timed like a normal export, `idr_pic_id` never repeated
+  across a join, a per-user cache directory). It is not a normal export's stream: rate control
+  restarts per segment. Every frame is still rendered: the key comes from the encoder's input, so no
+  change to the project, its media or fonts can be missed. Skipping the render of unchanged
+  segments would need a key over everything a frame depends on (clips, effects, keyframes, nested
+  sequences, source files, fonts, caption tracks, export effects) and is not done.
+- **Result.** `Report::encoder` names the encoder, whether hardware was asked for and why each
+  hardware encoder declined, GPU and CPU frame counts and the smart-render segment counts;
+  `Report::stages` gives the seconds per stage and `Report::notes` what held the export back.
+
 ## Animated GIF transparency
 
 Animated GIF supports the existing `ExportSettings::alpha` option (#3396). In Export mode,

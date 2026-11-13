@@ -51,6 +51,24 @@ pub trait VideoEncoder: Send {
     fn prepare_ahead(&self) -> Option<PrepareAhead> {
         None
     }
+    /// A short name for the export result ([`crate::EncoderReport::name`]), e.g. "Filmagic H.264
+    /// (software)" or "NVENC H.264".
+    fn name(&self) -> &str {
+        "video encoder"
+    }
+    /// Whether the system's hardware encoder writes the stream.
+    fn hardware(&self) -> bool {
+        false
+    }
+    /// Smart render ([`crate::ExportSettings::smart_render`]): segments taken from the cache and
+    /// segments encoded so far; `None` for an encoder that does not smart-render.
+    fn smart_render_stats(&self) -> Option<(u64, u64)> {
+        None
+    }
+    /// What the encoder wants the export's result to say ([`crate::Report::notes`]).
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Audio encoder (AAC) plugged in by codec crates; PCM is built in.

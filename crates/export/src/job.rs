@@ -103,6 +103,39 @@ pub(crate) fn overlap_batch(batch: i64, frame_bytes: u64, budget: u64) -> i64 {
     i64::try_from(fit.min(want)).unwrap_or(1).max(1)
 }
 
+/// What would make an export faster, from what it did: the hardware encoder or GPU it asked for and
+/// did not get, and which side (rendering or encoding) held it back. `fast`: the export already uses
+/// the encoder's speed preset (a draft), so a draft is not suggested.
+pub(crate) fn speed_notes(
+    e: &crate::EncoderReport,
+    stages: &std::collections::BTreeMap<String, f64>,
+    secs: f64,
+    format: Format,
+    overlap: bool,
+    fast: bool,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if e.hardware_requested && !e.hardware && format == Format::H264 {
+        let why =
+            if e.hardware_declined.is_empty() { "no hardware H.264 encoder is available on this system".to_string() } else { e.hardware_declined.join("; ") };
+        notes.push(format!("hardwareEncoding auto: the software encoder wrote this export ({why})"));
+    }
+    if e.gpu_requested && e.gpu_frames == 0 && e.cpu_frames > 0 {
+        notes.push("gpuRendering auto: every frame was rendered on the CPU (no GPU renderer or adapter took them)".into());
+    }
+    let wait = stages.get("wait").copied().unwrap_or(0.0);
+    let encode = stages.get("encode").copied().unwrap_or(0.0);
+    let draft = if fast { "" } else { ", or draft true to review at half size" };
+    if overlap && secs > 2.0 {
+        if wait > 0.3 * secs && !e.gpu_requested {
+            notes.push(format!("rendering held this export back: try gpuRendering auto{draft}"));
+        } else if wait < 0.05 * secs && encode > 0.7 * secs && !e.hardware && !e.hardware_requested && format == Format::H264 {
+            notes.push(format!("encoding held this export back: try hardwareEncoding auto{draft}"));
+        }
+    }
+    notes
+}
+
 /// A batch rendered while the previous one was being encoded.
 struct Ahead {
     /// First frame.
@@ -185,6 +218,14 @@ pub struct Exporter {
     mxf: Option<MxfMux>,
     seq: ItemId,
     project: Arc<Project>,
+    /// Why hardware encoders declined this export ([`crate::EncoderReport::hardware_declined`]).
+    declined: Vec<String>,
+    /// [`crate::stage_times`] and [`crate::gpu_render_stats`] when the export started (the report
+    /// gives the difference).
+    stages0: Vec<(Stage, u64)>,
+    gpu0: crate::GpuRenderStats,
+    /// Passes over the frames (2 for two-pass VBR).
+    passes: u64,
     vt: usize,
     at: Option<usize>,
     t0: web_time::Instant,
@@ -210,8 +251,13 @@ pub(crate) fn hdr_output(working_hdr: bool, sdr: bool, format: Format, hdr_avail
         }
 }
 
-fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
-    pick_encoder(&video_factories().read().unwrap_or_else(|e| e.into_inner()).clone(), settings.video_format(), w, h, rate, settings)
+/// The export's encoder, and why the hardware encoders that were asked declined (on this thread).
+fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<(Box<dyn VideoEncoder>, Vec<String>)> {
+    let factories = video_factories().read().unwrap_or_else(|e| e.into_inner()).clone();
+    crate::stats::clear_declined_reasons();
+    let picked = pick_encoder(&factories, settings.video_format(), w, h, rate, settings);
+    let declined = crate::stats::take_declined_reasons();
+    Ok((picked?, declined))
 }
 
 /// Pick the encoder for an export: the first registered factory that takes it.
@@ -273,7 +319,7 @@ impl Exporter {
             progress.total.store(nframes * if two_pass { 2 } else { 1 }, Ordering::Relaxed);
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
-        let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
+        let (venc, declined) = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
         let brand = if settings.format.is_mp4_with(settings.multiplexer) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
@@ -307,6 +353,10 @@ impl Exporter {
             mxf: None,
             seq,
             project: project.clone(),
+            declined,
+            stages0: crate::stage_times(),
+            gpu0: crate::gpu_render_stats(),
+            passes: if two_pass { 2 } else { 1 },
             vt: 0,
             at: None,
             t0: web_time::Instant::now(),
@@ -331,6 +381,14 @@ impl Exporter {
         self.overlap = on;
         if !on {
             self.ahead = None;
+        }
+    }
+
+    /// Render every frame through its float image (tests compare that with the opaque-bytes shortcut).
+    #[cfg(test)]
+    pub(crate) fn force_float_frames(&mut self) {
+        if let Some(pipe) = Arc::get_mut(&mut self.pipe) {
+            pipe.set_force_float(true);
         }
     }
 
@@ -492,7 +550,9 @@ impl Exporter {
             let _ = self.venc.flush()?;
             let stats = self.venc.pass_stats().ok_or_else(|| ExportError::Encode("two-pass statistics missing".into()))?;
             self.settings.h264_pass = H264Pass::Second(stats);
-            self.venc = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+            let (venc, declined) = make_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+            self.venc = venc;
+            self.declined = declined;
             self.first_pass = false;
             self.next = self.f0;
             return Ok(Step::Progress);
@@ -535,6 +595,7 @@ impl Exporter {
             progress.finished.store(true, Ordering::Relaxed);
             progress.set_status(format!("Done in {secs:.1}s"));
         }
+        let (encoder, stages, notes) = self.diagnostics(nframes, secs);
         Ok(Step::Done(Report {
             path: self.settings.path.clone(),
             frames: nframes,
@@ -542,7 +603,45 @@ impl Exporter {
             bytes,
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
+            encoder: Some(Box::new(encoder)),
+            stages,
+            notes,
         }))
+    }
+
+    /// The encoder and renderer that did the work, the time per stage, and notes on what would
+    /// make the export faster (what an agent or the owner can act on, and report back).
+    fn diagnostics(&self, nframes: u64, secs: f64) -> (crate::EncoderReport, std::collections::BTreeMap<String, f64>, Vec<String>) {
+        let gpu = crate::gpu_render_stats();
+        let gpu_frames = gpu.frames.saturating_sub(self.gpu0.frames);
+        let rendered = nframes.saturating_mul(self.passes);
+        let hardware_requested = self.settings.hardware_encoding == crate::HardwareEncoding::Auto;
+        let gpu_requested = self.settings.gpu_rendering == crate::GpuRendering::Auto;
+        let encoder = crate::EncoderReport {
+            name: self.venc.name().to_string(),
+            hardware: self.venc.hardware(),
+            hardware_requested,
+            hardware_declined: self.declined.clone(),
+            gpu_requested,
+            gpu_frames,
+            cpu_frames: rendered.saturating_sub(gpu_frames),
+            segments_reused: self.venc.smart_render_stats().map(|s| s.0),
+            segments_encoded: self.venc.smart_render_stats().map(|s| s.1),
+        };
+        let stages: std::collections::BTreeMap<String, f64> = crate::stage_times()
+            .iter()
+            .zip(&self.stages0)
+            .map(|((stage, now), (_, then))| (stage.name().to_string(), (now.saturating_sub(*then) as f64 / 1e9 * 1000.0).round() / 1000.0))
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+        let mut notes = speed_notes(&encoder, &stages, secs, self.settings.video_format(), self.overlap, self.settings.h264_preset == crate::H264Preset::Speed);
+        notes.extend(self.venc.notes());
+        if self.settings.smart_render && encoder.segments_reused.is_none() {
+            notes.push(
+                "smartRender: not used for this export (it needs Filmagic's own H.264 encoder: format h264 in MP4 or MOV, one pass, 8-bit, hardwareEncoding off)".into(),
+            );
+        }
+        (encoder, stages, notes)
     }
 
     /// Encode (and mux) the batch starting at `self.next`, rendering the one after it meanwhile.

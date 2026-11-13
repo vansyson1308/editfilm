@@ -187,7 +187,16 @@ pub struct EncoderConfig {
     /// Every picture is an IDR (an all-intra intermediate): `keyint` and `bframes` are ignored, no
     /// reference frames are kept, and High 10 streams are signalled as High 10 Intra.
     pub intra_only: bool,
+    /// Added to the `idr_pic_id` of every IDR picture (which alternates 0, 1 within a stream). Streams
+    /// that are concatenated, each from its own encoder (Filmagic's smart render), give neighbours
+    /// different bases (0 and 2) so that two consecutive IDR pictures never share an id across the
+    /// join (H.264 §7.4.3). 0 for an ordinary stream; at most 65533.
+    pub idr_pic_id_base: u32,
 }
+
+/// Revision of the coded bitstream: bumped whenever the encoder writes different bytes for the same
+/// input and configuration, so caches of encoded output (smart render) are not reused across it.
+pub const ENCODER_REVISION: u32 = 1;
 
 impl EncoderConfig {
     pub fn new(width: u32, height: u32, fps_num: u32, fps_den: u32) -> Self {
@@ -215,6 +224,7 @@ impl EncoderConfig {
             level: None,
             bit_depth: 8,
             intra_only: false,
+            idr_pic_id_base: 0,
         }
     }
 }
@@ -881,7 +891,7 @@ impl<P: Pixel> Core<P> {
             slice_type: st,
             nal_ref_idc,
             idr,
-            idr_pic_id: self.idr_count % 2,
+            idr_pic_id: self.cfg.idr_pic_id_base.min(65533) + self.idr_count % 2,
             frame_num: self.next_frame_num % (1 << LOG2_MAX_FRAME_NUM),
             log2_max_frame_num: LOG2_MAX_FRAME_NUM,
             poc_lsb: (poc as u32) % (1 << LOG2_MAX_POC_LSB),
