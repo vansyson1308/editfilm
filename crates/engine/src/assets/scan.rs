@@ -208,7 +208,7 @@ pub fn look(w: usize, h: usize, rgba: &[u8]) -> (bool, Option<[u8; 3]>) {
     if px == 0 || rgba.len() < px.saturating_mul(4) {
         return (false, None);
     }
-    let see_through = rgba.chunks_exact(4).filter(|p| p.get(3).is_some_and(|a| *a < 250)).count();
+    let see_through = rgba.as_chunks::<4>().0.iter().filter(|p| p[3] < 250).count();
     let alpha = see_through * 200 >= px; // 0.5 % of the picture or more
     let band_x = (w / 12).max(1);
     let band_y = (h / 12).max(1);
