@@ -125,6 +125,18 @@ fn ids_of_other_things_are_named_for_what_they_are() {
     assert!(refused(s.execute("clip.audioGain", json!({"clips": [u64::MAX]}))).starts_with(&format!("no clip {}", u64::MAX)));
 }
 
+/// A huge list of wrong ids is answered with the first few and a count, quickly.
+#[test]
+fn a_huge_list_of_wrong_ids_gets_a_short_answer() {
+    let mut s = demo();
+    let ids: Vec<u64> = (0..200_000u64).map(|i| u64::MAX - i).collect();
+    let started = std::time::Instant::now();
+    let why = refused(s.execute("clip.enable", json!({"clips": ids})));
+    assert!(why.contains("and 199992 more ids that are no clips"), "{}", &why[..why.len().min(400)]);
+    assert!(why.len() < 2000, "{} bytes", why.len());
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
 // ---------------------------------------------------------------- effects.setParam on many clips
 
 #[test]

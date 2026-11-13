@@ -112,8 +112,16 @@ pub fn check_named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Result<(
         return Ok(());
     }
     let Some(q) = s.active_sequence() else { return Ok(()) };
+    // a hostile list of a million wrong ids gets a short answer: the first few, then a count
+    const SHOWN: usize = 8;
     let mut why = Vec::new();
+    let mut more = 0usize;
     for (key, v) in named {
+        if why.len() >= SHOWN {
+            let usable = v.as_u64().is_some_and(|id| q.find_item(ClipId(id)).is_some() || q.find_caption(ClipId(id)).is_some());
+            more += usize::from(!usable);
+            continue;
+        }
         let Some(id) = v.as_u64() else {
             why.push(format!("`{key}` holds {v}, which is not a clip id (clip ids are the `clip` numbers of the items in sequence.inspect)"));
             continue;
@@ -126,6 +134,9 @@ pub fn check_named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Result<(
     why.dedup();
     if why.is_empty() {
         return Ok(());
+    }
+    if more > 0 {
+        why.push(format!("and {more} more ids that are no clips"));
     }
     Err(EngineError::BadParams { cmd: spec.id.to_string(), msg: format!("{}. Nothing was changed", why.join("; ")) })
 }
