@@ -1662,15 +1662,26 @@ fn thirty_two_bit_audio_in_every_container() {
 }
 
 /// The mix is 32-bit float: 32-bit float export keeps a +6 dB tone's peaks of 2.0, integers clip
-/// them at full scale.
+/// them at full scale. That is the sample formats with the True-Peak Limiter off; with it on (the
+/// default since #15) the float export is held at -1 dBTP like every other.
 #[test]
 fn float_export_keeps_peaks_above_full_scale() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(6.0));
     let dir = Scratch::new("pcm-hot");
     let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4)));
+    let limited = {
+        let path = dir.path("f_limited.wav");
+        let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
+        s.audio.set_sample_format(SampleFormat::Float32);
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let src = filmagic_codecs::open_bytes("f_limited.wav", std::fs::read(&path).unwrap().into()).unwrap();
+        src.audio(0, 12_000, 48_000).unwrap().channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    assert!(limited <= 0.892, "the default limiter holds -1 dBTP: {limited}");
     let peak = |sf: SampleFormat, name: &str| {
         let path = dir.path(name);
         let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
+        s.effects.peak_limiter.enabled = false;
         s.audio.set_sample_format(sf);
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let src = filmagic_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
