@@ -281,17 +281,37 @@ fn speech_segments(s: &mut Session, p: &Value) -> Result<Value> {
     let (analysis, offset, base, target) = if p.get("clip").is_some_and(|v| !v.is_null()) {
         let c = clip_p(p, "clip").ok_or_else(|| bad(cmd, "`clip` must be a clip id"))?;
         let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
-        let (_, it) = seq.find_item(c).ok_or_else(|| bad(cmd, format!("no clip {} in the active sequence; list clips with timeline.inspect", c.0)))?;
-        if !seq.audio_tracks.iter().any(|t| t.items.iter().any(|i| i.id == c)) {
-            return Err(bad(cmd, format!("clip {} is a video clip; pass its linked audio clip (timeline.inspect lists links)", c.0)));
+        if seq.find_item(c).is_none() {
+            return Err(bad(cmd, format!("no clip {} in the active sequence; list clips with sequence.clips", c.0)));
+        }
+        // a video clip is analysed through its linked audio clip
+        let audio_id = if seq.audio_tracks.iter().any(|t| t.items.iter().any(|i| i.id == c)) {
+            Some(c)
+        } else {
+            let link = seq.find_item(c).and_then(|(_, i)| i.link);
+            seq.audio_tracks.iter().flat_map(|t| t.items.iter()).find(|i| link.is_some() && i.link == link).map(|i| i.id)
+        };
+        let Some(it) = audio_id.and_then(|a| seq.find_item(a)).map(|(_, i)| i) else {
+            return Ok(json!({
+                "of": {"clip": c.0},
+                "timeBase": "sequence",
+                "segments": [],
+                "pauses": [],
+                "speechSeconds": 0.0,
+                "analysedSeconds": 0.0,
+                "notes": [format!("clip {} is a video clip with no linked audio clip: nothing to analyse; pass an audio clip", c.0)],
+            }));
+        };
+        if it.id != c {
+            notes.push(format!("clip {} is a video clip: analysed its linked audio clip {}", c.0, it.id.0));
         }
         let sr = seq.settings.sample_rate.max(1);
         let a = clip_speech(it, it.start.to_units_floor(sr as i64), it.end().to_units_floor(sr as i64), sr, &provider, params)
-            .ok_or_else(|| bad(cmd, format!("clip {} has no audio to analyse (a nested sequence or a missing file)", c.0)))?;
+            .ok_or_else(|| bad(cmd, format!("clip {} has no audio to analyse (a nested sequence or a missing file)", it.id.0)))?;
         if it.essential.as_ref().is_some_and(|e| e.kind != AudioType::Dialogue) {
             notes.push("this clip's Essential Sound type is not Dialogue: music and effects can read as speech".into());
         }
-        (a, 0.0, "sequence", json!({"clip": c.0}))
+        (a, 0.0, "sequence", json!({"clip": it.id.0}))
     } else if p.get("item").is_some_and(|v| !v.is_null()) {
         let id = item_p(p, "item").ok_or_else(|| bad(cmd, "`item` must be a project item id"))?;
         if s.project.item(id).is_none() {
