@@ -5,7 +5,8 @@
 //! transcript are addressed by index (`from`, `to`, inclusive), as `transcript.inspect` lists them.
 //!
 //! Speech recognition goes through a [`Transcriber`]: [`Session::transcriber`] when a host or a
-//! test installed one, else the Whisper model named by `model` from `<data dir>/models` (needs the
+//! test installed one, else the Whisper model named by `model` from the models directory
+//! ([`crate::models_store`]: `FILMAGIC_MODELS_DIR`, the setting, else `<data dir>/models`; needs the
 //! engine feature `whisper`; without it `transcript.generate` fails with a clear error, and agents
 //! can still bring their own transcript with `transcript.set`).
 
@@ -28,11 +29,6 @@ type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
 fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], params: &'static str, enabled: Enabled, run: Run, journal: bool) -> CommandSpec {
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal, named: crate::commands::NamedKeys::NONE }
-}
-
-/// Where downloaded speech models live (`<data dir>/models`).
-pub fn models_dir() -> Option<std::path::PathBuf> {
-    crate::autosave::default_data_dir().map(|d| d.join("models"))
 }
 
 /// Whether this build can transcribe with Whisper (feature `whisper`).
@@ -141,8 +137,50 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
     if !filmagic_speech::available() {
         return Err(EngineError::Other(NO_SPEECH.into()));
     }
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
-    filmagic_speech::load(&dir, model).map_err(speech_err)
+    let dir = s.models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    filmagic_speech::load(&dir, model).map_err(|e| match e {
+        SpeechError::NotInstalled(_) => EngineError::Other(format!(
+            "the speech model `{model}` is not downloaded into {}: run transcript.downloadModel {{\"model\": \"{model}\"}} (sizes in transcript.models)",
+            dir.display()
+        )),
+        e => speech_err(e),
+    })
+}
+
+/// `language`: absent (the setting), `"auto"` / `""` (detect), or a Whisper language code
+/// (`filmagic_speech::LANGUAGES`: `vi`, `en`, `ja`, …). `Some(None)` = detect.
+/// The Whisper code for `l` (`vi`, `vi-VN`, ` VI `), if it names one.
+fn whisper_language(l: &str) -> Option<String> {
+    // a region tag (`vi-VN`) names the same language for Whisper
+    let base = l.trim().to_ascii_lowercase().split(['-', '_']).next().unwrap_or_default().to_string();
+    filmagic_speech::is_language(&base).then_some(base)
+}
+
+fn language_p(p: &Value) -> Result<Option<Option<String>>> {
+    let cmd = "transcript.generate";
+    match p.get("language") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(l)) => {
+            let t = l.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("auto") {
+                return Ok(Some(None));
+            }
+            match whisper_language(t) {
+                Some(code) => Ok(Some(Some(code))),
+                None => {
+                    let shown: String = t.chars().take(24).collect();
+                    let more = if t.chars().count() > 24 { "…" } else { "" };
+                    Err(bad(
+                        cmd,
+                        format!(
+                            "unknown language `{shown}{more}`: use \"auto\" or a Whisper language code such as \"vi\", \"en\" or \"ja\" (transcript.models lists them)"
+                        ),
+                    ))
+                }
+            }
+        }
+        Some(_) => Err(bad(cmd, "`language` must be a string: \"auto\" or a language code such as \"vi\"")),
+    }
 }
 
 fn generate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -150,13 +188,14 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     if items.is_empty() {
         return Err(bad("transcript.generate", "nothing to transcribe (pass `items`, select clips, or open a sequence with audio)"));
     }
+    let language = language_p(p)?;
     let t = transcriber(s, p)?;
     // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
     let ma = &s.prefs.media_analysis;
-    let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()) };
+    let default_language = if ma.language_auto_detect { None } else { whisper_language(&ma.default_language) };
     let opts = Options {
-        language: match str_p(p, "language") {
-            Some(l) => Some(l).filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+        language: match language {
+            Some(l) => l,
             None => default_language,
         },
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
@@ -431,9 +470,11 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"track": tid.0, "captions": n}))
 }
 
-fn models(_: &mut Session, _: &Value) -> Result<Value> {
-    let dir = models_dir();
+fn models(s: &mut Session, _: &Value) -> Result<Value> {
+    let dir = s.models_dir();
     Ok(json!({
+        "languages": filmagic_speech::LANGUAGES.iter().map(|(c, n)| json!({"code": c, "name": n})).collect::<Vec<_>>(),
+        "warnings": crate::models_store::elsewhere_warnings(s),
         "available": filmagic_speech::available(),
         "default": filmagic_speech::models::DEFAULT_MODEL,
         "dir": dir.as_ref().map(|d| d.to_string_lossy().to_string()),
@@ -445,12 +486,12 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
     }))
 }
 
-/// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
+/// Download a catalogue model into the models directory (feature `speech-download`). Hosts show
 /// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmagic_speech::models::DEFAULT_MODEL);
     let m = filmagic_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    let dir = s.models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     #[cfg(feature = "speech-download")]
     {
         filmagic_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;
@@ -469,7 +510,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base|whisper-large-v3-turbo|…"?,"language":"auto|vi|en|…"? (Whisper codes in transcript.models),"diarize":bool?,"maxSpeakers":n?}"#,
             can_transcribe,
             generate,
             true,

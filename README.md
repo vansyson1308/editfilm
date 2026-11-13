@@ -153,6 +153,35 @@ Every command that changes the picture reports how much a viewer will see of it 
 - **Automation like a console:** Read, Latch, Touch and Write modes recorded live from the mixer during playback, shown and edited as track keyframes on the timeline. Plus the Audio Gain dialog (set, adjust, normalize) and constant-power crossfades.
 - **Audio-clock playback.** The sound card is the master clock, so picture follows sound and never the other way round.
 
+- **Narration from a script:** Text to Speech with built-in voices, natural English voices (Kokoro-82M, downloaded one voice at a time), and **Vietnamese voices from [VieNeu-TTS](https://github.com/pnnbao97/VieNeu-TTS)**, an optional offline engine. Transcription (Whisper) takes any of its languages, Vietnamese included.
+
+<br>
+
+## Narration and transcription in Vietnamese
+
+Vietnamese narration uses VieNeu-TTS (Apache-2.0, offline, runs on the CPU), an optional engine. It is not bundled: VieNeu is a Python package, so Filmagic runs it through a Python that has `vieneu` installed. Everything else in Filmagic works without it.
+
+On Windows 10 or 11:
+
+1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/windows/). Tick **Add python.exe to PATH**, then open a new terminal.
+2. Let Filmagic set it up. Ask your agent to run `tts.setupVieneu {"install": true}`, or run `filmagic-cli exec tts.setupVieneu install=true wait=true`. This creates a Python environment in `%LOCALAPPDATA%\Filmagic\vieneu`, installs `vieneu==3.8.4` there (about 0.9 GB), downloads the voice model into the models folder (about 0.6 GB) and lists the voices. To do it by hand, `tts.engines` prints the exact commands. In Command Prompt:
+   ```bat
+   py -3 -I -m venv "%LOCALAPPDATA%\Filmagic\vieneu\venv"
+   "%LOCALAPPDATA%\Filmagic\vieneu\venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   ```
+   In PowerShell:
+   ```powershell
+   py -3 -I -m venv "$env:LOCALAPPDATA\Filmagic\vieneu\venv"
+   & "$env:LOCALAPPDATA\Filmagic\vieneu\venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   ```
+3. `tts.voices` now lists voices such as `vieneu:Hải Đăng` and `vieneu:Mai Anh`. Use them with `tts.create`, or pick **Vietnamese** in the Text to Speech panel.
+
+To use a Python you installed `vieneu` into yourself, start Filmagic with `FILMAGIC_VIENEU_PYTHON` set to that interpreter. For safety, no setting or command can choose the program Filmagic runs. VieNeu voices take a while to speak, so an agent runs `tts.render` (a job) before `tts.create`.
+
+For Vietnamese transcription and captions, download the speech model `whisper-large-v3-turbo` (1.6 GB) and transcribe with `language: "vi"`.
+
+**Short on disk space?** All models (speech models, voices, VieNeu's voice model) live in one folder. Choose it in **Settings ▸ Media Analysis & Transcription ▸ Models location**, or set `FILMAGIC_MODELS_DIR`. `models.setLocation {"dir": "D:\\FilmagicModels"}` moves what is already installed. Details are in [docs/agents.md](docs/agents.md#vietnamese-narration-transcription-languages-and-the-models-directory).
+
 <br>
 
 ## Titles and captions

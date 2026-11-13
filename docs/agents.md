@@ -368,6 +368,79 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Vietnamese narration, transcription languages and the models directory
+
+**Where models live.** Speech models, natural voices and VieNeu-TTS all go in one directory:
+`FILMAGIC_MODELS_DIR` if set, else the setting `mediaAnalysis.modelsLocation` (an absolute folder),
+else `<data dir>/models` (`%APPDATA%\Filmagic\models` on Windows). `models.info` says which one is
+used and what it holds. To move them (a full disk, a second drive), call `models.setLocation
+{"dir": "D:\\FilmagicModels"}`. It moves only the folders Filmagic put there (Whisper models,
+`kokoro-82m`, `vieneu`), refuses if the folder holds anything else, and never overwrites. If a step
+fails before the copy is complete, it puts everything back; once the copy is complete, it switches
+and reports any original it could not delete. It needs a session that saves its settings (the
+desktop app): `filmagic-cli` and headless MCP sessions set `FILMAGIC_MODELS_DIR` instead.
+`"move": false` only switches. Headless sessions do not read the app's settings either. Unless
+`FILMAGIC_MODELS_DIR` is set, they use the default folder, so set it the same way for the app and
+for `filmagic-cli mcp` to share one set of models. Setting `mediaAnalysis.modelsLocation` with
+`prefs.set` does not move anything either. In both cases `models.info`, `tts.voices` and
+`transcript.models` warn, in `warnings`, about models left at the old place.
+
+**Transcription languages.** `transcript.generate` and `sequence.transcribe` take `language`:
+`"auto"`, or any Whisper code (`"vi"`, `"en"`, `"ja"`, …; `vi-VN` means `vi`). `transcript.models`
+lists them in `languages`. An unknown code is an error, and nothing is transcribed. For Vietnamese,
+download `whisper-large-v3-turbo` (1.6 GB, about 5 GB of memory) with `transcript.downloadModel
+{"model": "whisper-large-v3-turbo"}` and pass `"model": "whisper-large-v3-turbo"`. The smaller
+models also know Vietnamese, but they make more mistakes.
+
+**Natural voices one by one.** `tts.downloadVoices {"voices": ["kokoro-heart"]}` downloads the shared
+Kokoro model (331 MB, needed by every natural voice) and that voice (0.5 MB). `tts.voices` lists
+`package.perVoice` with what each voice still needs.
+
+**Vietnamese voices (VieNeu-TTS).** VieNeu-TTS is an optional external engine: Filmagic never links,
+bundles or ships it. VieNeu exists only as a Python package, so Filmagic runs a Python interpreter that
+has `vieneu` installed, as a subprocess, through a small bridge script. The owner approved this bridge
+for VieNeu (#20). Python is found from, in order:
+1. `FILMAGIC_VIENEU_PYTHON`, set by a person when starting Filmagic;
+2. Filmagic's own environment, `venv/` in its VieNeu engine directory: `%LOCALAPPDATA%\Filmagic\vieneu`
+   on Windows, `<data dir>/vieneu` elsewhere;
+3. `py -3` or `python` (Windows), `python3` or `python` (elsewhere).
+
+No command parameter or setting can name a program to run: that would let a prompt-injected agent
+run anything. The environment and the bridge, the code that runs, are kept out of the models folder,
+which an agent can move. The models folder holds VieNeu's data only: `vieneu/cache` (the downloaded
+model) and `vieneu/voices.json`. The child process gets none of Filmagic's `FILMAGIC_*` variables
+(the control token among them) and no `PYTHON*` variables. It runs with `-E -s -X utf8` (the bridge)
+or `-I` (venv and pip) in an empty working directory.
+
+1. `tts.engines` reports whether a Python with `vieneu` was found, what was tried, and
+   `installSteps` with the exact commands for this machine.
+2. `tts.setupVieneu {"install": true}` (a job: follow it with `jobs.list`) does the setup. It creates
+   the environment, runs `pip install vieneu==3.8.4` there (about 0.9 GB; it runs every time, so an
+   install that was stopped gets finished), downloads the voice model (about 0.6 GB) into the models
+   folder, and caches the voice list. After that, VieNeu runs offline. Without `install`, it only
+   checks the existing installation and downloads the model.
+3. `tts.voices` then lists `vieneu:<name>` voices (`"language": "vi-VN"`, `"engine": "vieneu"`), for
+   example `vieneu:Hải Đăng`. Listing them never starts Python. Names typed in decomposed Unicode
+   (NFD) match too.
+4. VieNeu loads its model on each call and speaks at about real time on a CPU, so the speaking runs
+   in a job. First run `tts.render {"text": "Xin chào…", "voice": "vieneu:Hải Đăng"}` and follow it
+   with `jobs.list`. Then `tts.create` (or `tts.edit`, `tts.preview`) with the same settings returns
+   at once. Called before the render, they refuse and say so. Pause markers, `pace` and `pitch` work
+   as with the other voices. VieNeu is generative, so a take whose length does not fit the text is
+   generated again, up to three takes. Output is 48 kHz (24 kHz with `VIENEU_MODE=v3nano`, the
+   smaller model for weak CPUs).
+5. Cloning: `"voice": "vieneu-clone", "referenceAudio": "<3–30 s clip>", "confirmAuthorizedVoice":
+   true`. That flag is set by the agent: it is the agent's statement that the person whose voice is in
+   the clip agreed, not a check by a person. Pass it only when that is true. Without it, the call is
+   refused. The clip's absolute path is stored with the narration, so `tts.edit` regenerates in the
+   same voice. That path is also in the project file, so sharing the project shares where the clip is
+   on this computer.
+
+Errors name the next step: VieNeu missing, an unknown `vieneu:` name (with the list of voices), a
+stuck engine (`jobs.cancel` stops it). VieNeu returns audio only, with no word timings. For captions,
+run `transcript.generate {"language": "vi"}` on the narration's media, then
+`transcript.createCaptions`.
+
 ## 2. Control channel
 
 `filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

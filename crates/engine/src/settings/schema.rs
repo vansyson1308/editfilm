@@ -188,8 +188,12 @@ const ANALYSIS_CACHE: &[(&str, &str)] = &[("mediaCache", "In the Media Cache"), 
 const TRANSCRIBE_SCOPE: &[(&str, &str)] =
     &[("sequenceClips", "Auto-transcribe only clips in sequences"), ("allImported", "Auto-transcribe all imported clips")];
 
-const MODELS: &[(&str, &str)] =
-    &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+const MODELS: &[(&str, &str)] = &[
+    ("whisper-tiny", "Whisper tiny (fastest)"),
+    ("whisper-base", "Whisper base (balanced)"),
+    ("whisper-small", "Whisper small (accurate)"),
+    ("whisper-large-v3-turbo", "Whisper large-v3 turbo (best for Vietnamese and other languages)"),
+];
 
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 
@@ -484,6 +488,15 @@ pub(super) static CATEGORIES: &[Category] = &[
                     f("mediaAnalysis.whisperModel", "Speech model", Kind::Choice(MODELS), true),
                 ],
             ),
+            Row::Group(
+                "Models",
+                &[
+                    f("mediaAnalysis.modelsLocation", "Models location", Kind::Path, true),
+                    Row::Note(
+                        "Speech models, natural voices and VieNeu-TTS are stored here. Changing the location does not move models already downloaded: use Move Models (models.setLocation) to move them.",
+                    ),
+                ],
+            ),
         ],
     },
     Category {
@@ -629,6 +642,9 @@ pub fn validate(key: &str, v: &Value) -> std::result::Result<(), String> {
             seen.push(id);
         }
         return Ok(());
+    }
+    if key == "mediaAnalysis.modelsLocation" {
+        return crate::models_store::validate_setting(v);
     }
     let kind = match field(key) {
         Some(f) => f.kind,

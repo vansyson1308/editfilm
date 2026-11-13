@@ -8,7 +8,22 @@
 //! | `tts.edit` | change a narration clip's script or voice settings and regenerate it in place (one undo step) |
 //! | `tts.inspect` | the narration settings of a clip or item |
 //! | `tts.render` | synthesize in a background job into the cache, so the UI's create / edit / preview return at once |
-//! | `tts.downloadVoices` | download the natural voices (Kokoro-82M, 9 US English voices, CMUdict; 336 MB, SHA-256 checked) as a background job |
+//! | `tts.downloadVoices` | download the natural voices (Kokoro-82M and CMUdict, 331 MB shared, plus 0.5 MB per voice; SHA-256 checked) as a background job; `voices` picks which |
+//! | `tts.engines` | which voice engines work here: built in, natural, and VieNeu-TTS (Python found, `vieneu` installed, voices known) with the exact install steps |
+//! | `tts.setupVieneu` | get VieNeu-TTS ready in a background job: optionally create a Python environment and `pip install vieneu==3.8.4` (`install: true`), then download its model and list its voices |
+//!
+//! **Vietnamese voices** come from VieNeu-TTS, an optional external engine ([`filmagic_tts::vieneu`]):
+//! never linked or bundled. A Python interpreter with the `vieneu` package runs as a subprocess,
+//! through a small Python bridge that the owner approved for this engine (issue #20). Which
+//! interpreter runs is never a command parameter or a setting: only `FILMAGIC_VIENEU_PYTHON` (set
+//! by a person), the environment in Filmagic's engine directory ([`vieneu_engine_dir`]) or the
+//! PATH. Its voices are `vieneu:<name>` (listed by `tts.voices` once `tts.setupVieneu` has run).
+//! They take seconds to minutes, so `tts.create`, `tts.edit` and `tts.preview` speak them only
+//! from what `tts.render` (a job) has synthesized. `vieneu-clone` with `referenceAudio` speaks in
+//! the voice of a reference clip, and only with `confirmAuthorizedVoice: true`, a flag the agent
+//! sets to say the speaker agreed (not a check by a person). The model downloads go to the models
+//! directory ([`crate::models_store`]). VieNeu gives no word timings: run `transcript.generate`
+//! with `language: "vi"` on the narration for captions.
 //!
 //! **Where a new narration goes.** At `time` (default: the playhead) on `track` if given (it must
 //! be free there), else on the first targeted audio track that is free for the narration's length,
@@ -25,6 +40,7 @@
 //! where voice-over recordings go (Scratch Disks ▸ Captured, else next to the project, else
 //! `Narrations` in the data or temporary directory); an edit writes next to the previous file.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Value, json};
@@ -60,8 +76,117 @@ fn has_narration_clip(s: &Session) -> std::result::Result<(), String> {
     target_clip(s, &Value::Null).map(|_| ()).ok_or_else(|| "select a narration clip".into())
 }
 
+/// The VieNeu preset a voice id names (`vieneu:<name>`).
+fn vieneu_name(voice: &str) -> Option<&str> {
+    voice.strip_prefix(tts::vieneu::VOICE_PREFIX)
+}
+
+/// A VieNeu voice: a preset or the cloned voice.
+fn is_vieneu(voice: &str) -> bool {
+    vieneu_name(voice).is_some() || voice == tts::vieneu::CLONE_VOICE
+}
+
+/// The sentence "Hear this voice" speaks: Vietnamese for the VieNeu voices.
+fn sample_sentence(voice: &str) -> &'static str {
+    if is_vieneu(voice) { tts::vieneu::SAMPLE_SENTENCE } else { tts::SAMPLE_SENTENCE }
+}
+
+/// What a host program (or a test) sets for VieNeu-TTS. Only Rust code can set it: no command
+/// or setting reaches it.
+#[derive(Clone, Debug, Default)]
+pub struct VieneuHost {
+    /// An interpreter to try first.
+    pub python: Option<tts::vieneu::Python>,
+    /// Instead of [`vieneu_engine_dir`].
+    pub engine_dir: Option<PathBuf>,
+}
+
+/// Where VieNeu's executed files live (its Python environment and the bridge): on Windows with
+/// the default data directory, `%LOCALAPPDATA%\Filmagic\vieneu` (local, not roaming: about 1 GB);
+/// else `<data dir>/vieneu`. Never under the models directory, which an agent can move.
+pub fn vieneu_engine_dir() -> Option<PathBuf> {
+    let data = crate::autosave::default_data_dir()?;
+    if cfg!(windows) {
+        let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        if env("APPDATA").map(|a| a.join("Filmagic")).as_ref() == Some(&data)
+            && let Some(local) = env("LOCALAPPDATA")
+        {
+            return Some(local.join("Filmagic").join(tts::vieneu::DIR_NAME));
+        }
+    }
+    Some(data.join(tts::vieneu::DIR_NAME))
+}
+
+/// VieNeu's two directories for this session.
+fn vieneu_dirs(s: &Session) -> Option<tts::vieneu::Dirs> {
+    let engine = s.vieneu_host.engine_dir.clone().or_else(vieneu_engine_dir)?;
+    Some(tts::vieneu::Dirs { engine, models: s.models_dir()? })
+}
+
+/// What synthesis needs from the session, captured so background jobs run without it.
+#[derive(Clone, Debug)]
+struct VoiceEnv {
+    models_dir: Option<PathBuf>,
+    vieneu: Option<tts::vieneu::Dirs>,
+    host_python: Option<tts::vieneu::Python>,
+}
+
+impl VoiceEnv {
+    fn of(s: &Session) -> Self {
+        VoiceEnv { models_dir: s.models_dir(), vieneu: vieneu_dirs(s), host_python: s.vieneu_host.python.clone() }
+    }
+}
+
+/// The voice (and for `vieneu-clone`, its reference clip) from params, checked; its language.
+fn voice_setting(s: &Session, cmd: &str, p: &Value, voice: &str, base: Option<&Narration>) -> Result<(String, Option<String>)> {
+    let reference_p = match p.get("referenceAudio") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(r)) => Some(r.as_str()),
+        Some(_) => return Err(bad(cmd, "`referenceAudio` must be a path to an audio file")),
+    };
+    if reference_p.is_some() && voice != tts::vieneu::CLONE_VOICE {
+        return Err(bad(cmd, format!("`referenceAudio` only works with the voice `{}`", tts::vieneu::CLONE_VOICE)));
+    }
+    if voice == tts::vieneu::CLONE_VOICE {
+        let reference = match reference_p {
+            Some(r) => {
+                // cloning someone's voice needs their consent, every time a new clip is given
+                if p.get("confirmAuthorizedVoice").and_then(Value::as_bool) != Some(true) {
+                    return Err(bad(
+                        cmd,
+                        "cloning a voice needs the speaker's consent: pass \"confirmAuthorizedVoice\": true only after the person whose voice is in the clip agreed",
+                    ));
+                }
+                tts::vieneu::check_reference(Path::new(r)).map_err(|e| bad(cmd, e.to_string()))?;
+                r.to_string()
+            }
+            None => base.filter(|b| b.voice == voice).and_then(|b| b.reference_audio.clone()).ok_or_else(|| {
+                bad(cmd, "the voice `vieneu-clone` needs `referenceAudio` (a 3 to 30 second clip of the speaker) and \"confirmAuthorizedVoice\": true")
+            })?,
+        };
+        return Ok((tts::vieneu::LANGUAGE.to_string(), Some(reference)));
+    }
+    if let Some(name) = vieneu_name(voice) {
+        if name.trim().is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+            return Err(bad(cmd, format!("`{voice}` is not a VieNeu voice name (tts.voices lists them)")));
+        }
+        // the voice list is known once tts.setupVieneu has run; before that VieNeu itself checks
+        if let Some(list) = s.models_dir().as_deref().and_then(tts::vieneu::cached_voices)
+            && !list.iter().any(|v| v.name == name)
+        {
+            let ids: Vec<String> = list.iter().map(|v| v.id()).collect();
+            return Err(bad(cmd, format!("unknown voice `{voice}`; VieNeu voices: {}", ids.join(", "))));
+        }
+        return Ok((tts::vieneu::LANGUAGE.to_string(), None));
+    }
+    let info = tts::voices_in(None).into_iter().find(|v| v.id == voice).ok_or_else(|| {
+        bad(cmd, format!("unknown voice `{voice}` (tts.voices lists them; Vietnamese voices are `vieneu:<name>` once tts.setupVieneu has run)"))
+    })?;
+    Ok((info.language.to_string(), None))
+}
+
 /// Script and settings from params, on top of `base`.
-fn settings(cmd: &str, p: &Value, base: Option<&Narration>) -> Result<Narration> {
+fn settings(s: &Session, cmd: &str, p: &Value, base: Option<&Narration>) -> Result<Narration> {
     // a setting of the wrong type is an error, never silently replaced by a default
     for key in ["text", "voice", "pitch"] {
         if p.get(key).is_some_and(|v| !v.is_string()) {
@@ -72,8 +197,12 @@ fn settings(cmd: &str, p: &Value, base: Option<&Narration>) -> Result<Narration>
         Some(t) => t.to_string(),
         None => base.map(|b| b.text.clone()).ok_or_else(|| bad(cmd, "`text` is required"))?,
     };
-    let voice = str_p(p, "voice").map(str::to_string).or_else(|| base.map(|b| b.voice.clone())).unwrap_or_else(|| tts::default_voice_id().to_string());
-    let info = tts::voices_in(None).into_iter().find(|v| v.id == voice).ok_or_else(|| bad(cmd, format!("unknown voice `{voice}` (see tts.voices)")))?;
+    let mut voice = str_p(p, "voice").map(str::to_string).or_else(|| base.map(|b| b.voice.clone())).unwrap_or_else(|| tts::default_voice_id().to_string());
+    if let Some(name) = vieneu_name(&voice) {
+        // a name pasted in decomposed form (NFD) is the same preset
+        voice = format!("{}{}", tts::vieneu::VOICE_PREFIX, tts::vieneu::nfc(name));
+    }
+    let (language, reference_audio) = voice_setting(s, cmd, p, &voice, base)?;
     let pitch = match str_p(p, "pitch") {
         Some(v) => VocalPitch::from_id(v).ok_or_else(|| bad(cmd, format!("unknown pitch `{v}` (extraLow, low, default, high, extraHigh)")))?,
         None => base.map(|b| b.pitch).unwrap_or_default(),
@@ -82,8 +211,10 @@ fn settings(cmd: &str, p: &Value, base: Option<&Narration>) -> Result<Narration>
         Some(v) => v.as_f64().ok_or_else(|| bad(cmd, "`pace` must be a number"))?,
         None => base.map_or(1.0, |b| b.pace),
     };
-    let n = Narration { text, language: info.language.to_string(), voice, pitch, pace, speech_duration: Tick::ZERO };
+    let n = Narration { text, language, voice, pitch, pace, speech_duration: Tick::ZERO, reference_audio };
     n.check().map_err(|e| bad(cmd, e))?;
+    // what is wrong with the script is said first, before any engine is asked
+    tts::check_text(&n.text).map_err(|e| tts_err(cmd, e))?;
     Ok(n)
 }
 
@@ -93,20 +224,47 @@ pub type SynthCache = Arc<Mutex<Vec<(String, Arc<tts::Audio>)>>>;
 const CACHE_ENTRIES: usize = 6;
 
 fn cache_key(n: &Narration) -> String {
-    format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", n.voice, n.pitch.id(), n.pace.to_bits(), n.text)
+    // a reference clip replaced under the same name is another voice
+    let clip = n.reference_audio.as_deref().map(|r| {
+        let m = std::fs::metadata(r).ok();
+        let modified = m.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+        format!("{r}\u{1e}{}\u{1e}{modified}", m.map_or(0, |m| m.len()))
+    });
+    format!("{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}", n.voice, n.pitch.id(), n.pace.to_bits(), clip.unwrap_or_default(), n.text)
 }
 
-fn tts_err(cmd: &str, e: tts::TtsError) -> EngineError {
+/// The error message an agent can act on.
+fn tts_message(e: tts::TtsError) -> String {
     match e {
-        tts::TtsError::NotInstalled => bad(cmd, "the natural voices are not downloaded yet: Text to Speech > Download natural voices (tts.downloadVoices)"),
-        e => bad(cmd, e.to_string()),
+        tts::TtsError::NotInstalled => "the natural voices are not downloaded yet: Text to Speech > Download natural voices (tts.downloadVoices)".into(),
+        tts::TtsError::VoiceNotInstalled(id) => format!("the natural voice `{id}` is not downloaded yet: run tts.downloadVoices {{\"voices\": [\"{id}\"]}}"),
+        tts::TtsError::EngineMissing(e) => {
+            format!("VieNeu-TTS is not installed ({e}). tts.engines lists the install steps; tts.setupVieneu {{\"install\": true}} does them")
+        }
+        e @ tts::TtsError::Engine(_) => format!("{e}. tts.engines shows which Python is used; tts.setupVieneu re-checks the setup"),
+        e => e.to_string(),
     }
 }
 
-/// Synthesize `n` (no cache).
-fn render(n: &Narration, models_dir: Option<&std::path::Path>) -> std::result::Result<tts::Audio, tts::TtsError> {
-    let voice = tts::voice_in(&n.voice, models_dir)?;
-    voice.synthesize(&n.text, &tts::Params { semitones: n.pitch.semitones(), pace: n.pace })
+fn tts_err(cmd: &str, e: tts::TtsError) -> EngineError {
+    bad(cmd, tts_message(e))
+}
+
+/// Synthesize `n` (no cache). `cancel` stops an external engine.
+fn render(n: &Narration, env: &VoiceEnv, cancel: Option<&std::sync::atomic::AtomicBool>) -> std::result::Result<tts::Audio, tts::TtsError> {
+    let params = tts::Params { semitones: n.pitch.semitones(), pace: n.pace };
+    if is_vieneu(&n.voice) {
+        let dirs = env.vieneu.as_ref().ok_or_else(|| tts::TtsError::Engine("there is no data directory for VieNeu-TTS".into()))?;
+        let st = tts::vieneu::detect(dirs, env.host_python.as_ref());
+        let Some(ready) = st.ready else {
+            let tried: Vec<String> = st.tried.iter().map(|(p, why)| format!("{p}: {why}")).collect();
+            return Err(tts::TtsError::EngineMissing(if tried.is_empty() { "no Python found".into() } else { tried.join("; ") }));
+        };
+        let req = tts::vieneu::Request { text: &n.text, voice: vieneu_name(&n.voice), reference: n.reference_audio.as_deref().map(Path::new), params };
+        return tts::vieneu::synthesize(&ready.python, dirs, &req, cancel);
+    }
+    let voice = tts::voice_in(&n.voice, env.models_dir.as_deref())?;
+    voice.synthesize(&n.text, &params)
 }
 
 fn synthesize(s: &Session, cmd: &str, n: &Narration) -> Result<Arc<tts::Audio>> {
@@ -114,7 +272,16 @@ fn synthesize(s: &Session, cmd: &str, n: &Narration) -> Result<Arc<tts::Audio>> 
     if let Some(a) = s.tts_cache.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key).map(|(_, a)| a.clone()) {
         return Ok(a);
     }
-    let a = Arc::new(render(n, crate::transcript::models_dir().as_deref()).map_err(|e| tts_err(cmd, e))?);
+    if is_vieneu(&n.voice) {
+        // minutes of work with no way to stop it: that belongs in a job
+        return Err(bad(
+            cmd,
+            format!(
+                "VieNeu voices take seconds to minutes: run tts.render with the same settings first (a job: follow it with jobs.list), then call {cmd} again and it returns at once"
+            ),
+        ));
+    }
+    let a = Arc::new(render(n, &VoiceEnv::of(s), None).map_err(|e| tts_err(cmd, e))?);
     cache_put(&s.tts_cache, key, a.clone());
     Ok(a)
 }
@@ -133,26 +300,70 @@ pub fn natural_voices_available() -> bool {
     cfg!(feature = "neural-voices")
 }
 
-fn package_json() -> Value {
-    let dir = crate::transcript::models_dir();
+fn package_json(dir: Option<&Path>) -> Value {
+    let shared: u64 = tts::catalog::FILES.iter().filter(|f| tts::catalog::is_shared(f)).map(|f| f.size).sum();
     json!({
         "id": tts::catalog::PACKAGE_ID,
         "name": tts::catalog::PACKAGE_NAME,
-        "installed": dir.as_deref().is_some_and(tts::catalog::installed),
+        "installed": dir.is_some_and(tts::catalog::installed),
+        "anyInstalled": dir.is_some_and(tts::catalog::any_installed),
         "size": tts::catalog::size(),
-        "missingBytes": dir.as_deref().map_or(tts::catalog::size(), tts::catalog::missing_bytes),
+        "sharedBytes": shared,
+        "missingBytes": dir.map_or(tts::catalog::size(), tts::catalog::missing_bytes),
+        "perVoice": tts::catalog::VOICES.iter().map(|v| json!({
+            "voice": v.info.id,
+            "installed": dir.is_some_and(|d| tts::catalog::voice_installed(d, v)),
+            "missingBytes": dir.map_or(tts::catalog::size(), |d| tts::catalog::missing_bytes_for(d, &[v])),
+        })).collect::<Vec<_>>(),
         "license": tts::catalog::LICENSE,
         "source": tts::catalog::SOURCE,
         "available": natural_voices_available(),
     })
 }
 
-fn voices(_s: &mut Session, _p: &Value) -> Result<Value> {
-    let dir = crate::transcript::models_dir();
+/// VieNeu-TTS as `tts.voices` reports it, from the voice cache (no Python is started).
+fn vieneu_json(dir: Option<&Path>) -> (Value, Vec<Value>) {
+    let cached = dir.and_then(tts::vieneu::cached_voices).unwrap_or_default();
+    let mut list: Vec<Value> = cached.iter().map(tts::vieneu::VieneuVoice::info_json).collect();
+    if !cached.is_empty() {
+        list.push(json!({
+            "id": tts::vieneu::CLONE_VOICE,
+            "name": "Cloned voice (reference clip)",
+            "language": tts::vieneu::LANGUAGE,
+            "gender": null,
+            "engine": "vieneu",
+            "description": "Speaks in the voice of `referenceAudio` (3 to 30 s of one speaker); needs \"confirmAuthorizedVoice\": true.",
+            "license": tts::vieneu::LICENSE,
+            "installed": true,
+        }));
+    }
+    let info = json!({
+        "ready": !cached.is_empty(),
+        "voices": cached.len(),
+        "license": tts::vieneu::LICENSE,
+        "source": tts::vieneu::SOURCE,
+        "wordTimings": false,
+        "setup": if cached.is_empty() { "Vietnamese voices need VieNeu-TTS: tts.engines shows whether it is installed and how; tts.setupVieneu gets it ready" } else { "ready" },
+    });
+    (info, list)
+}
+
+fn voices(s: &mut Session, _p: &Value) -> Result<Value> {
+    let dir = s.models_dir();
+    let mut list: Vec<Value> = tts::voices_in(dir.as_deref()).iter().map(|v| json!(v)).collect();
+    let (vieneu, vlist) = vieneu_json(dir.as_deref());
+    list.extend(vlist);
+    let mut warnings = crate::models_store::elsewhere_warnings(s);
+    if vieneu["ready"] != json!(true) {
+        warnings.push("no Vietnamese voices yet: they need VieNeu-TTS (tts.engines, then tts.setupVieneu)".into());
+    }
     Ok(json!({
-        "package": package_json(),
+        "package": package_json(dir.as_deref()),
+        "vieneu": vieneu,
+        "modelsDir": dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
+        "warnings": warnings,
         "languages": tts::LANGUAGES.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>(),
-        "voices": tts::voices_in(dir.as_deref()),
+        "voices": list,
         "defaultVoice": tts::default_voice_id(),
         "pitches": VocalPitch::ALL.iter().map(|p| json!({"id": p.id(), "label": p.label(), "semitones": p.semitones()})).collect::<Vec<_>>(),
         "pace": {"min": tts::MIN_PACE, "max": tts::MAX_PACE, "default": 1.0},
@@ -167,9 +378,9 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        q["text"] = json!(sample_sentence(str_p(&q, "voice").or(base.as_ref().map(|b| b.voice.as_str())).unwrap_or_default()));
     }
-    let n = settings(cmd, &q, base.as_ref())?;
+    let n = settings(s, cmd, &q, base.as_ref())?;
     let audio = synthesize(s, cmd, &n)?;
     let seconds = audio.seconds();
     let samples = audio.samples.len();
@@ -231,7 +442,7 @@ fn placement(s: &Session, p: &Value, range: TimeRange) -> Result<Option<TrackId>
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.create";
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let mut n = settings(cmd, p, None)?;
+    let mut n = settings(s, cmd, p, None)?;
     let at = time_p(s, p, "").unwrap_or(s.playhead());
     if at < Tick::ZERO {
         return Err(bad(cmd, "the start time cannot be negative"));
@@ -321,7 +532,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let (old_item, clip_dur, speed) = (it.item, it.duration, it.speed);
     let base = s.project.narrations.get(&old_item).cloned().ok_or_else(|| bad(cmd, "the clip is not a narration"))?;
-    let mut n = settings(cmd, p, Some(&base))?;
+    let mut n = settings(s, cmd, p, Some(&base))?;
     let audio = synthesize(s, cmd, &n)?;
     let rate = audio.sample_rate.max(1);
     let speech = audio.samples.len();
@@ -426,9 +637,9 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let base = target_clip(s, p).and_then(|c| s.active_sequence()?.find_item(c).map(|(_, it)| it.item)).and_then(|i| s.project.narrations.get(&i).cloned());
     let mut q = p.clone();
     if q.get("sample").and_then(Value::as_bool).unwrap_or(false) {
-        q["text"] = json!(tts::SAMPLE_SENTENCE);
+        q["text"] = json!(sample_sentence(str_p(&q, "voice").or(base.as_ref().map(|b| b.voice.as_str())).unwrap_or_default()));
     }
-    let n = settings(cmd, &q, base.as_ref())?;
+    let n = settings(s, cmd, &q, base.as_ref())?;
     let key = cache_key(&n);
     if s.tts_cache.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|(k, _)| *k == key) {
         return Ok(json!({"job": null, "cached": true}));
@@ -436,50 +647,81 @@ fn render_job(s: &mut Session, p: &Value) -> Result<Value> {
     let job = new_job(s, "Synthesizing narration".into());
     let (prog, res, cache) = (job.progress.clone(), job.result.clone(), s.tts_cache.clone());
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+    let env = VoiceEnv::of(s);
     let id = spawn(s, job, wait, "filmagic-tts", move || {
         let t0 = web_time::Instant::now();
         *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = "Synthesizing…".into();
-        let r = match render(&n, crate::transcript::models_dir().as_deref()) {
+        let r = match render(&n, &env, Some(&prog.cancel)) {
             Ok(a) => {
                 let secs = a.seconds();
                 cache_put(&cache, key, Arc::new(a));
                 Ok(format!("{secs:.1} s of speech"))
             }
-            Err(tts::TtsError::NotInstalled) => Err("the natural voices are not downloaded yet".to_string()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(tts_message(e)),
         };
         finish(&prog, &res, r, t0);
     })?;
     Ok(json!({"job": id, "cached": false}))
 }
 
-/// Download the natural voices (Kokoro-82M, its voices and CMUdict) in the background.
+/// The natural voices `voices` names (all of them when absent).
+fn natural_voices_p(cmd: &str, p: &Value) -> Result<Vec<&'static tts::catalog::NeuralVoice>> {
+    match p.get("voices") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(a)) => {
+            let mut out: Vec<&'static tts::catalog::NeuralVoice> = Vec::new();
+            for v in a {
+                let id = v.as_str().ok_or_else(|| bad(cmd, "`voices` must be a list of natural voice ids (\"kokoro-heart\", …)"))?;
+                let voice = tts::catalog::find(id).ok_or_else(|| {
+                    let ids: Vec<&str> = tts::catalog::VOICES.iter().map(|v| v.info.id).collect();
+                    bad(cmd, format!("`{id}` is not a natural voice; natural voices: {}", ids.join(", ")))
+                })?;
+                if !out.iter().any(|o| o.info.id == voice.info.id) {
+                    out.push(voice);
+                }
+            }
+            if out.is_empty() {
+                return Err(bad(cmd, "`voices` is empty: name at least one voice, or leave it out for all of them"));
+            }
+            Ok(out)
+        }
+        Some(_) => Err(bad(cmd, "`voices` must be a list of natural voice ids (\"kokoro-heart\", …)")),
+    }
+}
+
+/// Download the natural voices (Kokoro-82M and CMUdict, shared, and each voice's own file) in
+/// the background: `voices` picks which, all of them by default.
 fn download_voices(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tts.downloadVoices";
-    let dir = crate::transcript::models_dir().ok_or_else(|| bad(cmd, "no data directory for voice models"))?;
-    if tts::catalog::installed(&dir) {
-        return Ok(json!({"job": null, "installed": true}));
+    let voices = natural_voices_p(cmd, p)?;
+    let dir = s.models_dir().ok_or_else(|| bad(cmd, "no data directory for voice models"))?;
+    let missing = tts::catalog::missing_bytes_for(&dir, &voices);
+    let ids: Vec<&str> = if voices.is_empty() { tts::catalog::VOICES.iter().map(|v| v.info.id).collect() } else { voices.iter().map(|v| v.info.id).collect() };
+    if missing == 0 {
+        return Ok(json!({"job": null, "installed": true, "voices": ids, "dir": tts::catalog::package_dir(&dir).to_string_lossy()}));
     }
     if !cfg!(feature = "neural-voices") {
         return Err(bad(cmd, "natural voices are not available in this build (built without the `neural-voices` feature)"));
     }
     let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
     let job = new_job(s, format!("Downloading {}", tts::catalog::PACKAGE_NAME));
-    job.progress.total.store(tts::catalog::missing_bytes(&dir), std::sync::atomic::Ordering::Relaxed);
+    job.progress.total.store(missing, std::sync::atomic::Ordering::Relaxed);
     let (prog, res) = (job.progress.clone(), job.result.clone());
+    let files: Vec<&'static tts::catalog::ModelFile> = tts::catalog::files_for(&voices);
+    let target = tts::catalog::package_dir(&dir);
     let id = spawn(s, job, wait, "filmagic-tts-download", move || {
         let t0 = web_time::Instant::now();
-        let r = download_package(&dir, &prog);
+        let r = download_package(&dir, &files, &prog);
         finish(&prog, &res, r.map(|()| "Natural voices installed".to_string()), t0);
     })?;
-    Ok(json!({"job": id, "installed": false}))
+    Ok(json!({"job": id, "installed": false, "voices": ids, "bytes": missing, "dir": target.to_string_lossy()}))
 }
 
 #[cfg(feature = "neural-voices")]
-fn download_package(dir: &std::path::Path, prog: &filmagic_export::Progress) -> std::result::Result<(), String> {
+fn download_package(dir: &std::path::Path, files: &[&tts::catalog::ModelFile], prog: &filmagic_export::Progress) -> std::result::Result<(), String> {
     use std::sync::atomic::Ordering;
     let files: Vec<filmagic_speech::models::ModelFile> =
-        tts::catalog::FILES.iter().map(|f| filmagic_speech::models::ModelFile { name: f.name, url: f.url, sha256: f.sha256, size: f.size }).collect();
+        files.iter().map(|f| filmagic_speech::models::ModelFile { name: f.name, url: f.url, sha256: f.sha256, size: f.size }).collect();
     let mut progress = |done: u64, total: u64, file: &str| {
         prog.done.store(done, Ordering::Relaxed);
         prog.total.store(total, Ordering::Relaxed);
@@ -490,8 +732,115 @@ fn download_package(dir: &std::path::Path, prog: &filmagic_export::Progress) -> 
 }
 
 #[cfg(not(feature = "neural-voices"))]
-fn download_package(_: &std::path::Path, _: &filmagic_export::Progress) -> std::result::Result<(), String> {
+fn download_package(_: &std::path::Path, _: &[&tts::catalog::ModelFile], _: &filmagic_export::Progress) -> std::result::Result<(), String> {
     Err("natural voices are not available in this build".into())
+}
+
+fn probe_json(p: &tts::vieneu::Probe) -> Value {
+    json!({"command": p.python.display(), "found": p.found.display(), "source": p.python.source, "pythonVersion": p.python_version, "vieneu": p.vieneu})
+}
+
+/// Which voice engines work here, and how to install VieNeu-TTS when it does not. Starts Python a
+/// few times (to look), so it takes a second or two.
+fn engines(s: &mut Session, _: &Value) -> Result<Value> {
+    let cmd = "tts.engines";
+    let dir = s.models_dir().ok_or_else(|| bad(cmd, "no data directory for models"))?;
+    let dirs = vieneu_dirs(s).ok_or_else(|| bad(cmd, "no data directory for VieNeu-TTS"))?;
+    let st = tts::vieneu::detect(&dirs, s.vieneu_host.python.as_ref());
+    let cached = tts::vieneu::cached_voices(&dir).map_or(0, |v| v.len());
+    let next = match (&st.ready, cached) {
+        (Some(_), 0) => "run tts.setupVieneu to download the VieNeu model (about 0.6 GB) and list its voices",
+        (Some(_), _) => "ready: pick a `vieneu:<name>` voice from tts.voices",
+        (None, _) if st.python.is_some() => {
+            "run tts.setupVieneu {\"install\": true} to create Filmagic's Python environment (venv) and pip install vieneu==3.8.4 there, or follow installSteps"
+        }
+        (None, _) => "install Python 3.10 or newer (installSteps), then run tts.setupVieneu {\"install\": true}",
+    };
+    Ok(json!({
+        "modelsDir": dir.to_string_lossy(),
+        "builtin": {"available": true, "voices": tts::voices().len()},
+        "natural": package_json(Some(&dir)),
+        "vieneu": {
+            "available": st.available(),
+            "ready": st.available() && cached > 0,
+            "python": st.ready.as_ref().or(st.python.as_ref()).map(probe_json),
+            "tried": st.tried.iter().map(|(p, why)| json!({"command": p, "problem": why})).collect::<Vec<_>>(),
+            "voices": cached,
+            "engineDir": dirs.engine.to_string_lossy(),
+            "venv": dirs.venv().to_string_lossy(),
+            "cacheDir": dirs.cache().to_string_lossy(),
+            "installSteps": if st.available() { Vec::new() } else { tts::vieneu::install_steps(&st, &dirs) },
+            "pythonEnv": tts::vieneu::PYTHON_ENV,
+            "package": tts::vieneu::PACKAGE_SPEC,
+            "license": tts::vieneu::LICENSE,
+            "source": tts::vieneu::SOURCE,
+            "next": next,
+        },
+    }))
+}
+
+/// Get VieNeu-TTS ready: with `install: true`, create Filmagic's Python environment (when it is not
+/// there) and `pip install vieneu==3.8.4` into it (every time: that finishes an install that was
+/// stopped); then load the model once (it downloads about 0.6 GB into the models directory the
+/// first time) and cache the voice list. A background job. Which Python runs is never a parameter.
+fn setup_vieneu(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "tts.setupVieneu";
+    if p.get("python").is_some() {
+        return Err(bad(
+            cmd,
+            format!(
+                "`python` is not accepted: a command may not choose a program to run. Start Filmagic with {} set to the interpreter, or use install: true",
+                tts::vieneu::PYTHON_ENV
+            ),
+        ));
+    }
+    let install = match p.get("install") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad(cmd, "`install` must be true or false"))?,
+    };
+    let dirs = vieneu_dirs(s).ok_or_else(|| bad(cmd, "no data directory for VieNeu-TTS"))?;
+    let st = tts::vieneu::detect(&dirs, s.vieneu_host.python.as_ref());
+    let (ready, base) = match (&st.ready, &st.python) {
+        // install: always through the environment, so a stopped pip install gets finished
+        (_, Some(b)) if install => (None, Some(b.python.clone())),
+        (Some(r), _) => (Some(r.python.clone()), None),
+        (None, _) => {
+            let steps = tts::vieneu::install_steps(&st, &dirs);
+            let tried: Vec<String> = st.tried.iter().map(|(p, why)| format!("{p}: {why}")).collect();
+            let how = if st.python.is_some() && !install { " Or run tts.setupVieneu {\"install\": true} to do the first two steps." } else { "" };
+            return Err(bad(cmd, format!("VieNeu-TTS is not installed (tried {}). Steps: {}.{how}", tried.join("; "), steps.join("; "))));
+        }
+    };
+    let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+    let job = new_job(s, "Setting up VieNeu-TTS".into());
+    let (prog, res) = (job.progress.clone(), job.result.clone());
+    let d = dirs.clone();
+    let id = spawn(s, job, wait, "filmagic-vieneu-setup", move || {
+        let t0 = web_time::Instant::now();
+        let status = |m: &str| *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = m.to_string();
+        let r = (|| -> std::result::Result<String, String> {
+            let py = match (ready, base) {
+                (Some(py), _) => py,
+                (None, Some(base)) => {
+                    let venv = tts::vieneu::install(&base, &d, Some(&prog.cancel), &mut |m| status(m))?;
+                    // from now on, the environment's own executable
+                    tts::vieneu::probe(&venv, &d).map(|p| p.python).unwrap_or(venv)
+                }
+                (None, None) => return Err("no Python to install VieNeu-TTS with".into()),
+            };
+            status("Loading the VieNeu model (the first time it downloads about 0.6 GB)…");
+            let voices = tts::vieneu::prepare(&py, &d, Some(&prog.cancel)).map_err(tts_message)?;
+            Ok(format!("VieNeu-TTS ready with {} voices ({})", voices.len(), py.display()))
+        })();
+        finish(&prog, &res, r, t0);
+    })?;
+    Ok(json!({
+        "job": id,
+        "installing": install,
+        "venv": dirs.venv().to_string_lossy(),
+        "cacheDir": dirs.cache().to_string_lossy(),
+        "notes": ["follow the job with jobs.list; when it is done, tts.voices lists the `vieneu:<name>` voices"],
+    }))
 }
 
 fn spec(
@@ -511,7 +860,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "tts.preview",
             "Preview Narration",
-            r#"{"text":str?,"voice":str?,"pitch":"default"?,"pace":f64?,"sample":bool?,"clip":id?,"path":str?}"#,
+            r#"{"text":str?,"voice":str?,"pitch":"default"?,"pace":f64?,"sample":bool?,"clip":id?,"path":str?,"referenceAudio":path?,"confirmAuthorizedVoice":bool?}"#,
             always,
             preview,
             false,
@@ -519,21 +868,37 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "tts.create",
             "New Narration",
-            r#"{"text":str,"voice":str?,"pitch":"extraLow|low|default|high|extraHigh"?,"pace":0.5..2?,"time":ticks?,"track":"A1"|id?,"dir":str?}"#,
+            r#"{"text":str,"voice":str? (tts.voices; "vieneu:<name>" for Vietnamese),"pitch":"extraLow|low|default|high|extraHigh"?,"pace":0.5..2?,"time":ticks?,"track":"A1"|id?,"dir":str?,"referenceAudio":path? (voice "vieneu-clone"),"confirmAuthorizedVoice":bool? (required with referenceAudio)}"#,
             has_seq,
             create,
             true,
         ),
-        spec("tts.edit", "Edit Narration", r#"{"clip":id?,"text":str?,"voice":str?,"pitch":str?,"pace":f64?,"dir":str?}"#, has_narration_clip, edit, true),
+        spec(
+            "tts.edit",
+            "Edit Narration",
+            r#"{"clip":id?,"text":str?,"voice":str?,"pitch":str?,"pace":f64?,"dir":str?,"referenceAudio":path?,"confirmAuthorizedVoice":bool?}"#,
+            has_narration_clip,
+            edit,
+            true,
+        ),
         spec("tts.inspect", "Inspect Narration", r#"{"clip":id?,"item":id?}"#, always, inspect, false),
         spec(
             "tts.render",
             "Synthesize Narration",
-            r#"{"text":str?,"voice":str?,"pitch":str?,"pace":f64?,"sample":bool?,"clip":id?,"wait":bool?}"#,
+            r#"{"text":str?,"voice":str?,"pitch":str?,"pace":f64?,"sample":bool?,"clip":id?,"wait":bool?,"referenceAudio":path?,"confirmAuthorizedVoice":bool?}"#,
             always,
             render_job,
             false,
         ),
-        spec("tts.downloadVoices", "Download Natural Voices", r#"{"wait":bool?}"#, always, download_voices, false),
+        spec("tts.downloadVoices", "Download Natural Voices", r#"{"voices":["kokoro-heart",…]? (default all),"wait":bool?}"#, always, download_voices, false),
+        spec("tts.engines", "Voice Engines", "{}", always, engines, false),
+        spec(
+            "tts.setupVieneu",
+            "Set Up VieNeu-TTS",
+            r#"{"install":bool? (create Filmagic's Python environment and pip install vieneu),"wait":bool?}"#,
+            always,
+            setup_vieneu,
+            false,
+        ),
     ]
 }

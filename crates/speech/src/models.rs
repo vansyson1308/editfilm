@@ -8,6 +8,8 @@
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
 //! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! The whisper-large-v3-turbo pins were verified 2026-11-13 against the Hugging Face API (LFS
+//! SHA-256 of the weights) and by `sha256sum` of the small files.
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +58,8 @@ macro_rules! hf {
 }
 
 const TOKENIZER_MULTI: &str = "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566";
+/// The large-v3 tokenizer (one more language token, Cantonese).
+const TOKENIZER_V3: &str = "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd";
 
 static CATALOGUE: &[ModelInfo] = &[
     ModelInfo {
@@ -178,6 +182,47 @@ static CATALOGUE: &[ModelInfo] = &[
             ),
         ],
     },
+    ModelInfo {
+        id: "whisper-large-v3-turbo",
+        name: "Whisper large-v3 turbo (multilingual)",
+        multilingual: true,
+        description: "809 M parameters. Best for languages other than English (Vietnamese, Thai, …); about 1.6 GB, needs about 5 GB of memory.",
+        license: LICENSE,
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3-turbo",
+        files: &[
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "config.json",
+                "c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a",
+                1256
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "generation_config.json",
+                "cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c",
+                3772
+            ),
+            // large-v3 adds Cantonese, so its tokenizer differs from the other models'
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "tokenizer.json",
+                "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+                2710337
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "model.safetensors",
+                "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
+                1617824864
+            ),
+        ],
+    },
 ];
 
 /// The default model.
@@ -233,6 +278,11 @@ pub fn shared_tokenizer_sha() -> &'static str {
     TOKENIZER_MULTI
 }
 
+/// The checksum of the tokenizer the large-v3 models share.
+pub fn v3_tokenizer_sha() -> &'static str {
+    TOKENIZER_V3
+}
+
 /// Download progress: `(bytes done, bytes total, file)`; return false to cancel.
 #[cfg(feature = "download")]
 pub type DownloadProgress<'a> = &'a mut dyn FnMut(u64, u64, &str) -> bool;
@@ -278,9 +328,16 @@ pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgres
             if n == 0 {
                 break;
             }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n])?;
-            got += n as u64;
+            got = got.saturating_add(n as u64);
+            // never more than the pinned size: a server that sends more is not sending this file
+            if got > f.size {
+                drop(out);
+                let _ = std::fs::remove_file(&part);
+                return Err(SpeechError::Download(format!("{}: the server sent more than the expected {} bytes", f.name, f.size)));
+            }
+            let chunk = buf.get(..n).unwrap_or_default();
+            hasher.update(chunk);
+            out.write_all(chunk)?;
             if !progress(done + got, total, f.name) {
                 drop(out);
                 let _ = std::fs::remove_file(&part);
@@ -331,10 +388,35 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
                 if f.name == "tokenizer.json" {
-                    assert_eq!(f.sha256, shared_tokenizer_sha());
+                    let expected = if m.id.contains("large-v3") { v3_tokenizer_sha() } else { shared_tokenizer_sha() };
+                    assert_eq!(f.sha256, expected, "{}", m.id);
                 }
             }
         }
+    }
+
+    /// A server that sends more than the pinned size: the download stops there, keeps nothing, and
+    /// does not read the rest.
+    #[cfg(feature = "download")]
+    #[test]
+    fn a_download_stops_at_the_pinned_size() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = c.read(&mut req);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n");
+            let _ = c.write_all(&vec![0u8; 1 << 20]);
+        });
+        let url: &'static str = Box::leak(format!("http://127.0.0.1:{port}/big.bin").into_boxed_str());
+        let files = [ModelFile { name: "big.bin", url, sha256: "0000000000000000000000000000000000000000000000000000000000000000", size: 10 }];
+        let root = tempfile::tempdir().unwrap();
+        let e = download_files(root.path(), &files, &mut |_, _, _| true).unwrap_err();
+        assert!(e.to_string().contains("more than the expected 10 bytes"), "{e}");
+        assert!(!root.path().join("big.bin").exists() && !root.path().join("big.bin.part").exists());
+        let _ = server.join();
     }
 
     #[test]

@@ -84,6 +84,10 @@ pub struct Narration {
     /// Length of the speech in the generated file. The file can be longer: when an edit made the
     /// speech shorter than its clip, the file is padded with silence to the clip's length.
     pub speech_duration: Tick,
+    /// The clip whose voice a cloned voice (`vieneu-clone`) speaks with; its speaker agreed when the
+    /// narration was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_audio: Option<String>,
 }
 
 impl Narration {
@@ -97,6 +101,9 @@ impl Narration {
         }
         if self.speech_duration < Tick::ZERO {
             return Err("negative speech duration".into());
+        }
+        if self.reference_audio.as_ref().is_some_and(|r| r.is_empty() || r.len() > 4096 || r.contains('\0')) {
+            return Err("invalid reference clip path".into());
         }
         Ok(())
     }
@@ -114,6 +121,7 @@ mod tests {
             pitch: VocalPitch::High,
             pace: 1.25,
             speech_duration: Tick::from_seconds_f64(2.5),
+            reference_audio: None,
         }
     }
 
@@ -123,6 +131,12 @@ mod tests {
         let s = serde_json::to_string(&n).unwrap();
         assert!(s.contains("\"pitch\":\"high\""), "{s}");
         assert_eq!(serde_json::from_str::<Narration>(&s).unwrap(), n);
+        assert!(!s.contains("referenceAudio"), "absent when there is none: {s}");
+        let cloned = Narration { voice: "vieneu-clone".into(), language: "vi-VN".into(), reference_audio: Some("C:\\voice.wav".into()), ..n };
+        let s = serde_json::to_string(&cloned).unwrap();
+        assert_eq!(serde_json::from_str::<Narration>(&s).unwrap(), cloned);
+        assert!(cloned.check().is_ok());
+        assert!(Narration { reference_audio: Some(String::new()), ..cloned }.check().is_err());
     }
 
     #[test]
