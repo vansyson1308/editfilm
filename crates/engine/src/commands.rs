@@ -5419,7 +5419,7 @@ fn inspect_filtered(s: &Session, id: ItemId, q: &filmagic_project::Sequence, p: 
             let prefix = if key == "video" { "V" } else { "A" };
             let Some(arr) = full.get_mut(key).and_then(Value::as_array_mut) else { continue };
             let mut kept = Vec::new();
-            let shown: Vec<Value> = arr.drain(..).collect();
+            let shown: Vec<Value> = std::mem::take(arr);
             for (i, (j, t)) in shown.into_iter().zip(list.iter()).enumerate() {
                 if !f.track_ok(&format!("{prefix}{}", i + 1), t) {
                     continue;

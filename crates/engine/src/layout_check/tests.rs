@@ -33,7 +33,7 @@ fn shape(s: &mut Session, pos: [f64; 2], size: [f64; 2]) -> u64 {
     r["clip"].as_u64().unwrap()
 }
 
-fn item<'a>(r: &'a Value, clip: u64) -> &'a Value {
+fn item(r: &Value, clip: u64) -> &Value {
     r["items"].as_array().unwrap().iter().find(|i| i["clip"] == clip).unwrap()
 }
 

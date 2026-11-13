@@ -5,7 +5,7 @@ use filmagic_media::DemoScene;
 use filmagic_project::{ClipId, ItemId};
 use serde_json::{Value, json};
 
-use super::{MAX_EDIT_FRAMES, check};
+use super::check;
 use crate::Session;
 use crate::media_test_util::{make_shots_movie, session_with, tmp_dir};
 
@@ -101,7 +101,6 @@ fn a_check_past_its_budget_says_what_was_left() {
     assert!(!f.complete);
     assert_eq!(budget, 0);
     assert!(f.checked.is_some_and(|(a, b)| a == 0 && b < 49), "{f:?}");
-    assert!(MAX_EDIT_FRAMES > 0);
 }
 
 #[test]
