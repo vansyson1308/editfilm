@@ -104,8 +104,16 @@ pub(crate) fn overlap_batch(batch: i64, frame_bytes: u64, budget: u64) -> i64 {
 }
 
 /// What would make an export faster, from what it did: the hardware encoder or GPU it asked for and
-/// did not get, and which side (rendering or encoding) held it back.
-pub(crate) fn speed_notes(e: &crate::EncoderReport, stages: &std::collections::BTreeMap<String, f64>, secs: f64, format: Format, overlap: bool) -> Vec<String> {
+/// did not get, and which side (rendering or encoding) held it back. `fast`: the export already uses
+/// the encoder's speed preset (a draft), so a draft is not suggested.
+pub(crate) fn speed_notes(
+    e: &crate::EncoderReport,
+    stages: &std::collections::BTreeMap<String, f64>,
+    secs: f64,
+    format: Format,
+    overlap: bool,
+    fast: bool,
+) -> Vec<String> {
     let mut notes = Vec::new();
     if e.hardware_requested && !e.hardware && format == Format::H264 {
         let why =
@@ -117,11 +125,12 @@ pub(crate) fn speed_notes(e: &crate::EncoderReport, stages: &std::collections::B
     }
     let wait = stages.get("wait").copied().unwrap_or(0.0);
     let encode = stages.get("encode").copied().unwrap_or(0.0);
+    let draft = if fast { "" } else { ", or draft true to review at half size" };
     if overlap && secs > 2.0 {
         if wait > 0.3 * secs && !e.gpu_requested {
-            notes.push("rendering held this export back: try gpuRendering auto, or draft true to review at half size".into());
+            notes.push(format!("rendering held this export back: try gpuRendering auto{draft}"));
         } else if wait < 0.05 * secs && encode > 0.7 * secs && !e.hardware && !e.hardware_requested && format == Format::H264 {
-            notes.push("encoding held this export back: try hardwareEncoding auto, or draft true to review at half size".into());
+            notes.push(format!("encoding held this export back: try hardwareEncoding auto{draft}"));
         }
     }
     notes
@@ -625,7 +634,8 @@ impl Exporter {
             .map(|((stage, now), (_, then))| (stage.name().to_string(), (now.saturating_sub(*then) as f64 / 1e9 * 1000.0).round() / 1000.0))
             .filter(|(_, s)| *s > 0.0)
             .collect();
-        let mut notes = speed_notes(&encoder, &stages, secs, self.settings.video_format(), self.overlap);
+        let mut notes = speed_notes(&encoder, &stages, secs, self.settings.video_format(), self.overlap, self.settings.h264_preset == crate::H264Preset::Speed);
+        notes.extend(self.venc.notes());
         if self.settings.smart_render && encoder.segments_reused.is_none() {
             notes.push(
                 "smartRender: not used for this export (it needs Filmagic's own H.264 encoder: format h264 in MP4 or MOV, one pass, 8-bit, hardwareEncoding off)".into(),

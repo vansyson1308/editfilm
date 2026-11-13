@@ -52,12 +52,16 @@ pub const DRAFT_PRESET: &str = "Draft – Half Size Review";
 /// Constant rate factor of draft exports: small files that still show every cut, title and grade.
 pub const DRAFT_CRF: f32 = 30.0;
 
+/// Bits per pixel per frame of a draft encoded by a hardware encoder (VBR: NVENC and VideoToolbox
+/// take no CRF), about the size of a CRF 30 draft.
+pub const DRAFT_HARDWARE_BPP: f32 = 0.05;
+
 /// AAC bitrate of draft exports.
 pub const DRAFT_AUDIO_KBPS: u32 = 128;
 
 /// Draft settings ([`DRAFT_PRESET`], `file.exportMedia {"draft": true}`): H.264 at half the
 /// sequence's size, the encoder's `speed` preset, constant quality [`DRAFT_CRF`] and AAC at
-/// [`DRAFT_AUDIO_KBPS`]. 2.5–3× faster than the default export at 1080p (`docs/performance.md`).
+/// [`DRAFT_AUDIO_KBPS`]. 2.6–4× faster than the default export at 1080p (`docs/performance.md`).
 pub fn draft() -> ExportSettings {
     ExportSettings {
         scale: 0.5,

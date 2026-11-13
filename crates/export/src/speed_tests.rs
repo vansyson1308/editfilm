@@ -81,20 +81,23 @@ fn stages(pairs: &[(&str, f64)]) -> std::collections::BTreeMap<String, f64> {
 #[test]
 fn speed_notes_name_the_side_that_held_the_export_back() {
     // render-bound (the encoder waited for most of the export): try the GPU or a draft
-    let n = speed_notes(&report(false, false, 0), &stages(&[("render", 9.0), ("encode", 4.0), ("wait", 5.0)]), 10.0, Format::H264, true);
+    let n = speed_notes(&report(false, false, 0), &stages(&[("render", 9.0), ("encode", 4.0), ("wait", 5.0)]), 10.0, Format::H264, true, false);
     assert!(n.iter().any(|n| n.contains("gpuRendering auto") && n.contains("draft")), "{n:?}");
     // encode-bound: try the hardware encoder or a draft
-    let n = speed_notes(&report(false, false, 0), &stages(&[("render", 5.0), ("encode", 9.5), ("wait", 0.1)]), 10.0, Format::H264, true);
+    let n = speed_notes(&report(false, false, 0), &stages(&[("render", 5.0), ("encode", 9.5), ("wait", 0.1)]), 10.0, Format::H264, true, false);
     assert!(n.iter().any(|n| n.contains("hardwareEncoding auto")), "{n:?}");
     // asked for and not available: say what happened, not what to try
-    let n = speed_notes(&report(true, true, 0), &stages(&[("encode", 9.5), ("wait", 0.1)]), 10.0, Format::H264, true);
+    let n = speed_notes(&report(true, true, 0), &stages(&[("encode", 9.5), ("wait", 0.1)]), 10.0, Format::H264, true, false);
     assert!(n.iter().any(|n| n.contains("software encoder wrote this export") && n.contains("no hardware H.264 encoder")), "{n:?}");
     assert!(n.iter().any(|n| n.contains("rendered on the CPU")), "{n:?}");
+    // an export that is already a draft is not told to try one
+    let n = speed_notes(&report(false, false, 0), &stages(&[("render", 9.0), ("encode", 4.0), ("wait", 5.0)]), 10.0, Format::H264, true, true);
+    assert!(n.iter().any(|n| n.contains("gpuRendering auto")) && n.iter().all(|n| !n.contains("draft")), "{n:?}");
     // short exports, other formats and hostile timings give no advice and do not panic
-    assert!(speed_notes(&report(false, false, 0), &stages(&[("wait", 1.0)]), 1.0, Format::H264, true).is_empty());
-    assert!(speed_notes(&report(false, false, 0), &stages(&[("encode", 9.5)]), 10.0, Format::ProRes, true).is_empty());
+    assert!(speed_notes(&report(false, false, 0), &stages(&[("wait", 1.0)]), 1.0, Format::H264, true, false).is_empty());
+    assert!(speed_notes(&report(false, false, 0), &stages(&[("encode", 9.5)]), 10.0, Format::ProRes, true, false).is_empty());
     for secs in [f64::NAN, -1.0, f64::INFINITY, 0.0] {
-        let _ = speed_notes(&report(false, false, 0), &stages(&[("encode", f64::NAN), ("wait", f64::INFINITY)]), secs, Format::H264, true);
+        let _ = speed_notes(&report(false, false, 0), &stages(&[("encode", f64::NAN), ("wait", f64::INFINITY)]), secs, Format::H264, true, false);
     }
 }
 

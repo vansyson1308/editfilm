@@ -3088,6 +3088,7 @@
 	Discard Unsaved Changes	Descartar cambios no guardados
 	Does Not Contain	No contiene
 	Download Speech Model	Descargar modelo de voz
+	Draft – Half Size Review	Borrador – revisión a mitad de tamaño
 	Dynamic Trim Stop	Detener recorte dinámico
 	Edit Caption Text	Editar el texto del subtítulo
 	Ellipse Tool	Herramienta Elipse
@@ -3123,8 +3124,8 @@
 	H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps	H.264 3840×2160, VBR 1 pasada, 60 Mbps objetivo, AAC 320 kbps
 	H.264 3840×2160, VBR 2 pass, 50 Mbps	H.264 3840×2160, VBR 2 pasadas, 50 Mbps
 	H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps	H.264 9:16 vertical para videos cortos en redes sociales, escalado para rellenar, 12 Mbps
-	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 con el tamaño y la velocidad de fotogramas de la secuencia; 0,05 bits por píxel
 	H.264 at half the sequence's frame size, fast encoder, constant quality CRF 30, AAC 128 kbps: to review an edit quickly, not to deliver it	H.264 a la mitad del tamaño de fotograma de la secuencia, codificador rápido, calidad constante CRF 30, AAC 128 kbps: para revisar un montaje rápidamente, no para entregarlo
+	H.264 at the sequence's frame size and rate; 0.05 bits per pixel	H.264 con el tamaño y la velocidad de fotogramas de la secuencia; 0,05 bits por píxel
 	H.264 at the sequence's frame size and rate; 0.1 bits per pixel	H.264 con el tamaño y la velocidad de fotogramas de la secuencia; 0,1 bits por píxel
 	H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)	H.264 con el tamaño y la velocidad de fotogramas de la secuencia; la velocidad de bits se adapta al tamaño (0,2 bits por píxel)
 	HD Anamorphic 1080 (1.333)	HD anamórfico 1080 (1.333)
@@ -3159,7 +3160,6 @@
 	Masks	Máscaras
 	Match Source – Adaptive High Bitrate	Igual que el origen – velocidad de bits adaptable alta
 	Match Source – Adaptive Low Bitrate	Igual que el origen – velocidad de bits adaptable baja
-	Draft – Half Size Review	Borrador – revisión a mitad de tamaño
 	Match Source – Adaptive Medium Bitrate	Igual que el origen – velocidad de bits adaptable media
 	Matches	Coincide con
 	Maximize or Restore Active Frame	Maximizar o restaurar el marco activo

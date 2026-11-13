@@ -1167,6 +1167,12 @@ fn draft_exports_are_half_size_fast_and_say_so() {
     let r = resolve(&mut s, json!({"scale": 0.25, "crf": 20, "h264Preset": "balanced"}));
     assert_eq!((r["output"]["width"].as_u64(), r["output"]["height"].as_u64()), (Some(480), Some(270)), "{r}");
     assert_eq!((r["settings"]["crf"].as_f64(), r["settings"]["h264Preset"].as_str()), (Some(20.0), Some("balanced")));
+    // with hardware encoding asked for: VBR (NVENC and VideoToolbox take no CRF), still half size and fast
+    let r = resolve(&mut s, json!({"hardwareEncoding": "auto"}));
+    assert_eq!((r["settings"]["bitrateMode"].as_str(), r["settings"]["hardwareEncoding"].as_str()), (Some("vbr1Pass"), Some("auto")), "{r}");
+    assert_eq!(r["output"]["width"].as_u64(), Some(960));
+    let kbps = r["output"]["targetKbps"].as_f64().unwrap();
+    assert!((500.0..2000.0).contains(&kbps), "a draft-sized bitrate: {kbps}");
     let r = resolve(&mut s, json!({"preset": "H.264 High 10 Master"}));
     assert_eq!(r["settings"]["h264Profile"].as_str(), Some("high"), "a review copy is 8-bit: {r}");
     // the built-in preset is the same thing

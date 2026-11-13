@@ -532,7 +532,9 @@ second of wall time) the export is CPU-bound, and the encoder and the render ove
 - **Smart render** saves the encoding of unchanged segments, so a re-export runs at the speed of
   the render: 2.7× on plain footage, 1.6× on `edit`, whose render alone takes 14.5 s. Exporting
   with it from an empty cache costs the same as without (the segment encodes on a thread of its
-  own while the next one renders).
+  own while the next one renders). A smart file is not a normal export's stream: every segment
+  starts its rate control again (the demo's smart file was 49.7 MB against 65.1 MB, with a keyframe
+  per segment), and with CBR or VBR the rate holds per segment.
 - Not done: skipping the render of unchanged segments (it needs a key over everything a frame
   depends on), reduced-resolution decoding for drafts, and NVENC / GPU rendering measurements on
   Windows (no Windows machine here; the export result's `encoder` and `stages` fields report them).

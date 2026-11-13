@@ -157,8 +157,9 @@ pub struct Report {
     /// encoded-video formats: H.264, H.265, ProRes …).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoder: Option<Box<EncoderReport>>,
-    /// Wall seconds per export stage ([`Stage::name`]), so a slow export says where its time went.
-    /// Render and encode run at the same time, so they can add up to more than `seconds`.
+    /// Seconds per export stage ([`Stage::name`]), so a slow export says where its time went: summed
+    /// over the threads that ran the stage (and over any export running at the same time, as the
+    /// counters are process-wide), so they do not add up to `seconds`.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub stages: std::collections::BTreeMap<String, f64>,
     /// What an agent can act on (a hardware encoder that was asked for and not used …).

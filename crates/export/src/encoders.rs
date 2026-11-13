@@ -366,6 +366,8 @@ pub(crate) fn apv_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &E
 /// (HDR frames from their float pixels), length-prefixed samples with the `avcC` in the sample entry.
 struct H264Encoder {
     enc: filmagic_h264enc::Encoder,
+    /// Packets handed out so far (decoding order): the next one's decoding time, see [`H264Encoder::packets`].
+    coded: i64,
     w: u32,
     h: u32,
     rate: FrameRate,
@@ -422,9 +424,21 @@ impl H264Encoder {
         self.enc.encode16(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))
     }
 
-    fn packets(&self, ps: Vec<filmagic_h264enc::Packet>) -> Vec<EncodedPacket> {
+    /// MP4 samples of `ps`. The k-th picture (decoding order) decodes at `k` frames minus the
+    /// reordering delay (the track's edit list, [`VideoEncoder::media_start`]), the time the encoder
+    /// gives it whenever the stream has two pictures or more; the encoder cannot know the delay from
+    /// a single picture, and gave a one-frame export a decoding time that put its only frame before
+    /// the edit list's start, so nothing was shown (#18, QC B1).
+    fn packets(&mut self, ps: Vec<filmagic_h264enc::Packet>) -> Vec<EncodedPacket> {
+        let den = self.rate.den;
+        let delay = i64::from(self.enc.delay() > 0);
         ps.into_iter()
-            .map(|p| EncodedPacket { data: p.data, key: p.keyframe, duration: self.rate.den as u32, composition_offset: (p.pts - p.dts) as i32 })
+            .map(|p| {
+                let dts = (self.coded - delay).saturating_mul(den);
+                self.coded += 1;
+                let offset = p.pts.saturating_sub(dts).clamp(0, i64::from(i32::MAX));
+                EncodedPacket { data: p.data, key: p.keyframe, duration: den as u32, composition_offset: offset as i32 }
+            })
             .collect()
     }
 }
@@ -555,14 +569,28 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     }
     // smart render: Filmagic's encoder in cached segments (8-bit, one pass, MP4 / MOV)
     if s.smart_render && cfg.bit_depth == 8 && matches!(s.h264_pass, H264Pass::Single) && !s.format.is_mxf() {
-        let dir = s.smart_render_dir.as_deref().filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from).unwrap_or_else(crate::smart::default_dir);
-        return Some(crate::smart::SmartH264::new(cfg, w, h, rate, s.signal, Some(dir)).map(|e| Box::new(e) as Box<dyn VideoEncoder>));
+        let custom = s.smart_render_dir.as_deref().filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from);
+        let dir = match custom {
+            Some(d) => crate::smart::prepare_dir(&d, false).map(|()| d),
+            None => crate::smart::default_dir()
+                .ok_or_else(|| "this system names no cache directory for the user".to_string())
+                .and_then(|d| crate::smart::prepare_dir(&d, true).map(|()| d)),
+        };
+        let mut notes = Vec::new();
+        if matches!(s.bitrate_mode, BitrateMode::Cbr | BitrateMode::Vbr1Pass) {
+            notes.push(
+                "smartRender: rate control restarts in every segment, so the bitrate is held per segment, not across the file; bitrateMode crf suits smart render best"
+                    .to_string(),
+            );
+        }
+        return Some(crate::smart::SmartH264::new(cfg, w, h, rate, s.signal, dir, notes).map(|e| Box::new(e) as Box<dyn VideoEncoder>));
     }
     Some(
         filmagic_h264enc::Encoder::new(cfg)
             .map(|enc| {
                 let (y, u, v, y16, u16, v16) = Default::default();
-                Box::new(H264Encoder { enc, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() }) as Box<dyn VideoEncoder>
+                Box::new(H264Encoder { enc, coded: 0, w, h, rate, y, u, v, y16, u16, v16, signal: s.signal, ready: Default::default() })
+                    as Box<dyn VideoEncoder>
             })
             .map_err(|e| ExportError::Encode(e.to_string())),
     )

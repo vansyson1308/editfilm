@@ -65,6 +65,10 @@ pub trait VideoEncoder: Send {
     fn smart_render_stats(&self) -> Option<(u64, u64)> {
         None
     }
+    /// What the encoder wants the export's result to say ([`crate::Report::notes`]).
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Audio encoder (AAC) plugged in by codec crates; PCM is built in.

@@ -335,12 +335,15 @@ pub struct ExportSettings {
     /// Smart render (#18): encode H.264 in independent segments (one keyframe interval each) and
     /// reuse a segment's packets from the cache when every picture it encodes is the same as last
     /// time, so a re-export after a small change re-encodes only the segments it touched. Every
-    /// frame is still rendered (that is how a change is found). Filmagic's own H.264 encoder only:
-    /// one pass, MP4 / MOV, 8-bit; otherwise the export runs as usual and says so.
+    /// frame is still rendered (that is how a change is found). The file is the one a smart export
+    /// with an empty cache writes, not a normal export's: rate control restarts in every segment.
+    /// Filmagic's own H.264 encoder only: one pass, MP4 / MOV, 8-bit; otherwise the export runs as
+    /// usual and says so.
     #[serde(default)]
     pub smart_render: bool,
-    /// Where smart render keeps its segments (None: `filmagic-smart-render` in the system's temporary
-    /// directory). Several gigabytes at most; the oldest segments go first.
+    /// Where smart render keeps its segments (None: the user's cache directory, see
+    /// `smart::default_dir`). On Unix it must belong to the user and not be writable by others. At
+    /// most 4 GiB; the least recently used segments go first.
     #[serde(default)]
     pub smart_render_dir: Option<String>,
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the

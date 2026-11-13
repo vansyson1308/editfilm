@@ -363,9 +363,15 @@ fn apply_draft(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()
         }
     }
     if !["crf", "bitrateMode", "bitrateKbps"].iter().any(|k| p.get(*k).is_some()) {
-        settings.bitrate_mode = draft.bitrate_mode;
-        settings.crf = draft.crf;
-        settings.adaptive_bitrate = None;
+        if settings.hardware_encoding == HardwareEncoding::Auto {
+            // hardware encoders take no CRF: a low VBR, so `hardwareEncoding: auto` still gets the hardware
+            settings.bitrate_mode = BitrateMode::Vbr1Pass;
+            settings.adaptive_bitrate = Some(filmagic_export::presets::DRAFT_HARDWARE_BPP);
+        } else {
+            settings.bitrate_mode = draft.bitrate_mode;
+            settings.crf = draft.crf;
+            settings.adaptive_bitrate = None;
+        }
         settings.max_bitrate_kbps = None;
     }
     if p.get("h264Preset").is_none() {

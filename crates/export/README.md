@@ -34,7 +34,9 @@ errors.
   did not change; the file is byte-identical to one written with an empty cache
   (`smart_tests`: unchanged, one segment changed, a change across a boundary, other settings,
   damaged cache files, a mutation fuzz of the cache file parser, and an ffmpeg decode with strict
-  error detection). Every frame is still rendered: the key comes from the encoder's input, so no
+  error detection, single-picture segments timed like a normal export, `idr_pic_id` never repeated
+  across a join, a per-user cache directory). It is not a normal export's stream: rate control
+  restarts per segment. Every frame is still rendered: the key comes from the encoder's input, so no
   change to the project, its media or fonts can be missed. Skipping the render of unchanged
   segments would need a key over everything a frame depends on (clips, effects, keyframes, nested
   sequences, source files, fonts, caption tracks, export effects) and is not done.
