@@ -309,3 +309,25 @@ fn edits_on_long_gop_h264_return_quickly() {
     }
 }
 
+/// 23.976 fps footage in a 24 fps sequence: the cut is found in the media's own frames and the
+/// razor's distance from it is counted in them too, with timeline times from the time parameters.
+#[test]
+fn mixed_rates_count_in_the_media_frames() {
+    let dir = tmp_dir("srccuts-mixed");
+    let path = dir.join("shots.mov");
+    let media = filmagic_time::FrameRate::FPS_23_976;
+    crate::media_test_util::make_shots_movie_at(&path, &[(DemoScene::OceanSunset, 20), (DemoScene::CityNight, 16), (DemoScene::Forest, 14)], 160, 90, media);
+    let (mut s, items, _) = session_with(&[&path]);
+    let seq = s.state.active_sequence.unwrap();
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().settings.frame_rate = filmagic_time::FrameRate::FPS_24;
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    let r = s.execute("media.sourceCuts", json!({"item": items[0].0, "wait": true})).unwrap();
+    let frames: Vec<i64> = r["cuts"].as_array().unwrap().iter().map(|c| c["frame"].as_i64().unwrap()).collect();
+    assert_eq!(frames, vec![20, 36], "{r}");
+    assert!((r["cuts"][0]["mediaSeconds"].as_f64().unwrap() - 20.0 * 1001.0 / 24000.0).abs() < 1e-3, "{r}");
+    // two media frames after the cut, given in seconds (a time parameter)
+    let at = media.tick_of(22).seconds() + 0.001;
+    let r = s.execute("timeline.razor", json!({"clip": clip.0, "seconds": at})).unwrap();
+    let w = warnings(&r);
+    assert!(w.iter().any(|w| w.contains("frame(s) after a cut in its source at 0.834 s")), "{r}");
+}

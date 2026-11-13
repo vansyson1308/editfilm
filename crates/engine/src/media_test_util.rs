@@ -130,7 +130,11 @@ pub fn psnr(a: &[u8], b: &[u8]) -> f64 {
 /// Write a 24 fps ProRes movie of demo scenes played one after the other (`shots` = (scene,
 /// frames)), with no sound: it holds cuts of its own at the running sums of the frame counts.
 pub fn make_shots_movie(path: &Path, shots: &[(DemoScene, i64)], w: u32, h: u32) {
-    let rate = FrameRate::FPS_24;
+    make_shots_movie_at(path, shots, w, h, FrameRate::FPS_24);
+}
+
+/// [`make_shots_movie`] at `rate`.
+pub fn make_shots_movie_at(path: &Path, shots: &[(DemoScene, i64)], w: u32, h: u32, rate: FrameRate) {
     let mut p = Project::new("fixture");
     let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
     let mut sources: Vec<(ItemId, filmagic_media::SharedSource)> = Vec::new();
