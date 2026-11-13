@@ -402,7 +402,8 @@ async fn cli_commands(a: &Args, cmd: &str) {
         print(a, &Value::Array(list));
     } else {
         for c in &list {
-            let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+            // ASCII first (Windows pipes), so the columns are padded to what is printed
+            let s = |k: &str| console::stdout_text(c[k].as_str().unwrap_or("")).into_owned();
             outln!("{:<32} {:<34} {:<14} {}", s("id"), s("label"), s("shortcut"), s("params"));
         }
     }
@@ -582,11 +583,12 @@ async fn cli_mcp(a: &Args) {
         usage("mcp: --bridge drives the running app; it does not take --headless, --demo or --project (open projects there with file.open)");
     }
     let dir = data_dir(a);
-    let found = if headless { filmagic_automation::app_link::Found::Missing } else { find_app(dir.as_deref()).await };
-    let server = match choose(a.opt("--bridge"), headless, &found, std::env::var("FILMAGIC_CONTROL_TOKEN").ok()) {
+    let env_token = std::env::var(filmagic_automation::app_link::TOKEN_ENV).ok();
+    let found = if headless { filmagic_automation::app_link::Found::Missing } else { find_app(dir.as_deref(), env_token.as_deref()).await };
+    let server = match choose(a.opt("--bridge"), headless, &found, env_token) {
         Start::Bridge { addr, token, from_file } => {
             if from_file {
-                diag(format_args!("filmagic-cli mcp: driving the open Filmagic app on {addr} (from its control file)"));
+                diag(format_args!("filmagic-cli mcp: driving the open Filmagic app on {addr} (it proved its credential)"));
             }
             filmagic_automation::FilmagicMcp::bridge_with_token(&addr, token).unwrap_or_else(|e| usage(e))
         }

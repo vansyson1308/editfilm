@@ -17,7 +17,9 @@
 //!   "…", "->" for "→") and shows any other non-ASCII character as `?`.
 //!
 //! `FILMAGIC_CLI_UTF8=1` turns this off, for a reader that decodes UTF-8 (PowerShell after
-//! `[Console]::OutputEncoding = [Text.Encoding]::UTF8`, Git Bash, a file read as UTF-8).
+//! `[Console]::OutputEncoding = [Text.Encoding]::UTF8`, a file read as UTF-8). Git Bash and other
+//! MSYS2 terminals (`MSYSTEM` set) decode UTF-8 and talk to programs through pipes, so there the
+//! output stays UTF-8 without it.
 //! Elsewhere (macOS, Linux) output is always UTF-8. `filmagic-cli mcp` is not affected: MCP is
 //! JSON-RPC over UTF-8 pipes by definition.
 
@@ -28,14 +30,15 @@ use std::sync::OnceLock;
 /// The environment variable that keeps output UTF-8 on Windows.
 pub const UTF8_ENV: &str = "FILMAGIC_CLI_UTF8";
 
-/// Whether output to a stream must be ASCII: on Windows, when the stream is not a console and
-/// [`UTF8_ENV`] is not `1`.
-pub fn needs_ascii(windows: bool, terminal: bool, utf8_env: Option<&str>) -> bool {
-    windows && !terminal && utf8_env.map(str::trim) != Some("1")
+/// Whether output to a stream must be ASCII: on Windows, when the stream is not a console,
+/// [`UTF8_ENV`] is not `1` and the reader is not an MSYS2 terminal (`msystem`: `MSYSTEM` is set).
+pub fn needs_ascii(windows: bool, terminal: bool, utf8_env: Option<&str>, msystem: bool) -> bool {
+    windows && !terminal && !msystem && utf8_env.map(str::trim) != Some("1")
 }
 
 fn decide(terminal: bool) -> bool {
-    needs_ascii(cfg!(windows), terminal, std::env::var(UTF8_ENV).ok().as_deref())
+    let msystem = std::env::var_os("MSYSTEM").is_some_and(|v| !v.is_empty());
+    needs_ascii(cfg!(windows), terminal, std::env::var(UTF8_ENV).ok().as_deref(), msystem)
 }
 
 /// [`needs_ascii`] for standard output, decided once.
@@ -134,13 +137,14 @@ mod tests {
 
     #[test]
     fn only_windows_pipes_need_ascii() {
-        assert!(needs_ascii(true, false, None));
-        assert!(!needs_ascii(true, true, None), "a real console is written in UTF-16 by std");
-        assert!(!needs_ascii(false, false, None), "macOS and Linux readers decode UTF-8");
-        assert!(!needs_ascii(true, false, Some("1")));
-        assert!(!needs_ascii(true, false, Some(" 1 ")));
+        assert!(needs_ascii(true, false, None, false));
+        assert!(!needs_ascii(true, true, None, false), "a real console is written in UTF-16 by std");
+        assert!(!needs_ascii(false, false, None, false), "macOS and Linux readers decode UTF-8");
+        assert!(!needs_ascii(true, false, None, true), "Git Bash / MSYS2 decode UTF-8");
+        assert!(!needs_ascii(true, false, Some("1"), false));
+        assert!(!needs_ascii(true, false, Some(" 1 "), false));
         for other in ["", "0", "true", "yes", "2"] {
-            assert!(needs_ascii(true, false, Some(other)), "{other}");
+            assert!(needs_ascii(true, false, Some(other), false), "{other}");
         }
     }
 
@@ -165,5 +169,13 @@ mod tests {
             assert_eq!(serde_json::from_str::<Value>(&a).unwrap(), v);
         }
         assert!(ascii_json("{\"a\":1}").is_ascii());
+    }
+
+    /// Padding counts characters: a label padded after it was made ASCII lines up with the others.
+    #[test]
+    fn ascii_labels_pad_to_their_printed_width() {
+        let row = |label: &str| format!("{:<12}|", ascii_text(label));
+        assert_eq!(row("Save As…").len(), row("Open").len());
+        assert_eq!(row("Save As…"), "Save As...  |");
     }
 }

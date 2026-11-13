@@ -6,10 +6,18 @@
 //! bounded ([`MAX_LINE`]) and so is the number of open connections ([`MAX_CONNECTIONS`]); junk
 //! never reaches the UI thread. Every request must carry the session credential: the value of
 //! `FILMAGIC_CONTROL_TOKEN` when it is set (it must then be 64 hex characters, or the listener stays
-//! closed), else a random one made for this session. Either way the port and credential are written
-//! to the owner-only control file in the data directory (`filmagic_engine::control_file`), which
-//! `filmagic-cli mcp` reads to attach to this app, and removed again when the app exits (#17).
-//! See `docs/control-protocol.md`.
+//! closed), else a random one made for this session (#17).
+//!
+//! The port goes to this app's endpoint file in the per-user control folder
+//! (`filmagic_engine::control_file`), which `filmagic-cli mcp` reads to attach, and is removed when
+//! the app exits. A session credential goes there too, since nobody else has it. An inherited
+//! `FILMAGIC_CONTROL_TOKEN` never does: it shares the credential with the owner's bridge process
+//! without storing it anywhere, which is what the variable is for, and those clients have it.
+//!
+//! The one request that needs no credential is `control.hello`: the client sends a nonce and the
+//! server answers with a proof (an HMAC under the credential of the nonce and this port), so a
+//! client can tell this app from a program that took over the port before it sends the
+//! credential. See `docs/control-protocol.md`.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -72,10 +80,12 @@ impl DisabledWhy {
 
 /// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
 /// answer requests (until then they are rejected with a retryable error), and — when the server
-/// is *not* running — why (#3436), for the log and (for a bad token) the status bar. When it runs,
-/// its port and credential are published in `data_dir`'s control file (#17).
-pub fn start(port: u16, ctx: egui::Context, data_dir: Option<PathBuf>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    let token = match session_token(std::env::var("FILMAGIC_CONTROL_TOKEN").ok(), random_token) {
+/// is *not* running — why (#3436), for the log and the status bar. When it runs, its endpoint is
+/// published in `control_dir` (#17).
+pub fn start(port: u16, ctx: egui::Context, control_dir: Option<PathBuf>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    let env = std::env::var("FILMAGIC_CONTROL_TOKEN").ok();
+    let inherited = env.as_deref().is_some_and(|t| !t.is_empty());
+    let token = match session_token(env, random_token) {
         Ok(t) => t,
         Err(why) => {
             // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
@@ -86,8 +96,13 @@ pub fn start(port: u16, ctx: egui::Context, data_dir: Option<PathBuf>) -> (Recei
         }
     };
     let (rx, ready, why, bound) = start_with_token(port, ctx, Some(token.clone()));
-    if let (Some(port), Some(dir)) = (bound, data_dir) {
-        publish(&dir, port, &token);
+    match (bound, control_dir) {
+        // an inherited credential is not written down (see the module documentation)
+        (Some(port), Some(dir)) => publish(&dir, port, (!inherited).then_some(token.as_str())),
+        (Some(_), None) => {
+            log::warn!("no control folder (no data directory, or no %LOCALAPPDATA% on Windows): agents need FILMAGIC_CONTROL_TOKEN and --bridge")
+        }
+        (None, _) => {}
     }
     (rx, ready, why)
 }
@@ -110,34 +125,36 @@ fn random_token() -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The control file this app wrote: removed by [`unpublish`] when the app exits.
-static PUBLISHED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+/// The endpoint file this app wrote (folder and port): removed by [`unpublish`] when the app exits.
+static PUBLISHED: Mutex<Option<(PathBuf, u16)>> = Mutex::new(None);
 
-/// Write the control file for `port` and `token` in `dir`. A failure is logged and the server keeps
-/// running: agents can still reach it through `FILMAGIC_CONTROL_TOKEN` and `--bridge`.
-fn publish(dir: &Path, port: u16, token: &str) {
+/// Write this app's endpoint file for `port` in `dir`, with `token` when it is a session credential.
+/// A failure is logged and the server keeps running: agents can still reach it through
+/// `FILMAGIC_CONTROL_TOKEN` and `--bridge`.
+fn publish(dir: &Path, port: u16, token: Option<&str>) {
     let endpoint = filmagic_engine::control_file::ControlEndpoint {
         port,
-        token: token.to_string(),
         pid: std::process::id(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        token: token.map(str::to_string),
     };
     match filmagic_engine::control_file::write(dir, &endpoint) {
         Ok(path) => {
             // the path only: the credential never goes to the log
             log::info!("control endpoint written to {}", path.display());
-            *PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner) = Some((dir.to_path_buf(), token.to_string()));
+            *PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner) = Some((dir.to_path_buf(), port));
         }
-        Err(e) => log::warn!("could not write the control file in {}: {e}; agents need FILMAGIC_CONTROL_TOKEN and --bridge", dir.display()),
+        Err(e) => log::warn!("could not write the control endpoint in {}: {e}; agents need FILMAGIC_CONTROL_TOKEN and --bridge", dir.display()),
     }
 }
 
-/// Remove the control file this app wrote, if another app has not replaced it since. Called when
-/// the app exits; a crash leaves the file, which readers recognise as stale (`control.ping`).
+/// Remove this app's endpoint file (only its own: another app keeps its file). Called when the app
+/// exits; a crash leaves the file, which readers recognise by the app's free instance lock and
+/// remove.
 pub fn unpublish() {
-    let Some((dir, token)) = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
-    if let Err(e) = filmagic_engine::control_file::remove_if_ours(&dir, &token) {
-        log::warn!("could not remove the control file in {}: {e}", dir.display());
+    let Some((dir, port)) = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
+    if let Err(e) = filmagic_engine::control_file::remove_own(&dir, std::process::id(), port) {
+        log::warn!("could not remove the control endpoint in {}: {e}", dir.display());
     }
 }
 
@@ -151,14 +168,23 @@ fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Re
     };
     match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
-            let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+            // `--control 0` needs the system's choice; without it nothing could connect anyway
+            let bound = match listener.local_addr() {
+                Ok(a) => a.port(),
+                Err(_) if port != 0 => port,
+                Err(e) => {
+                    let why = DisabledWhy::Bind { port, error: format!("the bound port is unknown: {e}") };
+                    log::warn!("control server disabled: {}", why.reason());
+                    return (rx, Arc::new(AtomicBool::new(true)), Some(why), None);
+                }
+            };
             log::info!("control server listening on 127.0.0.1:{bound}");
             // Requests that arrive before the app can answer them are rejected with a retryable
             // error instead of queued: a queued request outlives its 60 s reply wait, and a
             // client retry would then apply the same mutation twice (#3436).
             let ready = Arc::new(AtomicBool::new(false));
             let loop_ready = Arc::clone(&ready);
-            std::thread::spawn(move || accept_loop(listener, tx, ctx, token, loop_ready));
+            std::thread::spawn(move || accept_loop(listener, tx, ctx, token, bound, loop_ready));
             (rx, ready, None, Some(bound))
         }
         Err(error) => {
@@ -169,7 +195,7 @@ fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Re
     }
 }
 
-fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String, ready: Arc<AtomicBool>) {
+fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Context, token: String, port: u16, ready: Arc<AtomicBool>) {
     let open = Arc::new(AtomicUsize::new(0));
     for mut stream in listener.incoming().flatten() {
         if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
@@ -186,7 +212,7 @@ fn accept_loop(listener: TcpListener, tx: Sender<ControlRequest>, ctx: egui::Con
         let slot = Slot(Arc::clone(&open));
         let spawned = std::thread::Builder::new().name("control-conn".into()).spawn(move || {
             let _slot = slot;
-            serve(stream, &tx, &ctx, &token, ready);
+            serve(stream, &tx, &ctx, &token, port, ready);
         });
         if let Err(e) = spawned {
             log::warn!("control server could not start a connection thread: {e}");
@@ -203,8 +229,8 @@ impl Drop for Slot {
     }
 }
 
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, ready: Arc<AtomicBool>) {
-    if let Err(e) = serve_with_timeout(stream, tx, ctx, token, CONNECTION_TIMEOUT, ready) {
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, ctx: &egui::Context, token: &str, port: u16, ready: Arc<AtomicBool>) {
+    if let Err(e) = serve_with_timeout(stream, tx, ctx, token, port, CONNECTION_TIMEOUT, ready) {
         log::warn!("could not configure control connection: {e}");
     }
 }
@@ -214,19 +240,14 @@ fn serve_with_timeout(
     tx: &Sender<ControlRequest>,
     ctx: &egui::Context,
     token: &str,
+    port: u16,
     timeout: Duration,
     ready: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     let read = stream.try_clone()?;
-    serve_lines(read, stream, token, |method, params| {
-        // Answered here, not by the UI thread: proves to a reader of the control file that this port
-        // is this app and accepts its credential (authentication already passed), even while the app
-        // is starting or busy (#17).
-        if method == "control.ping" {
-            return Some(ping_reply());
-        }
+    serve_lines(read, stream, token, port, |method, params| {
         // Until the app can drain the queue, a request would outlive its 60 s reply wait and
         // still run after startup: reject it instead, so a client retry is the only copy (#3436).
         if !ready.load(Ordering::Relaxed) {
@@ -240,9 +261,16 @@ fn serve_with_timeout(
     Ok(())
 }
 
-/// The reply to `control.ping`.
-fn ping_reply() -> Value {
-    json!({"ok": true, "result": {"app": "filmagic", "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id()}})
+/// The reply to `control.hello`: who this is, and the proof that it holds the credential for this
+/// port (`filmagic_engine::control_file::proof`). Answered on this thread, also while the app is
+/// starting or busy, and without the credential: a client must check the server before it sends it.
+fn hello_reply(token: &str, port: u16, nonce: &str) -> Value {
+    match filmagic_engine::control_file::proof(token, port, nonce) {
+        Some(proof) => {
+            json!({"ok": true, "result": {"app": "filmagic", "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "port": port, "proof": proof}})
+        }
+        None => json!({"ok": false, "error": "could not compute the hello proof"}),
+    }
 }
 
 /// One parsed line.
@@ -251,6 +279,11 @@ enum Line {
         id: Value,
         method: String,
         params: Value,
+    },
+    /// `control.hello` with a valid nonce: answered without the credential.
+    Hello {
+        id: Value,
+        nonce: String,
     },
     Blank,
     /// Not a request: reply with this error and close the connection.
@@ -275,6 +308,15 @@ fn parse_line(bytes: &[u8], token: &str) -> Line {
     let Some(method) = obj.get("method").and_then(Value::as_str) else {
         return Line::Reject("not a control request (missing string `method`); closing the connection".into());
     };
+    // The one request without the credential: it reveals nothing but a proof for a nonce the client
+    // chose, bound to this port, and it lets the client check this server before trusting it.
+    if method == "control.hello" {
+        let nonce = obj.get("params").and_then(|p| p.get("nonce")).and_then(Value::as_str).filter(|n| filmagic_engine::control_file::is_valid_nonce(n));
+        return match nonce {
+            Some(n) => Line::Hello { id: obj.get("id").cloned().unwrap_or(Value::Null), nonce: n.to_string() },
+            None => Line::Reject("control.hello needs `params.nonce`: 64 hex characters; closing the connection".into()),
+        };
+    }
     // Authenticate every request before constructing or enqueueing a ControlRequest. A valid
     // earlier request must not authorize a later one with a missing or incorrect credential.
     let authenticated = obj.get("token").and_then(Value::as_str).is_some_and(|supplied| bool::from(supplied.as_bytes().ct_eq(token.as_bytes())));
@@ -319,8 +361,9 @@ fn read_bounded_line(reader: &mut impl BufRead, buf: &mut Vec<u8>, max: usize) -
 
 /// Serve requests from `read`, answering on `out`, until the peer closes, sends something that is
 /// not a request, or `handle` returns `None` (app gone). `handle` gets `(method, params)` and
-/// returns the reply object (the request's `id` is added here).
-fn serve_lines<R: Read, W: Write>(read: R, mut out: W, token: &str, mut handle: impl FnMut(String, Value) -> Option<Value>) {
+/// returns the reply object (the request's `id` is added here). `control.hello` is answered here
+/// with the proof for `port`.
+fn serve_lines<R: Read, W: Write>(read: R, mut out: W, token: &str, port: u16, mut handle: impl FnMut(String, Value) -> Option<Value>) {
     let mut reader = BufReader::new(read);
     let mut buf = Vec::new();
     loop {
@@ -333,6 +376,16 @@ fn serve_lines<R: Read, W: Write>(read: R, mut out: W, token: &str, mut handle: 
             Ok(true) => match parse_line(&buf, token) {
                 Line::Blank => continue,
                 Line::Reject(e) => e,
+                Line::Hello { id, nonce } => {
+                    let mut r = hello_reply(token, port, &nonce);
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("id".into(), id);
+                    }
+                    if writeln!(out, "{r}").and_then(|()| out.flush()).is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 Line::Request { id, method, params } => {
                     let Some(mut r) = handle(method, params) else { return };
                     if let Some(o) = r.as_object_mut() {

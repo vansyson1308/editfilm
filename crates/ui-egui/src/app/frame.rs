@@ -105,6 +105,9 @@ impl FilmagicApp {
                         tl!("The control server is disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)")
                             .into()
                 }
+                crate::ControlNotice::NoCredential => {
+                    self.ui.status = tl!("The control server is disabled: no control credential could be made (see the log, filmagic.log)").into()
+                }
             }
         }
         let hint = if !self.ui.status.is_empty() { self.ui.status.clone() } else { self.hint_text() };

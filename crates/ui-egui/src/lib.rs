@@ -204,6 +204,8 @@ pub enum ControlNotice {
     /// `FILMAGIC_CONTROL_TOKEN` is set but malformed (unset, the app makes a session credential).
     /// (A bind failure is only logged until #3318 reworks port-collision reporting.)
     Token,
+    /// The operating system's random source failed, so no session credential could be made.
+    NoCredential,
 }
 
 pub struct FilmagicApp {

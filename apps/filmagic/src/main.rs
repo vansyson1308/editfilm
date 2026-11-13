@@ -9,7 +9,7 @@
 //!
 //! `--control <port>` (or `FILMAGIC_CONTROL_PORT`; `0` picks a free port) starts a localhost
 //! JSON-lines control server. Its credential is `FILMAGIC_CONTROL_TOKEN` when set, else a random one
-//! for the session; the port and credential go to the owner-only `<data dir>/control.json`, which
+//! for the session; the port (and a session credential) go to the per-user control folder, which
 //! `filmagic-cli mcp` reads to attach (see `docs/control-protocol.md`, and
 //! `filmagic_ui_egui::control` for the methods). A port that is not a number is an error from
 //! either source.
@@ -120,6 +120,12 @@ fn main() -> eframe::Result {
         }
     };
     let data_root = launch.data_dir.clone().or_else(default_data_dir);
+    // Held until the process ends, with or without `--control`: agents tell a running app (and one
+    // with no control server) from one that ended by it (`filmagic_engine::control_file`, #17).
+    let mut instance = data_root
+        .as_deref()
+        .and_then(filmagic_engine::control_file::control_dir)
+        .and_then(|dir| filmagic_engine::control_file::InstanceLock::acquire(&dir).map_err(|e| log::warn!("no instance lock in {}: {e}", dir.display())).ok());
     let log_dir = data_root.as_ref().map(|d| d.join(logging::LOG_DIR));
     log::info!("Filmagic {} ({} {})", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
     // The log file lives next to the crash logs; opened after the arguments, so `--help`,
@@ -196,6 +202,8 @@ fn main() -> eframe::Result {
                 // `run_native` returns at once, #2558): Filmagic starts again in that mode, once.
                 if next_saved && std::env::var_os(RELAUNCHED).is_none() {
                     graphics.finish();
+                    // the new start takes its own; this process only waits for it
+                    drop(instance.take());
                     match relaunch(graphics.mode()) {
                         Ok(code) => std::process::exit(code),
                         Err(e) => log::error!("can't start Filmagic again in graphics mode {}: {e}", graphics.mode().name()),
@@ -221,6 +229,7 @@ fn main() -> eframe::Result {
     graphics.finish();
     // Agents must not try to attach to a server that is gone (#17).
     control_server::unpublish();
+    drop(instance);
     // The window could not be created (no usable GPU / graphics driver, no display): say so
     // instead of exiting silently, and keep the reason in the crash log.
     if let Err(e) = &started {
@@ -318,8 +327,9 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        // The control file goes in the same data directory as auto-save and the logs (#17).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone(), data_dir.clone().or_else(default_data_dir)));
+        // The endpoint goes in the per-user control folder of this data directory (#17).
+        let control_dir = data_dir.clone().or_else(default_data_dir).as_deref().and_then(filmagic_engine::control_file::control_dir);
+        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone(), control_dir));
         if control_input_only && let Some((_, _, Some(why))) = &control {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }
@@ -485,8 +495,10 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
             // The token cause is shown in the app as a fully translated sentence (the English
             // `reason()` stays for the log and the input-only error); a bind failure stays in the
             // log for now — port-collision reporting is #3318's rework.
-            if let Some(control_server::DisabledWhy::Token) = &disabled {
-                app = app.with_control_notice(filmagic_ui_egui::ControlNotice::Token);
+            match &disabled {
+                Some(control_server::DisabledWhy::Token) => app = app.with_control_notice(filmagic_ui_egui::ControlNotice::Token),
+                Some(control_server::DisabledWhy::Random(_)) => app = app.with_control_notice(filmagic_ui_egui::ControlNotice::NoCredential),
+                _ => {}
             }
             // From here the app drains the queue on its first pass: stop rejecting requests.
             ready.store(true, Ordering::Relaxed);

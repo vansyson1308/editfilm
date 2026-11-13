@@ -5,7 +5,7 @@ const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 fn run(input: &[u8]) -> (Vec<Value>, Vec<String>) {
     let mut out = Vec::new();
     let mut calls = Vec::new();
-    serve_lines(input, &mut out, TOKEN, |m, _p| {
+    serve_lines(input, &mut out, TOKEN, 1, |m, _p| {
         calls.push(m);
         Some(json!({"ok": true, "result": null}))
     });
@@ -90,7 +90,7 @@ fn tcp_connection_is_closed_after_junk() {
     let server = std::thread::spawn(move || {
         let (s, _) = listener.accept().unwrap();
         let read = s.try_clone().unwrap();
-        serve_lines(read, s, TOKEN, |_, _| Some(json!({"ok": true})));
+        serve_lines(read, s, TOKEN, 1, |_, _| Some(json!({"ok": true})));
     });
     let mut c = TcpStream::connect(addr).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -109,7 +109,7 @@ fn extra_connections_are_refused() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, _rx) = channel::<ControlRequest>();
-    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), TOKEN.into(), Arc::new(AtomicBool::new(true))));
+    std::thread::spawn(move || accept_loop(listener, tx, egui::Context::default(), TOKEN.into(), 1, Arc::new(AtomicBool::new(true))));
     // Idle connections are accepted in order and held open.
     let held: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(addr).unwrap()).collect();
     let mut extra = TcpStream::connect(addr).unwrap();
@@ -132,7 +132,7 @@ fn timed_out_connection_releases_slot(partial: &[u8]) {
         let (stream, _) = listener.accept().unwrap();
         {
             let _slot = Slot(counted);
-            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
+            serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, 1, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
         }
         done.send(()).unwrap();
     });
@@ -182,7 +182,7 @@ fn idle_timeout_does_not_cancel_a_pending_ui_reply() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
+        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, 1, Duration::from_millis(100), Arc::new(AtomicBool::new(true))).unwrap();
     });
     let mut client = TcpStream::connect(addr).unwrap();
     client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -212,7 +212,7 @@ fn active_connection_can_be_reused() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, Duration::from_secs(5), Arc::new(AtomicBool::new(true))).unwrap();
+        serve_with_timeout(stream, &tx, &egui::Context::default(), TOKEN, 1, Duration::from_secs(5), Arc::new(AtomicBool::new(true))).unwrap();
     });
     let mut client = TcpStream::connect(addr).unwrap();
     client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -335,7 +335,7 @@ fn tcp_authentication_happens_before_enqueueing() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (s, _) = listener.accept().unwrap();
-        serve(s, &tx, &egui::Context::default(), TOKEN, Arc::new(AtomicBool::new(true)));
+        serve(s, &tx, &egui::Context::default(), TOKEN, 1, Arc::new(AtomicBool::new(true)));
     });
     let mut c = TcpStream::connect(addr).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -355,7 +355,7 @@ fn authenticated_tcp_request_reaches_the_ui_queue() {
     let (tx, rx) = channel::<ControlRequest>();
     let server = std::thread::spawn(move || {
         let (s, _) = listener.accept().unwrap();
-        serve(s, &tx, &egui::Context::default(), TOKEN, Arc::new(AtomicBool::new(true)));
+        serve(s, &tx, &egui::Context::default(), TOKEN, 1, Arc::new(AtomicBool::new(true)));
     });
     let params = json!({"command": "file.saveAs", "params": {"path": "/owner/project.fcproj"}});
     let mut c = TcpStream::connect(addr).unwrap();
@@ -395,48 +395,75 @@ fn random_tokens_are_valid_and_differ() {
     assert_ne!(a, b);
 }
 
-/// `control.ping` is answered by the server thread, also before the app is ready, so a reader of the
-/// control file can tell a live app from a stale file (#17); it needs the credential like anything else.
+/// Send one line on a fresh connection to `port` and read the reply.
+fn ask(port: u16, request: &Value) -> Value {
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(c, "{request}").unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+/// S1 (#17 review): `control.hello` is answered without the credential, by the server thread (also
+/// before the app is ready), with a proof bound to the nonce and this port. A client checks it
+/// before it sends the credential; nothing reaches the UI queue.
 #[test]
-fn ping_is_answered_before_ready_and_only_with_the_token() {
+fn hello_proves_the_server_without_the_credential() {
     let (rx, _ready, why, bound) = start_with_token(0, egui::Context::default(), Some(TOKEN.into()));
     assert!(why.is_none());
     let port = bound.unwrap();
     assert_ne!(port, 0, "--control 0 reports the port it bound");
-    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    writeln!(c, "{}", json!({"id": 3, "token": TOKEN, "method": "control.ping"})).unwrap();
-    let mut line = String::new();
-    BufReader::new(&mut c).read_line(&mut line).unwrap();
-    let reply: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["id"], 3);
+    let nonce = "5".repeat(64);
+    let reply = ask(port, &json!({"id": 3, "method": "control.hello", "params": {"nonce": nonce}}));
+    assert_eq!((reply["ok"].as_bool(), reply["id"].as_i64()), (Some(true), Some(3)), "{reply}");
+    assert_eq!(reply["result"]["port"], port);
     assert_eq!(reply["result"]["pid"], std::process::id());
-    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)), "ping never reaches the UI queue");
-    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    writeln!(c, "{}", json!({"token": "0".repeat(64), "method": "control.ping"})).unwrap();
-    let mut line = String::new();
-    BufReader::new(&mut c).read_line(&mut line).unwrap();
-    assert!(line.contains("authentication failed"), "{line}");
+    let proof = reply["result"]["proof"].as_str().unwrap();
+    assert!(filmagic_engine::control_file::verify_proof(TOKEN, port, &nonce, proof));
+    assert!(!reply.to_string().contains(TOKEN), "the credential is never sent back");
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)), "hello never reaches the UI queue");
+    // a hello is not a credential: the next request on a connection still needs one
+    for bad in [
+        json!({"method": "control.hello"}),
+        json!({"method": "control.hello", "params": {"nonce": "short"}}),
+        json!({"method": "control.hello", "params": {"nonce": 7}}),
+    ] {
+        let reply = ask(port, &bad);
+        assert!(reply["error"].as_str().unwrap().contains("nonce"), "{reply}");
+    }
+    let input = format!("{}\n{}\n", json!({"method": "control.hello", "params": {"nonce": nonce}}), json!({"method": "app.quit"}));
+    let mut out = Vec::new();
+    let mut calls = Vec::new();
+    serve_lines(input.as_bytes(), &mut out, TOKEN, port, |m, _| {
+        calls.push(m);
+        Some(json!({"ok": true}))
+    });
+    assert!(calls.is_empty(), "{calls:?}");
+    assert!(String::from_utf8(out).unwrap().contains("authentication failed"));
 }
 
-/// The control file's lifecycle (#17): written with the bound port and the session's credential when
-/// the server starts, and removed by `unpublish` when the app exits.
+/// The endpoint file's lifecycle (#17): written for the bound port when the server starts, with a
+/// session credential but never an inherited one (S6), and removed by `unpublish` on exit.
 #[test]
-fn the_control_file_is_written_on_start_and_removed_on_exit() {
+fn the_endpoint_is_written_on_start_and_removed_on_exit() {
+    use filmagic_engine::control_file::endpoints;
     let dir = tempfile::tempdir().unwrap();
-    let (_rx, ready, why) = start(0, egui::Context::default(), Some(dir.path().to_path_buf()));
-    assert!(why.is_none(), "{why:?}");
-    ready.store(true, Ordering::Relaxed);
-    let endpoint = filmagic_engine::control_file::read(dir.path()).unwrap();
-    assert_eq!(endpoint.pid, std::process::id());
-    let mut c = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
-    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    writeln!(c, "{}", json!({"token": endpoint.token, "method": "control.ping"})).unwrap();
-    let mut line = String::new();
-    BufReader::new(&mut c).read_line(&mut line).unwrap();
-    assert!(line.contains("\"ok\":true"), "the file's credential is the server's: {line}");
+    publish(dir.path(), 4100, Some(TOKEN));
+    let found: Vec<_> = endpoints(dir.path()).into_iter().map(Result::unwrap).collect();
+    assert_eq!((found.len(), found[0].port, found[0].token.as_deref()), (1, 4100, Some(TOKEN)));
     unpublish();
-    assert_eq!(filmagic_engine::control_file::read(dir.path()), Err(filmagic_engine::control_file::ReadError::Missing));
+    assert!(endpoints(dir.path()).is_empty());
+    publish(dir.path(), 4101, None);
+    assert_eq!(endpoints(dir.path())[0].as_ref().unwrap().token, None, "an inherited credential is not written");
+    unpublish();
+    // the real start: the file names the port the server answers on
+    let (_rx, _ready, why) = start(0, egui::Context::default(), Some(dir.path().to_path_buf()));
+    assert!(why.is_none(), "{why:?}");
+    let endpoint = endpoints(dir.path()).remove(0).unwrap();
+    assert_eq!(endpoint.pid, std::process::id());
+    let reply = ask(endpoint.port, &json!({"method": "control.hello", "params": {"nonce": "6".repeat(64)}}));
+    assert_eq!(reply["result"]["port"], endpoint.port, "{reply}");
+    unpublish();
+    assert!(endpoints(dir.path()).is_empty());
 }

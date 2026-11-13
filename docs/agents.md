@@ -14,16 +14,16 @@ Filmagic from an agent. Part 2 covers developing Filmagic as an agent.
 | App | `filmagic-cli mcp` while the desktop app runs with `--control`, or `--bridge 127.0.0.1:9876` | the desktop app the user has open: they see every edit |
 | Headless | `filmagic-cli mcp` with no such app, or `--headless`, `--demo`, `--project p.fcproj` | an in-process engine session, no window: the user sees nothing |
 
-With no mode option, the server looks for the app's control file (`control.json` in the data
-directory, see [below](#driving-the-desktop-app)). When the app named there answers, the server
-drives it. Otherwise the server works headless on an empty project. It writes one line to stderr
+With no mode option, the server looks in the app's control folder (see
+[below](#driving-the-desktop-app)). When a running app there proves that it holds its credential,
+the server drives it. Otherwise the server works headless on an empty project. It writes one line to stderr
 saying which mode it chose, and the MCP tool `app_status` says so too. The choice is made once, at start. If
 the app opens later, the server does not move the agent's work into it behind the agent's back.
 The agent calls `app_open` for that (see [Opening the app mid-session](#opening-the-app-mid-session)).
 
 `--bridge ADDR` drives that address. `--headless` (an empty project), `--demo` and `--project`
 always work headless, even while the app runs. `--data-dir DIR` sets the data directory. Headless
-mode reads user presets from it, and every mode looks for the app's control file there. The
+mode reads user presets from it, and every mode looks in that data directory's control folder. The
 default is the app's own data directory, or `FILMAGIC_DATA_DIR` when that is set. Any other
 option is rejected (exit 2). There are no folder-confinement flags such as
 `--automation-read-root`, so the server can read and write wherever the user can.
@@ -85,7 +85,7 @@ command = "/abs/path/editfilm/target/release/filmagic-cli"
 args = ["mcp"]
 ```
 
-The server finds the app through its control file, so no credential goes into this file. Only the
+The server finds the app through its control folder, so no credential goes into this file. Only the
 [fixed-token setup](#fixed-token-filmagic_control_token) needs `env_vars = ["FILMAGIC_CONTROL_TOKEN"]`
 in the table.
 
@@ -109,7 +109,7 @@ of the binary. JSON needs every backslash doubled:
 
 Quit Claude Desktop completely (on Windows, also from the tray icon) and start it again: it reads
 the file only at start. No token is needed. Claude Desktop cannot easily pass one through its
-environment, and the server reads the app's control file instead. If the app runs with
+environment, and the server finds the app through its control folder instead. If the app runs with
 `--data-dir`, give the server the same folder: `"args": ["mcp", "--data-dir", "D:\\Filmagic data"]`.
 
 ### Driving the desktop app
@@ -132,29 +132,51 @@ agent started before the app came up is headless: it reaches the app through `ap
 restarted.
 
 When the control server starts, the app makes a random credential for the session (64 hex
-characters), unless `FILMAGIC_CONTROL_TOKEN` is set. It writes the port, the credential, its
-process id and its version to `control.json` in its data directory:
+characters), unless `FILMAGIC_CONTROL_TOKEN` is set. It writes its port, process id and version,
+plus that session credential, to `app-<pid>.json` in its **control folder**. A credential from
+`FILMAGIC_CONTROL_TOKEN` is never written there. Every running app also holds a lock on
+`instance-<pid>.lock` in the same folder, with or without `--control`. The operating system
+releases the lock when the app ends, however it ends.
 
-- `~/.local/share/filmagic/` on Linux;
-- `~/Library/Application Support/Filmagic/` on macOS;
-- `%APPDATA%\Filmagic\` on Windows;
-- or `--data-dir` / `FILMAGIC_DATA_DIR`.
+The control folder belongs to the data directory, but it is always somewhere only you can read:
 
-The app's log is in `Logs/filmagic.log` in the same folder. The file is protected as follows:
+- **Windows:** `%LOCALAPPDATA%\Filmagic\control\<key>\`, where `<key>` names the data directory.
+  `%LOCALAPPDATA%` is in your user profile, which other users who are not administrators cannot
+  open. The data directory itself may be readable by everyone. The portable build keeps it next to
+  the executable (`data\` beside `filmagic.exe`), and a folder such as `C:\Tools\Filmagic`
+  inherits `C:\`'s permissions, which let every user read it. That is why the control folder is
+  not in the data directory on Windows.
+- **macOS and Linux:** `control/` inside the data directory: `~/.local/share/filmagic/control/`
+  on Linux, `~/Library/Application Support/Filmagic/control/` on macOS, or under `--data-dir` /
+  `FILMAGIC_DATA_DIR`. The folder is created with mode `0700` and the files with `0600`. Readers
+  refuse a folder or file that belongs to another user or that other users can write, and a file
+  other users can read.
 
-- **Only you can read it.** On macOS and Linux it is created with mode `0600`. On Windows it takes
-  the folder's permissions; `%APPDATA%` is in your user profile, which other users who are not
-  administrators cannot open. With `--data-dir` on Windows, choose a folder only you can read.
-- **It is written atomically**: a temporary file is renamed over it, so a reader never sees half a file.
-- **It is removed when the app exits**, unless another app has replaced it since.
-- **A stale file does no harm.** A file left by a crash names a port where nothing answers, or
-  where something answers without that credential. `filmagic-cli mcp` checks with `control.ping`
-  before it attaches. When the check fails, the server works headless, and the next app start
-  replaces the file.
+The app's log is in `Logs/filmagic.log` in the data directory. The files are protected and checked
+as follows:
 
-Two apps with `--control` at once: the later one's file wins, and agents attach to it.
+- **Atomic writes.** Each file is written to a temporary name and renamed into place, so a reader
+  never sees half a file.
+- **One file per app.** Each app writes only its own `app-<pid>.json` and removes only that file
+  when it exits. With two apps running, closing one leaves the other findable. Agents attach to
+  the newest app that answers.
+- **The server proves itself before the credential is sent.** A port named in a file can belong
+  to another program once the app that had it exits. A client therefore never sends the credential
+  first. It sends `control.hello` with a random nonce. The server must answer with an HMAC-SHA256,
+  under the credential, of that nonce and its own port. Only then does the client send anything
+  else. A program on the port cannot produce that answer, not even by relaying the real app's
+  answer from another port, so it learns nothing.
+- **A crash leaves nothing that misleads.** An app that crashed leaves its files behind, but its
+  lock is free. Readers see that, ignore those files and remove them.
 
-The control server listens on 127.0.0.1 only, and refuses every request without the credential.
+The control server listens on 127.0.0.1 only, and refuses every request without the credential
+(`control.hello` aside, which reveals nothing).
+
+**Opened without `--control`?** Then there is nothing to attach to. Opening the app from the
+Start menu, the Dock or a file starts no control server, so an agent cannot see or drive that
+window. `app_status` reports it (`appWithoutControl: true`). `app_open` refuses to start a second
+window, because the agent could not drive the first one either. Close the app and start it with
+`--control <port>`, or let `app_open` start it.
 
 ### Opening the app mid-session
 
@@ -165,22 +187,40 @@ answers) or `mode: "headless"` (with `appRunning`, whether an app is open that i
 
 1. It saves the headless project, to `path` when given. A project that was never saved needs
    `path`, an absolute `.fcproj` path. Without it, the call fails and says so.
-2. If an app is already running, it attaches to that app. It does not replace the app's open
+   `path` must be absolute: the MCP server's working folder is whatever the client started it in.
+2. If an app is already running, it only attaches to that app. It does not replace the app's open
    project, and it returns a note: run `file.open` with the saved path to continue there.
    Otherwise it starts the app (`filmagic --control 0 --data-dir <the server's> -- <project>`),
    waits up to 90 s for the app's control server, and attaches.
 3. From then on, every command and the `ui_*` tools go to the app. The headless undo history does
    not carry over: the app opens the saved file.
 
-The app is found next to `filmagic-cli` (`filmagic` or `filmagic.exe`), or at the path in
-`FILMAGIC_APP` in the server's environment. An agent never chooses the executable. The app
-outlives the MCP server: closing the agent leaves the app and its project open.
+It refuses, and changes nothing, in three cases:
+- **Unfinished headless work.** An export, proxy or ingest job, mask tracking or scene detection
+  that has not finished or not been applied would be lost with the headless session. The error
+  names it; wait for `jobs.list` to show it finished, or cancel it with `jobs.cancel`.
+- **Filmagic is open without `--control`** (see above).
+- **A malformed `FILMAGIC_CONTROL_TOKEN`** in the server's environment, which would keep the
+  started app's control server closed.
+
+If the started app shows **Recover Unsaved Changes**, from an earlier session that ended without
+saving, the result says so in `notes`. Recovering would replace the project the agent opened. Ask
+the user: to keep the agent's project, close the dialog without recovering (the changes stay
+available through File ▸ Recover Unsaved Changes).
+
+The app is found next to `filmagic-cli` (`filmagic` or `filmagic.exe`, as in the Windows and Linux
+archives and `target/<profile>/`), or at the path in `FILMAGIC_APP` in the server's environment. On
+macOS the app is inside its bundle, so set `FILMAGIC_APP` to
+`/Applications/Filmagic.app/Contents/MacOS/filmagic` (or wherever the bundle is). An agent never
+chooses the executable. The app outlives the MCP server: closing the agent leaves the app and its
+project open.
 
 If the user closes the app, the next command fails with "Filmagic is not answering at …: the app
 was closed". The session never falls back to headless on its own, because headless would edit a
-different copy. `app_open` then starts the app again, with `path` if given. Edits the closed app had not
-saved are offered by its auto-save recovery. In app mode with the app still open, `app_open`
-changes nothing.
+different copy. `app_open` then starts the app again on the project it had: the server remembers
+the app's project file while it drives the app. If that project was never saved, `app_open` needs
+`path`, and it never starts on the demo project. Edits the closed app had not saved are offered by
+its auto-save recovery. In app mode with the app still open, `app_open` changes nothing.
 
 ### Fixed token (`FILMAGIC_CONTROL_TOKEN`)
 
@@ -203,18 +243,19 @@ Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
 claude                    # or codex
 ```
 
-The app writes this value to its control file too. A bridge (`mcp --bridge ADDR`, or
-`filmagic-cli --bridge ADDR exec …`) sends `FILMAGIC_CONTROL_TOKEN` when it is set. Otherwise it
-sends the control file's credential when the file names the same port. An agent started before the
-variable was exported does not have it: exporting it in the agent's own shell tool, or reconnecting
-from `/mcp`, does not help. Without the control file, quit the agent and start it again from that
-shell. A value that is set but is not 64 hex characters keeps the control server closed. The app
+The app does not write this value to disk: its endpoint file holds only the port, so the clients
+must have the variable themselves. A bridge (`mcp --bridge ADDR`, or `filmagic-cli --bridge ADDR
+exec …`) sends `FILMAGIC_CONTROL_TOKEN` when it is set. Otherwise it sends the session credential of
+the app on that port, after the server has proved itself. An agent started before the variable was
+exported does not have it: exporting it in the agent's own shell tool, or reconnecting from `/mcp`,
+does not help. Quit the agent and start it again from that shell; `app_status` and the server's
+start-up line say when this is what is missing. A value that is set but is not 64 hex characters keeps the control server closed. The app
 logs `control server disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters` and
 shows it in the status bar, so a typo is never replaced silently.
 
 An agent can also drive the app without MCP, through the command-line tool. The credential comes
-from the control file, or from the variable put in front of the command (which keeps it out of the
-command's arguments):
+from the app's session credential in the control folder, or from the variable put in front of the
+command (which keeps it out of the command's arguments):
 
 ```sh
 ./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec sequence.clips
@@ -236,7 +277,10 @@ is ASCII:
 - Text spells "…" as `...`, "→" as `->`, "▸" as `>`, and shows any other non-ASCII character as
   `?`. Use `--json` for exact text.
 
-Set `FILMAGIC_CLI_UTF8=1` to keep UTF-8, for a reader that decodes UTF-8: Git Bash, or PowerShell
+This is ASCII, not UTF-8: the program cannot tell which code page the reader decodes with
+without calling the Windows console API, which the project keeps out of everything but media code.
+Git Bash and other MSYS2 terminals (`MSYSTEM` set) decode UTF-8, so there the output stays UTF-8.
+Set `FILMAGIC_CLI_UTF8=1` to keep UTF-8 for another reader that decodes it, such as PowerShell
 after `[Console]::OutputEncoding = [Text.Encoding]::UTF8`. MCP output is always UTF-8 JSON-RPC.
 
 ### Headless Linux machines
@@ -264,7 +308,7 @@ Any client that starts stdio servers takes the same command and arguments:
 { "mcpServers": { "filmagic": { "command": "/abs/path/filmagic-cli", "args": ["mcp"] } } }
 ```
 
-The server finds the app through its control file. With the fixed-token setup the client must pass
+The server finds the app through its control folder. With the fixed-token setup the client must pass
 `FILMAGIC_CONTROL_TOKEN` through from its own environment (in Codex, `env_vars`). The token's
 value never goes into a checked-in file.
 
