@@ -585,7 +585,7 @@ fn read_samples(path: &Path, samples: u64, max: u64) -> Result<Vec<f32>, TtsErro
         return Err(engine_err(format!("{}: {len} bytes for {samples} samples", path.display())));
     }
     let bytes = std::fs::read(path).map_err(|e| engine_err(format!("{}: {e}", path.display())))?;
-    let out: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let out: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
     if out.iter().any(|x| !x.is_finite()) {
         return Err(TtsError::Model("VieNeu-TTS produced invalid samples".into()));
     }
