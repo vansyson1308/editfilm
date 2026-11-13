@@ -788,7 +788,7 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     let mut browse = false;
     let audio = s.has_audio() || !s.has_video();
     let video = s.has_video();
-    let float_audio = s.audio.sample_format().is_float();
+    let float_audio = s.writes_float_pcm();
     let fx = &mut s.effects;
     if video {
         check(ui, reg, "export.effects.imageOverlay", &mut fx.image_overlay.enabled, tl!("Image Overlay"));

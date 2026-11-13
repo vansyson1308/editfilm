@@ -1936,3 +1936,30 @@ fn true_peak_limiter_leaves_audio_under_the_ceiling_untouched() {
     export(&quiet, seq, &s, &m, &prog).unwrap();
     assert_eq!(prog.audio.lock().unwrap().clone().unwrap().ceiling_dbtp, Some(-1.0));
 }
+
+/// The float exception applies only where float PCM is written: a float setting with AAC, MP3,
+/// FLAC or H.264's AAC (left over from a WAV export, or asked for) keeps the limiter on.
+#[test]
+fn the_float_exception_needs_float_pcm_to_be_written() {
+    let with = |format: Format, codec: AudioCodec| {
+        let mut s = ExportSettings { format, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+        s.audio.set_sample_format(SampleFormat::Float32);
+        s
+    };
+    for (format, codec) in [(Format::Wav, AudioCodec::Auto), (Format::Aiff, AudioCodec::Auto), (Format::ProRes, AudioCodec::Pcm)] {
+        let s = with(format, codec);
+        assert!(s.writes_float_pcm() && !s.peak_limiter_on(), "{format:?}/{codec:?} writes float: no limiter by default");
+    }
+    for (format, codec) in [
+        (Format::Aac, AudioCodec::Auto),
+        (Format::Mp3, AudioCodec::Auto),
+        (Format::Flac, AudioCodec::Auto),
+        (Format::H264, AudioCodec::Auto),
+        (Format::Hevc, AudioCodec::Auto),
+        (Format::MxfOp1a, AudioCodec::Auto),
+        (Format::ProRes, AudioCodec::Flac),
+    ] {
+        let s = with(format, codec);
+        assert!(!s.writes_float_pcm() && s.peak_limiter_on(), "{format:?}/{codec:?} writes no float: the limiter stays on");
+    }
+}

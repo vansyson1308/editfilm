@@ -380,7 +380,10 @@ Times are sequence seconds (source seconds for an `item`), rounded to 1 ms.
   The detector is light and model-free: voicing of a 70–400 Hz pitch, a level threshold from the
   clip's own noise floor (or, for a clip with no pause, from its speech level), and the shape of
   the level: syllables rise and fall 1–12 times a second. Car doors (bursts and low thunks),
-  footsteps, plucked or struck notes, steady tones and hum are not speech; a sung melody can be.
+  footsteps, plucked or struck notes, steady tones, hum and a steady pad under the words are not
+  speech. Limits: whispering is never found (it is not voiced), and a sung melody or a soft-attack
+  synth bass at about 4 notes a second can read as speech (Music-typed clips are never checked at a
+  cut).
   With music under the words, a segment's edges can stretch by up to about a second, so prefer a
   Dialogue `clip` or `track` over the full mix. `bridgeSeconds` (default 0.25) sets how long a
   pause stays inside one segment; `minConfidence` filters.
@@ -391,8 +394,11 @@ Times are sequence seconds (source seconds for an `item`), rounded to 1 ms.
   when the pause runs past the 3 s looked at; `null` when the speech runs on beyond that) and
   `pauseBeforeRange` / `pauseAfterRange`. The edit is still made: `edit.undo` and cut there. The
   check reads the source media as recorded (before clip effects), at its own sample rate, and is
-  cached, so it stays quick. It is skipped where the clip is not heard: disabled, on a muted track,
-  inside a transition, or with Volume at or under -40 dB at the cut. `speechCheck: false` skips it. The desktop app skips it for its own clicks and keys, and runs it
+  cached, so it stays quick. It is skipped where the clip is not heard: disabled, on a muted track
+  (or one another track's solo silences), inside a transition, or with Volume at or under -40 dB at
+  the cut. It uses the channels the clip plays. On a clip sped past 1×, the 8 s of source it reads
+  can cover less than ±3 s of the timeline, so a pause further away reads `null`.
+  `speechCheck: false` skips it. The desktop app skips it for its own clicks and keys, and runs it
   for commands that come over the control channel.
 - **`essentialSound.autoMatch`** matches each clip to the target of its own type. Dialogue clips
   are measured only where they speak (`measuredOver: "speech"`), and a Dialogue clip with no speech
@@ -418,10 +424,12 @@ Times are sequence seconds (source seconds for an `item`), rounded to 1 ms.
   of the range minus `differenceDb`, plus any ducking the music already has) → `mix.check`. For
   `musicTooQuiet`, raise the music (or duck it less), never duck it more.
 - **Export peaks.** Without a loudness target the export runs a True-Peak Limiter at -1 dBTP. It
-  is on by default except for 32-bit float audio, which keeps peaks above full scale on purpose;
+  is on by default except where 32-bit float PCM is written (WAV, AIFF, PCM in a movie), which
+  keeps peaks above full scale on purpose (a float setting with AAC, MP3 or FLAC keeps the limiter);
   `truePeakLimiter: true|false` on `file.exportMedia` (or `effects.peak_limiter.enabled` in the
   settings) sets it either way. Loudness Normalization has its own limiter and the two never stack.
-  An export that never reaches the ceiling is written bit for bit; after an over, the limiter
+  An export that never comes within 0.1 dB of the ceiling (where the limiter aims) is written bit
+  for bit; after an over, the limiter
   returns to exactly unity. Internal renders (proxies, transcodes and Project Manager copies,
   AAF/OMF clip audio) never limit. Every export with audio reports `result.audio`:
   `truePeakDbtp` and `integratedLufs` of what was written (for AAC and MP3, of the encoder's input),

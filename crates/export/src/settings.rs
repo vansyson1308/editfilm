@@ -457,16 +457,16 @@ impl Default for LoudnessNormalization {
 /// Export ▸ Effects ▸ True-Peak Limiter: a look-ahead limiter that keeps the exported audio at or
 /// under `ceiling_dbtp` when no loudness target is set (Loudness Normalization has its own
 /// limiter, so this one stands aside then). A draft peaked at +2.7 dBFS and clipped audibly with
-/// nothing to warn (#15), so it is **on by default**, except for 32-bit float audio: float keeps
-/// peaks above full scale, and that is why people choose it. An export that never reaches the
-/// ceiling is written bit for bit.
+/// nothing to warn (#15), so it is **on by default**, except where 32-bit float PCM is written:
+/// float keeps peaks above full scale, and that is why people choose it. An export that never
+/// comes within 0.1 dB of the ceiling (where the limiter aims) is written bit for bit.
 ///
 /// Internal renders (proxies, transcodes and Project Manager copies, AAF/OMF clip audio) turn it
 /// off ([`PeakLimiter::OFF`]): they must keep the media as it is.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PeakLimiter {
-    /// `None` (the default): on, except for 32-bit float audio. `Some(_)`: as set.
+    /// `None` (the default): on, unless 32-bit float PCM is written. `Some(_)`: as set.
     pub enabled: Option<bool>,
     /// Ceiling (dBTP), −24…0.
     pub ceiling_dbtp: f64,
@@ -546,10 +546,19 @@ pub struct Resolved {
 }
 
 impl ExportSettings {
-    /// Whether the True-Peak Limiter runs ([`PeakLimiter`]): as set, else on except for 32-bit
-    /// float audio. Loudness Normalization's own limiter takes over when that is on.
+    /// Whether the True-Peak Limiter runs ([`PeakLimiter`]): as set, else on unless the export
+    /// writes 32-bit float PCM. A float setting with a lossy codec or FLAC (left over from a WAV
+    /// export, or asked for with H.264) writes no float, so it keeps the limiter. Loudness
+    /// Normalization's own limiter takes over when that is on.
     pub fn peak_limiter_on(&self) -> bool {
-        self.effects.peak_limiter.enabled.unwrap_or(!self.audio.sample_format().is_float())
+        self.effects.peak_limiter.enabled.unwrap_or(!self.writes_float_pcm())
+    }
+
+    /// Whether the audio is written as 32-bit float PCM (WAV, AIFF, or PCM in a movie that can
+    /// hold float).
+    pub fn writes_float_pcm(&self) -> bool {
+        let f = self.audio.sample_format();
+        f.is_float() && self.audio_codec() == AudioCodec::Pcm && self.supports_sample_format(f)
     }
 
     /// The format whose video encoder runs: the MXF video codec for MXF exports, else the format.

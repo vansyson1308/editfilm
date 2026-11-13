@@ -5493,6 +5493,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, proj: filmagic_project::Project, path: Option<String>, clean: bool) {
+    // speech analyses belong to the media of the project they were made in
+    s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

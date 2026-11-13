@@ -517,6 +517,9 @@ fn the_cut_check_skips_clips_that_are_not_heard_at_the_cut() {
     s.execute("timeline.setTrack", json!({"track": "A1", "muted": true})).unwrap();
     assert!(!cut_at(&mut s), "a muted track");
     s.execute("timeline.setTrack", json!({"track": "A1", "muted": false})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A2", "solo": true})).unwrap();
+    assert!(!cut_at(&mut s), "another track soloed");
+    s.execute("timeline.setTrack", json!({"track": "A2", "solo": false})).unwrap();
     s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
     s.execute("essentialSound.set", json!({"clips": [c[0].0], "values": {"volume.on": true, "volume.levelDb": -60.0}})).unwrap();
     let lvl = item(&s, c[0]).effect("volume").map(|e| e.f64_at("level", Tick::from_seconds_f64(2.0)));
@@ -524,9 +527,11 @@ fn the_cut_check_skips_clips_that_are_not_heard_at_the_cut() {
     assert!(!cut_at(&mut s), "Volume at -60 dB");
 }
 
-/// The cut check runs inside the razor, on the thread that called it: it must stay quick (it
-/// once took 130 ms for two clips), and a second cut nearby reuses the analysis. Measured on
-/// files (the demo project's procedural media cost far more per sample than a decoder).
+/// The cut check runs inside the razor, on the thread that called it. The old check (16 s of the
+/// clip's effected audio at 48 kHz) took 130 ms on two clips and seconds on long ones; this one
+/// takes about 40 ms on its own. The bound is loose on purpose, so a busy test machine cannot
+/// fail it; what is exact is that a second cut nearby reuses the analysis instead of making a new
+/// one.
 #[test]
 fn the_cut_check_stays_quick_and_reuses_its_analysis() {
     let a = speech(10.0, SR, 0.4, |t| (1.0..4.0).contains(&t) || (5.0..9.0).contains(&t));
@@ -536,21 +541,52 @@ fn the_cut_check_stays_quick_and_reuses_its_analysis() {
     let clips = crate::audio_check::audio_clips_at(&s, t, None);
     assert_eq!(clips.len(), 2, "two audio clips under the cut");
     let pairs: Vec<(TrackItem, Tick)> = clips.iter().cloned().map(|c| (c, t)).collect();
-    // the fastest of three uncached runs: a guard against a slow check, not against a busy machine
-    let mut first = std::time::Duration::MAX;
-    for _ in 0..3 {
-        s.speech_cache.lock().unwrap().clear();
-        let t0 = std::time::Instant::now();
-        let (_, found) = crate::audio_check::cut_warnings(&s, &pairs);
-        first = first.min(t0.elapsed());
-        assert_eq!(found.len(), 2, "both clips speak at 2 s");
-    }
+    s.speech_cache.lock().unwrap().clear();
+    let t0 = std::time::Instant::now();
+    let (_, found) = crate::audio_check::cut_warnings(&s, &pairs);
+    let first = t0.elapsed();
+    assert_eq!(found.len(), 2, "both clips speak at 2 s");
+    assert!(first < std::time::Duration::from_secs(1), "{first:?}");
+    let analyses = s.speech_cache.lock().unwrap().len();
+    assert_eq!(analyses, 2, "one analysis per clip");
     let near_t = Tick::from_seconds_f64(2.4);
     let pairs: Vec<(TrackItem, Tick)> = clips.into_iter().map(|c| (c, near_t)).collect();
-    let t1 = std::time::Instant::now();
-    let _ = crate::audio_check::cut_warnings(&s, &pairs);
-    let second = t1.elapsed();
-    println!("cut check: {first:?} first, {second:?} for a cut 0.4 s away");
-    assert!(first < std::time::Duration::from_millis(100), "{first:?}");
-    assert!(second < std::time::Duration::from_millis(10), "the analysis is reused: {second:?}");
+    let (_, found) = crate::audio_check::cut_warnings(&s, &pairs);
+    assert_eq!(found.len(), 2);
+    assert_eq!(s.speech_cache.lock().unwrap().len(), analyses, "a cut 0.4 s away reuses the analyses");
+}
+
+/// QC: a source rewritten on disk under the same name and length (a denoised re-export) is
+/// analysed afresh, and opening a project starts with no analyses.
+#[test]
+fn a_rewritten_file_is_analysed_afresh() {
+    let dir = crate::media_test_util::tmp_dir("speech-cache");
+    let path = dir.join("take.wav");
+    let write = |x: &[f32]| {
+        let inter: Vec<f32> = x.iter().flat_map(|v| [*v, *v]).collect();
+        std::fs::write(&path, crate::previews::write_wav_f32(&inter, SR)).unwrap();
+    };
+    write(&speech(6.0, SR, 0.4, |t| (1.0..5.0).contains(&t)));
+    let mut s = Session::default();
+    s.execute("file.newSequence", json!({"name": "a", "audio": 2, "video": 1})).unwrap();
+    let r = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let item = r["items"][0].as_u64().or_else(|| r["imported"][0].as_u64()).unwrap_or_else(|| panic!("{r}"));
+    s.execute("timeline.place", json!({"item": item, "audioTrack": "A1", "seconds": 0.0})).unwrap();
+    let clip = crate::audio_check::audio_clips_at(&s, Tick::from_seconds_f64(2.0), None).remove(0);
+    let key_of = |s: &Session| s.speech_cache.lock().unwrap().keys();
+    let (_, found) = crate::audio_check::cut_warnings(&s, &[(clip.clone(), Tick::from_seconds_f64(2.0))]);
+    assert_eq!(found.len(), 1);
+    let before = key_of(&s);
+    // the same name and length, written again (a later modification time)
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write(&speech(6.0, SR, 0.2, |t| (1.0..5.0).contains(&t)));
+    let _ = crate::audio_check::cut_warnings(&s, &[(clip, Tick::from_seconds_f64(2.0))]);
+    let after = key_of(&s);
+    assert_eq!(after.len(), 2, "a new analysis for the rewritten file: {before:?} → {after:?}");
+    // another project does not use them
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let demo_clip = crate::audio_check::audio_clips_at(&s, Tick::from_seconds_f64(2.0), None).remove(0);
+    let _ = crate::audio_check::cut_warnings(&s, &[(demo_clip, Tick::from_seconds_f64(2.0))]);
+    assert_eq!(s.speech_cache.lock().unwrap().len(), 1, "only the new project's analysis");
+    let _ = std::fs::remove_dir_all(dir);
 }

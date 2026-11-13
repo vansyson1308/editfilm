@@ -268,7 +268,8 @@ The export tests (`true_peak_limiter_*` in `crates/export/src/settings_tests.rs`
 - a +2.7 dBFS tone is written at -1.0 dBTP by default;
 - audio under the ceiling is byte-identical with the limiter on or off, at 48 and 44.1 kHz, in
   mono, stereo and 5.1;
-- float exports keep their overs unless the limiter is turned on;
+- float PCM exports keep their overs unless the limiter is turned on; a float setting with AAC,
+  MP3, FLAC or H.264 keeps the limiter;
 - every export reports its true peak.
 
 The limiter tests (`crates/audio-dsp/src/effects/dynamics.rs`): it returns to exact unity after an

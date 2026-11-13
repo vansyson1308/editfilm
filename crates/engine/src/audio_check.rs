@@ -150,20 +150,57 @@ struct SpeechKey {
     window_ms: i64,
 }
 
-/// Recent analyses of source windows (most recent last).
+/// Recent analyses of source windows (most recent last), for one project: a project opened
+/// or replaced since (a new `Session::project_instance`) starts with none.
 #[derive(Default)]
-pub struct SpeechCache(std::collections::VecDeque<(SpeechKey, std::sync::Arc<SpeechAnalysis>)>);
+pub struct SpeechCache(std::collections::VecDeque<(SpeechKey, std::sync::Arc<SpeechAnalysis>)>, Option<std::sync::Arc<()>>);
 
 impl SpeechCache {
     /// Forget every analysis.
     pub fn clear(&mut self) {
         self.0.clear();
     }
+    /// Forget the analyses when they were made for another project than `instance`.
+    fn for_project(&mut self, instance: &std::sync::Arc<()>) {
+        if !self.1.as_ref().is_some_and(|i| std::sync::Arc::ptr_eq(i, instance)) {
+            self.0.clear();
+            self.1 = Some(instance.clone());
+        }
+    }
+    /// How many analyses are kept.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// What each kept analysis is of (tests).
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.0.iter().map(|(k, _)| format!("{}:{}:{}:{}", k.item, k.stream, k.media, k.window_ms)).collect()
+    }
+}
+
+/// What makes a source's audio this audio: its file's path, size and modification time (a
+/// re-export or relink to a same-named file is analysed afresh), or the generator; then what the
+/// decoder reports. Also part of the key: the channels the clip plays.
+fn media_identity(s: &Session, item: &TrackItem, info: &filmagic_media::MediaInfo) -> String {
+    let media = match s.project.item(item.item).and_then(|i| i.as_media()).map(|m| &m.media) {
+        Some(filmagic_project::MediaRef::File { path }) => {
+            let stamp = std::fs::metadata(path)
+                .ok()
+                .map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos())));
+            format!("file:{path}|{stamp:?}")
+        }
+        Some(filmagic_project::MediaRef::Generator(g)) => format!("gen:{g:?}"),
+        None => String::from("?"),
+    };
+    format!("{media}|{}|{}|{}|{:?}", info.name, info.duration.0, info.audio_streams.len(), item.source_channels)
 }
 
 /// Speech of the source of `item` over source seconds `[w0, w0 + CUT_SPAN_S)`, with segment
 /// times in source seconds: the media as recorded (no clip effects, no gain: the threshold adapts
-/// to the level), all channels averaged, read at the stream's own sample rate. Reading it at a
+/// to the level), the channels the clip plays averaged, read at the stream's own sample rate. Reading it at a
 /// lower rate would alias: the decoders resample without an anti-alias filter, so hiss above the
 /// new Nyquist would fold into the speech band; the detector's own band limit and decimation do
 /// that job instead, at almost the same cost. Cached.
@@ -173,14 +210,10 @@ fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &Track
     if !info.has_audio() {
         return None;
     }
-    let key = SpeechKey {
-        item: item.item.0,
-        stream: item.audio_stream,
-        media: format!("{}|{}|{}", info.name, info.duration.0, info.audio_streams.len()),
-        window_ms: (w0 * 1000.0).round() as i64,
-    };
+    let key = SpeechKey { item: item.item.0, stream: item.audio_stream, media: media_identity(s, item, info), window_ms: (w0 * 1000.0).round() as i64 };
     {
-        let cache = s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.for_project(&s.project_instance);
         if let Some((_, a)) = cache.0.iter().find(|(k, _)| *k == key) {
             return Some(a.clone());
         }
@@ -196,7 +229,13 @@ fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &Track
     while pos < end {
         let n = (end - pos).min(sr as i64) as usize;
         let buf = src.audio_stream(item.audio_stream, pos, n, sr).ok()?;
-        let refs: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
+        // the channels the clip plays (a multi-mic file's other mics are not this clip's sound)
+        let picked: Vec<&[f32]> = if item.source_channels.is_empty() {
+            buf.channels.iter().take(2).map(Vec::as_slice).collect()
+        } else {
+            item.source_channels.iter().filter_map(|c| buf.channels.get(*c as usize)).map(Vec::as_slice).collect()
+        };
+        let refs: Vec<&[f32]> = if picked.is_empty() { buf.channels.iter().map(Vec::as_slice).collect() } else { picked };
         d.process_planar(&refs);
         pos += n as i64;
     }
@@ -217,8 +256,9 @@ fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &Track
     Some(a)
 }
 
-/// Whether `item` is heard at timeline time `t`: the clip is enabled, its track is not muted, no
-/// transition on its track spans `t` (a fade is a deliberate edit), and its Volume there is above
+/// Whether `item` is heard at timeline time `t`: the clip is enabled, its track is not muted (or
+/// silenced by another track's solo), no transition on its track spans `t` (a fade is a deliberate
+/// edit), and its Volume there is above
 /// [`CUT_SILENT_DB`]. A cut where the clip is not heard cannot cut a sentence the audience hears.
 fn heard_at(seq: &Sequence, item: &TrackItem, t: Tick) -> bool {
     if !item.enabled {
@@ -226,6 +266,10 @@ fn heard_at(seq: &Sequence, item: &TrackItem, t: Tick) -> bool {
     }
     let Some(track) = seq.audio_tracks.iter().find(|tr| tr.items.iter().any(|i| i.id == item.id)) else { return true };
     if track.muted || track.transitions.iter().any(|x| x.start <= t && t < x.start + x.duration) {
+        return false;
+    }
+    // another track soloed silences this one (unless it is soloed or solo-safe itself)
+    if seq.audio_tracks.iter().any(|tr| tr.solo) && !track.solo && !track.mixer.solo_safe {
         return false;
     }
     let mt = item.effect_time_at(t.clamp(item.start, (item.end() - Tick(1)).max(item.start)));

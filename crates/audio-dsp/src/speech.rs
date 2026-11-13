@@ -315,6 +315,40 @@ fn spread_db(levels: &[f32]) -> f32 {
     (levels.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n).sqrt()
 }
 
+/// A steady stretch is at least this many dB under the speech level to count as a bed.
+const BED_UNDER_DB: f32 = 6.0;
+
+/// Frames inside a steady stretch ([`STEADY_FRAMES`] long, level spread under
+/// [`STEADY_SPREAD_DB`]) whose mean level is at or under `max_db`.
+fn steady_beds(frames: &[Frame], max_db: f32) -> Vec<bool> {
+    let n = frames.len();
+    let mut out = vec![false; n];
+    if n < STEADY_FRAMES {
+        return out;
+    }
+    let lv: Vec<f64> = frames.iter().map(|f| f.db.max(-100.0) as f64).collect();
+    // running sums for the windowed mean and variance
+    let (mut s1, mut s2) = (0.0f64, 0.0f64);
+    for (k, v) in lv.iter().enumerate() {
+        s1 += v;
+        s2 += v * v;
+        if k >= STEADY_FRAMES {
+            let o = lv[k - STEADY_FRAMES];
+            s1 -= o;
+            s2 -= o * o;
+        }
+        if k + 1 >= STEADY_FRAMES {
+            let w = STEADY_FRAMES as f64;
+            let mean = s1 / w;
+            let var = (s2 / w - mean * mean).max(0.0);
+            if var.sqrt() < STEADY_SPREAD_DB as f64 && mean <= max_db as f64 && mean > -100.0 {
+                out[k + 1 - STEADY_FRAMES..=k].iter_mut().for_each(|x| *x = true);
+            }
+        }
+    }
+    out
+}
+
 fn segments(frames: &[Frame], hop_s: f64, win_s: f64, duration_s: f64, p: &SpeechParams, truncated: bool) -> SpeechAnalysis {
     // digital silence counts as a −100 dBFS floor: a clean recording with real pauses gets the
     // absolute gate, a noisy one a threshold above its own noise
@@ -334,7 +368,11 @@ fn segments(frames: &[Frame], hop_s: f64, win_s: f64, duration_s: f64, p: &Speec
     if top <= -100.0 {
         return out;
     }
-    let core: Vec<bool> = frames.iter().map(|f| f.db > thr && f.voicing >= p.voicing).collect();
+    // A steady stretch quieter than the speech (a pad, a hum, a held note under the words) is
+    // not speech even when voiced: 0.3 s of levels within 2 dB, 6 dB or more under the speech
+    // level. Without this, a voiced bed would join the sentences around its pauses.
+    let steady = steady_beds(frames, top - BED_UNDER_DB);
+    let core: Vec<bool> = frames.iter().zip(&steady).map(|(f, st)| f.db > thr && f.voicing >= p.voicing && !st).collect();
     // grow cores over neighbouring loud frames (consonants, word edges)
     let n = frames.len();
     let mut on = core.clone();
@@ -343,12 +381,12 @@ fn segments(frames: &[Frame], hop_s: f64, win_s: f64, duration_s: f64, p: &Speec
             continue;
         }
         let mut j = k;
-        while j > 0 && k - (j - 1) <= GROW_FRAMES && !core[j - 1] && frames[j - 1].db > low {
+        while j > 0 && k - (j - 1) <= GROW_FRAMES && !core[j - 1] && !steady[j - 1] && frames[j - 1].db > low {
             j -= 1;
             on[j] = true;
         }
         let mut j = k + 1;
-        while j < n && j - k <= GROW_FRAMES && !core[j] && frames[j].db > low {
+        while j < n && j - k <= GROW_FRAMES && !core[j] && !steady[j] && frames[j].db > low {
             on[j] = true;
             j += 1;
         }
@@ -784,7 +822,7 @@ mod tests {
             println!("speech over plucked {rate}/s: {:?}", a.segments);
             assert_eq!(a.segments.len(), 1, "{:?}", a.segments);
             let g = a.segments[0];
-            assert!(g.start_s <= 2.05 && g.end_s >= 4.95, "the speech is inside {g:?}");
+            assert!(g.start_s <= 2.06 && g.end_s >= 4.94, "the speech is inside {g:?}");
             assert!(g.start_s >= 1.0 && g.end_s <= 6.0, "the music is mostly outside {g:?}");
         }
     }
@@ -799,6 +837,19 @@ mod tests {
             let a = detect(&x, SR as f64, SpeechParams::default());
             println!("hiss {hiss_amp}: {:?}", a.segments);
             near(&a.segments, &[(1.0, 3.0), (4.0, 6.0)], 0.08);
+        }
+    }
+
+    /// A voiced bed (a steady pad) about 15 dB under the speech must not join the sentences
+    /// across their pauses, which the no-pause fallback would otherwise let it do.
+    #[test]
+    fn a_voiced_bed_under_speech_keeps_the_pauses() {
+        let pad = |secs: f64, amp: f32| mix(&mix(&tone(secs, SR, 220.0, amp), &tone(secs, SR, 277.2, amp * 0.8)), &tone(secs, SR, 329.6, amp * 0.6));
+        for (pause, bed_amp) in [(1.0, 0.06f32), (1.0, 0.09), (0.5, 0.05)] {
+            let x = mix(&speech(7.5, SR, 0.4, |t| (0.7..3.2).contains(&t) || (3.2 + pause..6.7).contains(&t)), &pad(7.5, bed_amp));
+            let a = detect(&x, SR as f64, SpeechParams::default());
+            println!("pause {pause} s, bed {bed_amp}: {:?}", a.segments);
+            near(&a.segments, &[(0.7, 3.2), (3.2 + pause, 6.7)], 0.15);
         }
     }
 

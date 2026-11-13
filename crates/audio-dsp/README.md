@@ -56,7 +56,10 @@ returns `SpeechSegment { start_s, end_s, confidence }`. No model:
   from a struck start (thunks), or a row of fast-rising, slow-falling peaks (plucked notes).
   Speech rises and falls with its syllables (Houtgast & Steeneken).
 
-Tested on synthetic voiced signals with and without pauses, over noise and under plucked music,
+Limits: whispering is never found (it is not voiced); a sung melody or a soft-attack synth bass
+at about 4 notes a second can read as speech.
+
+Tested on synthetic voiced signals with and without pauses, under a steady pad, over noise and under plucked music,
 and against noise bursts, thunks, plucked notes, steady noise, tones, hum, beeps and silence, at
 8–48 kHz.
 
