@@ -56,7 +56,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             "Transcribe Sequence…",
             &["Sequence"],
             None,
-            r#"{"track":"mix"|"A1"|id?,"language":"auto|vi|en|…"? (Whisper codes, transcript.models),"diarize":bool?,"maxSpeakers":n?,"model":str?}"#,
+            r#"{"track":"mix"|"A1"|id?,"language":"auto|vi|en|…"? (Whisper codes in transcript.models),"diarize":bool?,"maxSpeakers":n?,"model":str?}"#,
             can_transcribe_sequence,
             transcribe,
         ),

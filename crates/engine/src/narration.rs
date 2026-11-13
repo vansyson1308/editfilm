@@ -808,7 +808,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "tts.create",
             "New Narration",
-            r#"{"text":str,"voice":str? (tts.voices; "vieneu:<name>" for Vietnamese),"pitch":"extraLow|low|default|high|extraHigh"?,"pace":0.5..2?,"time":ticks?,"track":"A1"|id?,"dir":str?,"referenceAudio":path? (voice "vieneu-clone"),"confirmAuthorizedVoice":bool? (required with referenceAudio)} VieNeu voices take seconds to minutes: run tts.render first, then tts.create returns at once"#,
+            r#"{"text":str,"voice":str? (tts.voices; "vieneu:<name>" for Vietnamese),"pitch":"extraLow|low|default|high|extraHigh"?,"pace":0.5..2?,"time":ticks?,"track":"A1"|id?,"dir":str?,"referenceAudio":path? (voice "vieneu-clone"),"confirmAuthorizedVoice":bool? (required with referenceAudio)}"#,
             has_seq,
             create,
             true,
