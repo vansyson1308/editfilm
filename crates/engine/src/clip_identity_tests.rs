@@ -162,6 +162,35 @@ fn set_param_takes_many_clips_as_one_undo_step() {
     assert!(r.get("clips").is_none() && r["value"] == json!(50.0), "{r}");
 }
 
+/// With #13's time values and easing: one call keys several clips at a time in seconds.
+#[test]
+fn set_param_on_many_clips_takes_time_objects_and_ease() {
+    let mut s = demo();
+    let q = s.active_sequence().unwrap();
+    let (a, b) = (q.video_tracks[0].items[0].clone(), q.video_tracks[0].items[1].clone());
+    let at = |c: &TrackItem| json!({"seconds": (c.start.0 as f64 / filmagic_time::TICKS_PER_SECOND as f64) + 0.5});
+    for c in [&a, &b] {
+        let r = s
+            .execute(
+                "effects.setParam",
+                json!({"clips": [c.id.0], "effect": "opacity", "param": "opacity", "value": 50.0, "keyframe": true, "time": at(c), "ease": "easeOut"}),
+            )
+            .unwrap();
+        assert_eq!(r["keyframes"], 1, "{r}");
+        assert_eq!(r["ease"], "easeOut", "{r}");
+    }
+    let undo = s.history.undo.len();
+    let r = s
+        .execute("effects.setParam", json!({"clips": [a.id.0, b.id.0], "effect": "opacity", "param": "opacity", "value": 20.0, "time": {"seconds": 0}}))
+        .unwrap();
+    assert_eq!(r["clips"].as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    // a link id is refused after the time object is read, not mistaken for a bad time
+    let link = linked_pair(&s).0.link.unwrap();
+    let why = refused(s.execute("effects.setParam", json!({"clips": [a.id.0, link], "param": "opacity", "value": 1, "time": {"seconds": 1}})));
+    assert!(why.contains(&format!("{link} is a link id")), "{why}");
+}
+
 /// A list that fails on one clip changes none of them, and malformed lists are refused.
 #[test]
 fn set_param_on_many_clips_is_all_or_nothing_and_checks_its_list() {

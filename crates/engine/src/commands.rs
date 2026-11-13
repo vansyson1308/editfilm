@@ -3357,7 +3357,7 @@ fn build() -> Vec<CommandSpec> {
         // Source panel: Close / Close All, for the clip shown and the list of recent clips (#313)
         cmd!("source.close", "Close", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, false)),
         cmd!("source.closeAll", "Close All", [], None, "{}", crate::source_monitor::has_source_clip, |s, _| crate::source_monitor::close(s, true)),
-        cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":ticks|"frame":i64|"seconds":f64}"#, always, |s, p| {
+        cmd!("source.setPlayhead", "Set Source Playhead", [], None, r#"{"time":mediaTicks|"frame":i64|"seconds":f64}"#, always, |s, p| {
             let item = s.state.source_item.ok_or_else(|| EngineError::Other("no source clip".into()))?;
             let view = crate::clip_ops::source_view(s, item);
             let rate = view.as_ref().map(|v| v.rate).unwrap_or_default();
@@ -3871,7 +3871,7 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id|"clips":[id] (several clips: one undo step; each must have the effect),"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"merge":bool|key?,"begin":bool?}"##,
+            r##"{"clip":id|"clips":[id] (several clips: one undo step; each must have the effect),"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"ease":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"? (the easing of the keyframe written at `time`, as `effects.setInterpolation` sets it; needs `keyframe` or an animated parameter),"merge":bool|key?,"begin":bool?}"##,
             has_seq,
             |s, p| {
                 let clips = effect_clips_p(p, "effects.setParam")?;
@@ -3880,6 +3880,7 @@ fn build() -> Vec<CommandSpec> {
                 let key = clips.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
+                let ease = ease_p(p, "ease", "effects.setParam")?;
                 // an explicit `time` outside the clip keeps its keyframe there, before the start as after
                 // the end, so a ramp across a cut keeps its slope (#1055); the playhead is pinned to the clip
                 let at = time_p(s, p, "");
@@ -3895,7 +3896,7 @@ fn build() -> Vec<CommandSpec> {
                     s.history.merge_key = None;
                 }
                 let results = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
-                    let mut results: Vec<(ClipId, usize, Value)> = Vec::with_capacity(clips.len());
+                    let mut results: Vec<(ClipId, usize, Value, Option<Tick>)> = Vec::with_capacity(clips.len());
                     for &c in &clips {
                         let (_, it) = q.find_item_mut(c).ok_or(filmagic_edit::EditError::NoItem(c))?;
                         let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
@@ -3950,6 +3951,13 @@ fn build() -> Vec<CommandSpec> {
                                 prm.set_at(mt, v.clone());
                                 prm.keyframes.len()
                             };
+                            // the easing of the keyframe just written, in the same undo step (#13)
+                            if let Some(ease) = ease {
+                                let k = prm.keyframes.iter_mut().find(|k| k.time == mt).ok_or_else(|| {
+                                    bad("effects.setParam", format!("`ease` needs a keyframe, and `{pid}` is not animated: add \"keyframe\": true"))
+                                })?;
+                                k.interp = ease;
+                            }
                             (keyframes, v)
                         };
                         let accepted_value = param_value_to_json(&v);
@@ -3968,17 +3976,22 @@ fn build() -> Vec<CommandSpec> {
                                 }
                             }
                         }
-                        results.push((c, keyframes, accepted_value));
+                        results.push((c, keyframes, accepted_value, (keyframes > 0).then_some(mt)));
                     }
                     Ok(results)
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
-                let (_, keyframes, value) = results.first().cloned().ok_or_else(|| bad("effects.setParam", "need `clip` or `clips`"))?;
-                let mut out = json!({"keyframes": keyframes, "param": pid, "value": value});
+                let (_, keyframes, value, keyed_at) = results.first().cloned().ok_or_else(|| bad("effects.setParam", "need `clip` or `clips`"))?;
+                let mut reply = json!({"keyframes": keyframes, "param": pid, "value": value});
                 if p.get("clips").is_some() {
-                    out["clips"] = json!(results.iter().map(|(c, k, v)| json!({"clip": c.0, "keyframes": k, "value": v})).collect::<Vec<_>>());
+                    reply["clips"] = json!(results.iter().map(|(c, k, v, _)| json!({"clip": c.0, "keyframes": k, "value": v})).collect::<Vec<_>>());
                 }
-                Ok(out)
+                if let (Some(ease), Some(mt)) = (ease, keyed_at) {
+                    reply["mediaTime"] = json!(mt.0);
+                    reply["mediaSeconds"] = json!(crate::time_params::secs(mt));
+                    reply["ease"] = json!(ease_name(ease));
+                }
+                Ok(reply)
             }
         ),
         cmd!("effects.toggleAnimation", "Toggle Animation", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mask":n?}"#, has_seq, |s, p| {
@@ -4068,15 +4081,21 @@ fn build() -> Vec<CommandSpec> {
             has_seq,
             |s, p| { keyframe_op(s, p, "add") }
         ),
-        cmd!("effects.deleteKeyframe", "Delete Keyframe", [], None, r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks}"#, has_seq, |s, p| {
-            keyframe_op(s, p, "delete")
-        }),
+        cmd!(
+            "effects.deleteKeyframe",
+            "Delete Keyframe",
+            [],
+            None,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":mediaTicks|"time":ticks (timeline time; the keyframe nearest it, within half a frame)}"#,
+            has_seq,
+            |s, p| { keyframe_op(s, p, "delete") }
+        ),
         cmd!(
             "effects.moveKeyframe",
             "Move Keyframe",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"to":ticks,"value":any?,"merge":bool?,"begin":bool?}"#,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":mediaTicks|"time":ticks (timeline time; the keyframe nearest it, within half a frame),"to":mediaTicks,"value":any?,"merge":bool?,"begin":bool?}"#,
             has_seq,
             |s, p| keyframe_op(s, p, "move")
         ),
@@ -4094,7 +4113,7 @@ fn build() -> Vec<CommandSpec> {
             "Keyframe Interpolation",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}|{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}],"interpolation":str}"#,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":mediaTicks|"time":ticks (timeline time, default the playhead; the keyframe nearest it, within half a frame),"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"}|{"keyframes":[{"clip":id,"effect":index,"param":str,"mask":n?,"time":mediaTicks}],"interpolation":str}"#,
             has_seq,
             |s, p| if p.get("keyframes").is_some() { crate::keyframe_move::interpolate_many(s, p) } else { keyframe_op(s, p, "interp") }
         ),
@@ -4103,7 +4122,7 @@ fn build() -> Vec<CommandSpec> {
             "Edit Keyframe",
             [],
             None,
-            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":ticks,"value":any?,"inInfluence":0..1?,"outInfluence":0..1?,"merge":bool?,"begin":bool?}"#,
+            r#"{"clip":id,"effect":str|index,"param":str,"mediaTime":mediaTicks|"time":ticks (timeline time; the keyframe nearest it, within half a frame),"value":any?,"interpolation":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"?,"inInfluence":0..1?,"outInfluence":0..1?,"merge":bool?,"begin":bool?}"#,
             has_seq,
             |s, p| keyframe_op(s, p, "set")
         ),
@@ -4224,7 +4243,7 @@ fn build() -> Vec<CommandSpec> {
             let moved = s.edit("Move to Bin", |pr, _| pr.move_to_bin(&items, bin).ok_or_else(|| bad("project.moveToBin", "no such bin")))?;
             Ok(json!({"moved": moved}))
         }),
-        cmd!("project.setMarks", "Set Source In/Out", [], None, r#"{"item":id,"in":ticks?|null,"out":ticks?|null}"#, always, |s, p| {
+        cmd!("project.setMarks", "Set Source In/Out", [], None, r#"{"item":id,"in":mediaTicks?|null,"out":mediaTicks?|null}"#, always, |s, p| {
             let id = item_p(p, "item").or(s.state.source_item).ok_or_else(|| bad("project.setMarks", "need `item`"))?;
             let p = p.clone();
             s.edit("Mark", |pr, _| {
@@ -4367,16 +4386,56 @@ fn reset_params(e: &mut filmagic_project::EffectInstance, only: Option<&str>, fr
 }
 
 /// The `interpolation` parameter; a missing or unknown name is linear.
-pub(crate) fn interpolation_p(p: &Value) -> filmagic_project::Interpolation {
-    match str_p(p, "interpolation").unwrap_or("linear").to_ascii_lowercase().as_str() {
-        "bezier" => filmagic_project::Interpolation::Bezier,
-        "autobezier" => filmagic_project::Interpolation::AutoBezier,
-        "continuousbezier" => filmagic_project::Interpolation::ContinuousBezier,
-        "hold" => filmagic_project::Interpolation::Hold,
-        "easein" => filmagic_project::Interpolation::EaseIn,
-        "easeout" => filmagic_project::Interpolation::EaseOut,
-        _ => filmagic_project::Interpolation::Linear,
+/// The easing names `effects.setInterpolation` takes (and `ease` on `effects.setParam`).
+pub(crate) const EASE_NAMES: &str = "linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut";
+
+/// An easing name, any case; `None` for a name the engine has no easing for.
+pub(crate) fn ease_of(name: &str) -> Option<filmagic_project::Interpolation> {
+    use filmagic_project::Interpolation as I;
+    Some(match name.to_ascii_lowercase().as_str() {
+        "linear" => I::Linear,
+        "bezier" => I::Bezier,
+        "autobezier" => I::AutoBezier,
+        "continuousbezier" => I::ContinuousBezier,
+        "hold" => I::Hold,
+        "easein" => I::EaseIn,
+        "easeout" => I::EaseOut,
+        _ => return None,
+    })
+}
+
+/// The name [`ease_of`] reads for an easing.
+pub(crate) fn ease_name(i: filmagic_project::Interpolation) -> &'static str {
+    use filmagic_project::Interpolation as I;
+    match i {
+        I::Linear => "linear",
+        I::Bezier => "bezier",
+        I::AutoBezier => "autoBezier",
+        I::ContinuousBezier => "continuousBezier",
+        I::Hold => "hold",
+        I::EaseIn => "easeIn",
+        I::EaseOut => "easeOut",
     }
+}
+
+/// The easing under `key`: `Ok(None)` when absent or null; an unknown name or a non-string is an
+/// error of `cmd` (it used to fall back to linear without a word).
+pub(crate) fn ease_p(p: &Value, key: &str, cmd: &str) -> Result<Option<filmagic_project::Interpolation>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().and_then(ease_of).map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be one of {EASE_NAMES}, got {v}"))),
+    }
+}
+
+/// `interpolation` of `effects.setInterpolation`: linear when absent.
+pub(crate) fn interpolation_p(p: &Value, cmd: &str) -> Result<filmagic_project::Interpolation> {
+    Ok(ease_p(p, "interpolation", cmd)?.unwrap_or_default())
+}
+
+/// The keyframe of `prm` nearest media time `mt`, within `tol`.
+fn nearest_keyframe(prm: &filmagic_project::Param, mt: Tick, tol: Tick) -> Option<Tick> {
+    let gap = |t: Tick| (i128::from(t.0) - i128::from(mt.0)).unsigned_abs();
+    prm.keyframes.iter().map(|k| k.time).min_by_key(|t| gap(*t)).filter(|t| gap(*t) <= tol.0.max(0).unsigned_abs().into())
 }
 
 /// `effects.addKeyframe` / `deleteKeyframe` / `moveKeyframe` / `setKeyframe` / `setKeyframeInterpolation`.
@@ -4384,15 +4443,26 @@ pub(crate) fn interpolation_p(p: &Value) -> filmagic_project::Interpolation {
 /// the playhead fallback is pinned to the clip's last tick. `add` replies `{added, mediaTime}`:
 /// whether it added the keyframe or (it is a toggle) removed the one there, and the media time of
 /// that keyframe. `delete` replies `{removed}`: whether a keyframe sat exactly at `mediaTime`.
+///
+/// The keyframe the other operations act on is the one exactly at `mediaTime` (source time), or
+/// the one nearest the timeline `time` (default: the playhead), within half a frame: that time
+/// goes through the clip's speed and frame hold as rendering does (#13).
 fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
-    let c = clip_p(p, "clip").ok_or_else(|| bad("keyframe", "need `clip`"))?;
-    let pid = str_p(p, "param").ok_or_else(|| bad("keyframe", "need `param`"))?.to_string();
+    let cmd = match op {
+        "add" => "effects.addKeyframe",
+        "delete" => "effects.deleteKeyframe",
+        "move" => "effects.moveKeyframe",
+        "set" => "effects.setKeyframe",
+        _ => "effects.setInterpolation",
+    };
+    let c = clip_p(p, "clip").ok_or_else(|| bad(cmd, "need `clip`"))?;
+    let pid = str_p(p, "param").ok_or_else(|| bad(cmd, "need `param`"))?.to_string();
     let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
     let at = time_p(s, p, "");
     let playhead = s.playhead();
     let mtime = p.get("mediaTime").and_then(Value::as_i64).map(Tick);
     let to = p.get("to").and_then(Value::as_i64).map(Tick);
-    let interp = interpolation_p(p);
+    let interp = if op == "interp" { Some(interpolation_p(p, cmd)?) } else { ease_p(p, "interpolation", cmd)? };
     let label = match op {
         "add" => "Add Keyframe",
         "delete" => "Delete Keyframe",
@@ -4400,6 +4470,9 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
         "set" => "Edit Keyframe",
         _ => "Keyframe Interpolation",
     };
+    if matches!(op, "delete" | "move" | "set") && mtime.is_none() && at.is_none() {
+        return Err(bad(cmd, "need `mediaTime` (source time of the keyframe) or `time` (timeline time, e.g. {\"seconds\": 2.5})"));
+    }
     // a keyframe dragged on the timeline is one undo step, like a dragged value
     let merge = bool_p(p, "merge").unwrap_or(false).then(|| format!("keyframe:{op}:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null)));
     if bool_p(p, "begin").unwrap_or(false) {
@@ -4407,15 +4480,26 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
     }
     s.edit_sequence_as(label, merge.as_deref(), |q, _, _| {
         let mut reply = Value::Null;
+        let frame = q.settings.frame_rate.frame_duration();
         let (_, it) = q.find_item_mut(c).ok_or(filmagic_edit::EditError::NoItem(c))?;
         let mt_now = it.effect_time_at(at.unwrap_or_else(|| playhead.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+        // half a timeline frame, in media time (the clip's speed scales it)
+        let tol = Tick(((frame.0 as f64 * it.speed.abs()) / 2.0).round().clamp(1.0, i64::MAX as f64) as i64);
         let e = match &eff {
             Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
             Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
             _ => None,
         }
-        .ok_or_else(|| bad("keyframe", "no such effect"))?;
-        let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad("keyframe", "no such param"))?;
+        .ok_or_else(|| bad(cmd, "no such effect"))?;
+        let prm = crate::masks::target_param(e, p, &pid).ok_or_else(|| bad(cmd, "no such param"))?;
+        let near: Vec<f64> = prm.keyframes.iter().map(|k| crate::time_params::secs(k.time)).collect();
+        let missing =
+            |t: Tick| bad(cmd, format!("no keyframe at media time {:.3} s (keyframes at {near:?} s of media time); `effects.list` shows them", t.seconds()));
+        // the keyframe acted on: exactly at `mediaTime`, else nearest the timeline time
+        let target = match mtime {
+            Some(m) => Some(m),
+            None => nearest_keyframe(prm, mt_now, tol),
+        };
         match op {
             "add" => {
                 // toggle: remove if a keyframe sits at the playhead, else add
@@ -4423,43 +4507,48 @@ fn keyframe_op(s: &mut Session, p: &Value, op: &str) -> Result<Value> {
                 if added {
                     prm.add_keyframe(mt_now);
                 }
-                reply = json!({"added": added, "mediaTime": mt_now.0});
+                reply = json!({"added": added, "mediaTime": mt_now.0, "mediaSeconds": crate::time_params::secs(mt_now)});
             }
             "delete" => {
-                let removed = prm.remove_keyframe_at(mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?);
+                let removed = target.is_some_and(|t| prm.remove_keyframe_at(t));
                 reply = json!({"removed": removed});
+                if let Some(t) = target.filter(|_| removed) {
+                    reply["mediaTime"] = json!(t.0);
+                    reply["mediaSeconds"] = json!(crate::time_params::secs(t));
+                }
             }
             "move" => {
-                let from = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
-                let to = to.ok_or_else(|| bad("keyframe", "need `to`"))?;
+                let from = target.ok_or_else(|| missing(mt_now))?;
+                let to = to.ok_or_else(|| bad(cmd, "need `to` (the new media time)"))?;
                 if let Some(i) = prm.keyframes.iter().position(|k| k.time == from) {
                     let mut k = prm.keyframes.remove(i);
                     k.time = to;
                     if let Some(v) = p.get("value") {
-                        k.value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
+                        k.value = json_to_param(&k.value, v).ok_or_else(|| bad(cmd, "value has the wrong type"))?;
                     }
                     prm.keyframes.retain(|x| x.time != to);
                     let at = prm.keyframes.partition_point(|x| x.time < to);
                     prm.keyframes.insert(at, k);
                 }
             }
-            "set" => {
-                let at = mtime.ok_or_else(|| bad("keyframe", "need `mediaTime`"))?;
-                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
-                if let Some(v) = p.get("value") {
-                    k.value = json_to_param(&k.value, v).ok_or_else(|| bad("keyframe", "value has the wrong type"))?;
-                }
-                if let Some(x) = f64_p(p, "inInfluence") {
-                    k.in_influence = x.clamp(0.01, 1.0);
-                }
-                if let Some(x) = f64_p(p, "outInfluence") {
-                    k.out_influence = x.clamp(0.01, 1.0);
-                }
-            }
             _ => {
-                let at = mtime.unwrap_or(mt_now);
-                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| bad("keyframe", "no keyframe at that time"))?;
-                k.interp = interp;
+                let at = target.ok_or_else(|| missing(mtime.unwrap_or(mt_now)))?;
+                let k = prm.keyframes.iter_mut().find(|k| k.time == at).ok_or_else(|| missing(at))?;
+                if op == "set" {
+                    if let Some(v) = p.get("value") {
+                        k.value = json_to_param(&k.value, v).ok_or_else(|| bad(cmd, "value has the wrong type"))?;
+                    }
+                    if let Some(x) = f64_p(p, "inInfluence") {
+                        k.in_influence = x.clamp(0.01, 1.0);
+                    }
+                    if let Some(x) = f64_p(p, "outInfluence") {
+                        k.out_influence = x.clamp(0.01, 1.0);
+                    }
+                }
+                if let Some(i) = interp {
+                    k.interp = i;
+                }
+                reply = json!({"mediaTime": at.0, "mediaSeconds": crate::time_params::secs(at)});
             }
         }
         Ok(reply)
@@ -5341,6 +5430,21 @@ pub fn preview_transition(s: &Session, p: &Value, kind: TrackKind) -> Result<(Tr
 }
 
 /// JSON description of the project (bins, items) for agents.
+/// The frame rate an item's picture plays at: a subclip's media's, none for sound alone.
+fn picture_rate(p: &filmagic_project::Project, it: &filmagic_project::ProjectItem) -> Option<FrameRate> {
+    let rate = match &it.kind {
+        ItemKind::Media(_) | ItemKind::Subclip { .. } => {
+            let (_, m, _) = p.resolve_media(it.id)?;
+            if !m.info.has_video() {
+                return None;
+            }
+            m.frame_rate()
+        }
+        _ => it.frame_rate(),
+    };
+    (rate.num > 0 && rate.den > 0).then_some(rate)
+}
+
 pub fn inspect_project(s: &Session) -> Value {
     let p = &s.project;
     fn bin(b: &filmagic_project::Bin, p: &filmagic_project::Project) -> Value {
@@ -5350,7 +5454,11 @@ pub fn inspect_project(s: &Session) -> Value {
             "children": b.children.iter().map(|c| match c {
                 filmagic_project::BinEntry::Item(i) => {
                     let it = p.item(*i);
-                    json!({"item": i.0, "name": it.map(|x| x.name.clone()), "type": it.map(|x| x.type_label()), "duration": it.map(|x| x.duration().0), "label": it.map(|x| x.label.name()), "customLabelColor": it.and_then(|x| x.custom_label_color)})
+                    json!({"item": i.0, "name": it.map(|x| x.name.clone()), "type": it.map(|x| x.type_label()), "duration": it.map(|x| x.duration().0),
+                        // the duration in seconds, and in frames at the picture's rate (#13)
+                        "durationSeconds": it.map(|x| crate::time_params::secs(x.duration())),
+                        "durationFrames": it.and_then(|x| picture_rate(p, x).map(|r| r.frame_at(Tick(x.duration().0.saturating_add(r.frame_duration().0).saturating_sub(1))))),
+                        "frameRate": it.and_then(|x| picture_rate(p, x)).map(|r| r.as_f64()), "label": it.map(|x| x.label.name()), "customLabelColor": it.and_then(|x| x.custom_label_color)})
                 }
                 filmagic_project::BinEntry::Bin(b) => bin(b, p),
             }).collect::<Vec<_>>()

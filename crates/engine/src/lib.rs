@@ -62,6 +62,7 @@ pub mod shortcuts;
 pub mod source_monitor;
 pub mod story;
 pub mod sync;
+pub mod time_params;
 pub mod transcript;
 pub mod trim;
 pub mod voiceover;
@@ -781,6 +782,16 @@ impl Session {
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
         }
+        // every time-valued parameter takes ticks or {"seconds"|"frame"|"timecode"} (#13)
+        let params = match time_params::normalize(self, id, params) {
+            Ok(p) => p,
+            Err(e) => {
+                if self.exec_depth == 0 {
+                    self.log.push(panels::Level::Error, id, e.to_string());
+                }
+                return Err(e);
+            }
+        };
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
@@ -812,12 +823,17 @@ impl Session {
         if outermost {
             self.command_origin = Some(id.to_string());
         }
+        let ends_before = (outermost && time_params::PLACES_GRAPHICS.contains(&id)).then(|| time_params::ends(self));
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
         // session and its unsaved project down. The panic hook has logged where it happened.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
+        let mut r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
+        // a graphic or caption placed past the last picture frame is reported, not silent (#13)
+        if let (Some(before), Ok(v)) = (&ends_before, &mut r) {
+            time_params::warn_past_end(self, before, v);
+        }
         self.exec_depth -= 1;
         if outermost {
             self.command_origin = None;
@@ -1468,6 +1484,8 @@ mod stored_paths_tests;
 mod story_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_params_tests;
 #[cfg(test)]
 mod timeline_move_tests;
 #[cfg(test)]
