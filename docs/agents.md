@@ -180,17 +180,53 @@ edit reports the value written at the requested time, rather than the static fal
 For example, setting opacity `blend` to `"Screen"` returns
 `{"keyframes": 0, "param": "blend", "value": 8}`.
 
+With `clips` (a list of clip ids) instead of `clip`, `effects.setParam` sets the same value on every
+listed clip as one undo step, and the reply adds `"clips": [{"clip", "keyframes", "value"}]`. Each
+clip must already have the effect; if one does not, or a value is refused, none of them changes.
+
 `effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
 `{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
 is, to find it again. An explicit `time` keeps its place, outside the clip too, as in `effects.setParam`;
 only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
 returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
 
+### Clip ids, linked clips and tracks
+
+- **Clip ids are the `clip` numbers** of the items in `sequence_inspect` (or `sequence.clips`).
+  Clips, links, groups, tracks, transitions, markers and project items share one id counter, so the
+  `link` value of a clip looks like a clip id but is not one. A command that takes `clips` / `clip`
+  refuses any id that is no clip of the active sequence before it changes anything, and says what
+  the id is and what to pass instead: `53 is a link id, not a clip id; its linked clips are 52
+  (video, V1) and 54 (audio, A1). Pass those clip ids`. The same goes for track, group, transition,
+  marker and project-item ids, clips of another sequence, and values that are not ids.
+- **Linked clips.** While Linked Selection is on (the default; `sequence.linkedSelection`), a video
+  clip brings its linked audio along: edits such as `edit.clear`, `edit.rippleDelete`,
+  `clip.speedDuration`, `clip.enable` and `timeline.move` change both, and audio commands
+  (`essentialSound.*`, `clip.audioGain`) take a video clip as its linked audio. Effect setters
+  (`effects.setParam`) change exactly the clips you name.
+- **One setting on many clips.** `effects.setParam` takes `clips:[...]` (above). To give several
+  clips everything one clip has (Color Grading, Motion, Opacity, Volume…), select the source clip
+  and run `edit.copy`, then `edit.pasteAttributes {"clips":[...]}`; `edit.removeAttributes` takes
+  them off again. For one grade over a stretch of the film, `file.newAdjustmentLayer` makes an item
+  to place on a track above the clips. `command_list` with a `filter` matches each word against the
+  id, label, menu, params and `keywords` of every command, so `"many clips"` or `"colour grade"`
+  finds these.
+- **Graphic and template tracks.** `graphics.new*` and `graphics.template.apply` take `track` as
+  `"V2"` (that track, which must be free over the new clip's range and unlocked), `"auto"` (the
+  first free track above every clip in the new clip's range, else a new track), or a 0-based
+  index as before. Without `track` the clip goes above the clips at the playhead.
+- **New tracks follow the media.** `timeline.place` with `"track":"new"` adds a video track for the
+  picture; for a file with sound only it adds an audio track, unless `audioTrack` says where the
+  sound goes.
+- **A sequence that matches a clip.** `file.newSequence {"fromItem": id, "place": false}` takes the
+  clip's frame size, rate and audio settings and leaves the sequence empty (the default, `place:
+  true`, also places the clip).
+
 ### Tools
 
 | Tool | Modes | Purpose |
 |---|---|---|
-| `command_list` | both | every command: id, label, menu, shortcut, params, enabled now (`filter`, `enabled_only`) |
+| `command_list` | both | every command: id, label, menu, shortcut, params, keywords, enabled now (`filter`: every word must appear in one of those; `enabled_only`) |
 | `command_run` | both | run a command `{id, params}`; edits are undoable |
 | `command_batch` | both | run several commands in order `{steps: [{id, params}], stop_on_error}` → `{completed, failed, results}` |
 | `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`) |

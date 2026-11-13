@@ -13,6 +13,7 @@
 pub mod aaf_omf;
 pub mod autosave;
 pub mod captions;
+pub mod clip_ids;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
@@ -784,6 +785,14 @@ impl Session {
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
+        // an id that is no clip (a link, a track, a clip of another sequence…) named as one is
+        // refused with what it is, before anything runs (#14)
+        if self.exec_depth == 0
+            && let Err(e) = clip_ids::check_named_clips(self, spec, &params)
+        {
+            self.log.push(panels::Level::Warning, id, e.to_string());
+            return Err(e);
+        }
         if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
@@ -1351,6 +1360,8 @@ mod audio_placement_tests;
 mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
+#[cfg(test)]
+mod clip_identity_tests;
 #[cfg(test)]
 mod clip_mismatch_tests;
 #[cfg(test)]
