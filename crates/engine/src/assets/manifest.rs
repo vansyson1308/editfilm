@@ -97,6 +97,10 @@ pub struct Manifest {
     /// The credit line a video using these items should carry (CC BY needs one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<String>,
+    /// Words that fit every item of the pack (`ui`, `sci-fi`). A search counts them below an
+    /// item's own tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub items: Vec<Item>,
 }
@@ -200,6 +204,7 @@ pub fn validate(m: &mut Manifest) -> Result<Vec<String>, String> {
     for (k, v) in [("version", &mut m.version), ("description", &mut m.description), ("author", &mut m.author), ("attribution", &mut m.attribution)] {
         opt_text(k, v, 4096)?;
     }
+    m.tags = clean_words(&m.tags);
     if m.items.len() > MAX_ITEMS {
         return Err(format!("the pack lists {} items; at most {MAX_ITEMS} are allowed", m.items.len()));
     }
@@ -270,6 +275,11 @@ pub fn check_id(id: &str) -> Result<(), String> {
     if is_reserved_windows_name(id) {
         return Err("is a reserved file name on Windows".into());
     }
+    // `Packs/index.json` and its `.tmp` sit beside the pack folders: a pack of that name would take their place
+    let lower = id.to_ascii_lowercase();
+    if lower.ends_with(".json") || lower.ends_with(".tmp") {
+        return Err("must not end in `.json` or `.tmp` (names Filmagic keeps for its own files)".into());
+    }
     Ok(())
 }
 
@@ -311,36 +321,76 @@ pub fn safe_rel_path(p: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Device names Windows reserves in every folder, with or without an extension: `CON`, `PRN`,
+/// `AUX`, `NUL`, `COM0`–`COM9` and `LPT0`–`LPT9`, the superscript `COM¹`–`COM³` and
+/// `LPT¹`–`LPT³` too.
 fn is_reserved_windows_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes().get(3).is_some_and(u8::is_ascii_digit))
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let Some(n) = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")) else { return false };
+    let mut c = n.chars();
+    matches!((c.next(), c.next()), (Some('0'..='9' | '¹' | '²' | '³'), None))
 }
 
-/// `https://…`, or `http://` to this machine only (a local catalogue). A SHA-256 always pins the
-/// content, so the URL decides only who can see what is fetched.
+/// `https://` to a public host. Hosts on this machine or a private network (`localhost`,
+/// `127.*`, `10.*`, `192.168.*`, `[::1]`, …) are refused, so a manifest cannot make Filmagic
+/// fetch from a local service; this build's own tests may use plain `http://` to localhost. A
+/// SHA-256 always pins the content, so the URL decides only who can see what is fetched. A name
+/// that resolves to a private address is not detected.
 pub fn check_url(u: &str) -> Result<(), String> {
+    check_url_with(u, cfg!(test))
+}
+
+pub(crate) fn check_url_with(u: &str, allow_local_http: bool) -> Result<(), String> {
     if u.len() > 2048 || u.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err("the url must be at most 2048 characters without spaces".into());
     }
     let lower = u.to_ascii_lowercase();
-    if lower.starts_with("https://") && u.len() > "https://".len() {
-        return Ok(());
+    let (https, rest) = match (lower.strip_prefix("https://"), lower.strip_prefix("http://")) {
+        (Some(r), _) => (true, r),
+        (None, Some(r)) => (false, r),
+        _ => return Err("the url must start with https://".into()),
+    };
+    let host = host_of(rest);
+    if host.is_empty() {
+        return Err("the url names no host".into());
     }
-    if let Some(rest) = lower.strip_prefix("http://") {
-        let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-        let host = host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host);
-        let name = if host.starts_with('[') {
-            host.split(']').next().map(|h| format!("{h}]")).unwrap_or_default()
-        } else {
-            host.split(':').next().unwrap_or("").to_string()
-        };
-        if matches!(name.as_str(), "localhost" | "127.0.0.1" | "[::1]") {
-            return Ok(());
-        }
-        return Err("the url must use https:// (plain http:// is allowed only to localhost)".into());
+    let local = is_local_host(&host);
+    match (https, local, allow_local_http) {
+        (_, true, true) | (true, false, _) => Ok(()),
+        (_, true, false) => Err(format!("the url points at this machine or a private network ({host}); asset packs come from public https:// hosts")),
+        (false, false, _) => Err("the url must use https://".into()),
     }
-    Err("the url must start with https://".into())
+}
+
+/// The host of the part of a URL after `scheme://`: no user info, port, path or query.
+fn host_of(rest: &str) -> String {
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = auth.rsplit_once('@').map(|(_, h)| h).unwrap_or(auth);
+    if host.starts_with('[') {
+        host.split(']').next().map(|h| format!("{h}]")).unwrap_or_default()
+    } else {
+        host.split(':').next().unwrap_or("").trim_end_matches('.').to_string()
+    }
+}
+
+fn is_local_host(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+        return true;
+    }
+    if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        return v6 == "::" || v6 == "::1" || v6.starts_with("fc") || v6.starts_with("fd") || v6.starts_with("fe80") || v6.starts_with("::ffff:");
+    }
+    let parts: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    match (parts.len() == 4 && host.split('.').count() == 4, parts.as_slice()) {
+        (true, [0 | 10 | 127, ..]) => true,
+        (true, [169, 254, ..]) | (true, [192, 168, ..]) => true,
+        (true, [172, b, ..]) => (16..=31).contains(b),
+        (true, [100, b, ..]) => (64..=127).contains(b),
+        _ => false,
+    }
 }
 
 /// A SHA-256 as 64 hex digits, lower-cased.
@@ -406,7 +456,14 @@ pub fn hex(rgb: [u8; 3]) -> String {
 /// typed without diacritics finds names written with them. Latin letters only; other scripts are
 /// lower-cased as they are.
 pub fn fold(s: &str) -> String {
-    s.chars().flat_map(char::to_lowercase).map(fold_char).collect()
+    s.chars().filter(|c| !is_combining(*c)).flat_map(char::to_lowercase).map(fold_char).collect()
+}
+
+/// Combining diacritical marks (U+0300–U+036F): a name in decomposed form (NFD, as macOS often
+/// stores file names) writes `ạ` as `a` + U+0323, and the mark is dropped like the accent of a
+/// precomposed letter.
+fn is_combining(c: char) -> bool {
+    ('\u{0300}'..='\u{036F}').contains(&c)
 }
 
 fn fold_char(c: char) -> char {
@@ -447,6 +504,10 @@ pub fn words(s: &str) -> Vec<String> {
     let mut cur = String::new();
     let mut prev_lower = false;
     for c in s.chars() {
+        // a combining accent belongs to the letter before it (`Nha\u{323}c` is one word)
+        if is_combining(c) {
+            continue;
+        }
         if !c.is_alphanumeric() {
             if !cur.is_empty() {
                 out.push(fold(&std::mem::take(&mut cur)));

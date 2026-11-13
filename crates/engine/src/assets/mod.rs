@@ -30,7 +30,7 @@ use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, always, bad, has_seq, tick_or_time_p};
-use crate::{EngineError, Result, Session};
+use crate::{EngineError, MediaPool, Result, Services, Session};
 use manifest::{Kind, MANIFEST, Manifest};
 pub use store::PackStore;
 
@@ -48,12 +48,13 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "assets.install",
             "Install Asset Pack",
-            r#"{"path":"folder|file.zip|pack.json"?,"url":str?,"sha256":hex?,"size":bytes?,"catalog":entryId?,"id":packId?,"name":str?,"license":str?,"source":str?,"author":str?,"replace":bool?}"#,
+            r#"{"path":"folder|file.zip|pack.json"?,"url":str?,"sha256":hex?,"size":bytes?,"catalog":entryId?,"id":packId?,"name":str?,"license":str?,"source":str?,"author":str?,"replace":bool?,"wait":bool?}"#,
             always,
             install,
             false,
         ),
         spec("assets.remove", "Remove Asset Pack", r#"{"pack":packId}"#, always, remove, false),
+        spec("assets.fetch", "Download Assets", r#"{"asset":"pack/item"?,"pack":packId?,"wait":bool?}"#, always, fetch, false),
         spec(
             "assets.search",
             "Search Assets",
@@ -215,7 +216,7 @@ fn search(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|i| alpha.is_none_or(|a| (i.item.alpha || i.item.key_color.is_some()) == a))
         .filter(|i| min_s.is_none_or(|m| i.item.duration.is_some_and(|d| d >= m)))
         .filter(|i| max_s.is_none_or(|m| i.item.duration.is_none_or(|d| d <= m)))
-        .filter_map(|i| score(i, &terms).map(|sc| (sc, i)))
+        .filter_map(|i| score(i, ix.pack(&i.pack).map_or(&[][..], |p| p.tags.as_slice()), &terms).map(|sc| (sc, i)))
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.pack.cmp(&b.1.pack)).then_with(|| a.1.item.id.cmp(&b.1.item.id)));
     let total = hits.len();
@@ -242,8 +243,9 @@ fn parse_kind(k: &str, cmd: &str) -> Result<Kind> {
 }
 
 /// How well an item matches the query words (None: a word matched nothing). Every word must
-/// match a tag, mood, id, file name or the kind.
-fn score(i: &store::IndexItem, terms: &[String]) -> Option<u32> {
+/// match a tag, mood, id, file name or the kind of the item, or a tag of its pack, which counts
+/// least: a pack's words fit every item of it equally.
+fn score(i: &store::IndexItem, pack_tags: &[String], terms: &[String]) -> Option<u32> {
     if terms.is_empty() {
         return Some(1);
     }
@@ -258,7 +260,7 @@ fn score(i: &store::IndexItem, terms: &[String]) -> Option<u32> {
             3
         } else if it.tags.iter().any(|x| x.starts_with(t.as_str())) {
             2
-        } else if id.contains(t.as_str()) || file.contains(t.as_str()) {
+        } else if id.contains(t.as_str()) || file.contains(t.as_str()) || pack_tags.iter().any(|x| x == t || x.split('-').any(|w| w == t)) {
             1
         } else {
             return None;
@@ -282,6 +284,10 @@ struct Meta {
     author: Option<String>,
     attribution: Option<String>,
     kind: Option<Kind>,
+    /// Pack-wide tags (a catalogue entry's).
+    tags: Vec<String>,
+    /// The archive came from a URL: without a manifest its licence is unknown, not the user's own.
+    downloaded: bool,
 }
 
 impl Meta {
@@ -301,6 +307,8 @@ impl Meta {
 
 /// The license an own-files pack gets when none is given.
 const OWN_FILES_LICENSE: &str = "LicenseRef-Own-Files";
+/// The license a downloaded archive without a manifest gets when none is given.
+const UNKNOWN_LICENSE: &str = "LicenseRef-Unknown";
 
 fn install(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "assets.install";
@@ -308,6 +316,7 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
     let url = opt_str(p, "url", cmd)?;
     let entry = opt_str(p, "catalog", cmd)?;
     let replace = opt_bool(p, "replace", cmd)?.unwrap_or(false);
+    let wait = opt_bool(p, "wait", cmd)?.unwrap_or(false);
     let mut meta = Meta::from_params(p, cmd)?;
     if let Some(id) = &meta.id {
         manifest::check_id(id).map_err(|e| bad(cmd, format!("`id`: {e}")))?;
@@ -320,12 +329,10 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
     if sources != 1 {
         return Err(bad(cmd, "give exactly one of `path` (a folder, a .zip or a pack.json), `url` with `sha256`, or `catalog` (an id from assets.catalog)"));
     }
-    let stage = s.packs.stage().map_err(err(cmd))?;
-    let mut notes = Vec::new();
-    let (content, found) = if let Some(id) = entry {
+    // a download runs as a job: the app's control channel and MCP requests are answered on its UI
+    // thread, which must not wait on the network
+    let remote = if let Some(id) = entry {
         let e = catalog::find(id).ok_or_else(|| bad(cmd, format!("no catalogue entry `{}`: assets.catalog lists them", manifest::truncate(id))))?;
-        let zip = stage.dir.join("download.zip");
-        store::download(e.url, e.sha256, Some(e.size), store::MAX_DOWNLOAD_BYTES, &zip).map_err(err(cmd))?;
         meta.id = meta.id.or(Some(e.id.into()));
         meta.name = meta.name.or(Some(e.name.into()));
         meta.license = Some(e.license.into());
@@ -333,54 +340,157 @@ fn install(s: &mut Session, p: &Value) -> Result<Value> {
         meta.author = Some(e.author.into());
         meta.attribution = Some(e.attribution.into());
         meta.kind = Kind::parse(e.kind);
-        from_zip(&zip, &stage.dir, &mut notes).map_err(err(cmd))?
+        meta.tags = e.tags.iter().map(|t| t.to_string()).collect();
+        Some((e.url.to_string(), e.sha256.to_string(), Some(e.size), e.name.to_string()))
     } else if let Some(u) = url {
         let sha = opt_str(p, "sha256", cmd)?
             .ok_or_else(|| bad(cmd, "a `url` needs its `sha256` (64 hex digits) so the download can be checked before it is installed"))?;
-        let file = stage.dir.join("download");
-        store::download(u, sha, size, store::MAX_DOWNLOAD_BYTES, &file).map_err(err(cmd))?;
+        manifest::check_url(u).map_err(err(cmd))?;
+        let sha = manifest::check_sha256(sha).map_err(err(cmd))?;
         meta.source = meta.source.or(Some(u.to_string()));
-        if looks_like_json(&file) { manifest_only(&file, &stage.dir).map_err(err(cmd))? } else { from_zip(&file, &stage.dir, &mut notes).map_err(err(cmd))? }
+        meta.downloaded = true;
+        Some((u.to_string(), sha, size, manifest::truncate(u)))
     } else {
-        let src = PathBuf::from(path.unwrap_or_default());
-        if src.is_dir() {
-            let dest = stage.dir.join("pack");
-            std::fs::create_dir_all(&dest).map_err(|e| bad(cmd, format!("{}: {e}", dest.display())))?;
-            let (files, skipped) = scan::walk(&src, false).map_err(err(cmd))?;
-            scan::copy_into(&files, &dest).map_err(err(cmd))?;
-            notes.extend(skipped.into_iter().map(|f| format!("skipped {f}")));
-            meta.source = meta.source.or(Some("own files".into()));
-            meta.derived_id = src.file_name().map(|n| manifest::slug(&n.to_string_lossy(), "my-pack"));
-            meta.name = meta.name.or_else(|| src.file_name().map(|n| n.to_string_lossy().to_string()));
-            let has = dest.join(MANIFEST).is_file();
-            (dest, has)
-        } else if src.is_file() {
-            if src.file_name().is_some_and(|n| n == MANIFEST) || looks_like_json(&src) {
-                let has_local = src.parent().is_some_and(|d| d.join(MANIFEST) == src);
-                if has_local && src.parent().is_some_and(|d| d.read_dir().map(|r| r.count() > 1).unwrap_or(false)) {
-                    return Err(bad(
-                        cmd,
-                        format!("{} sits in a folder with other files: install the folder (\"path\": its folder) so its files come along", src.display()),
-                    ));
-                }
-                manifest_only(&src, &stage.dir).map_err(err(cmd))?
-            } else {
-                meta.source = meta.source.or(Some("own files".into()));
-                meta.derived_id = src.file_stem().map(|n| manifest::slug(&n.to_string_lossy(), "my-pack"));
-                from_zip(&src, &stage.dir, &mut notes).map_err(err(cmd))?
-            }
-        } else {
-            return Err(bad(cmd, format!("{} is not a folder or file Filmagic can read", manifest::truncate(&src.to_string_lossy()))));
-        }
+        None
     };
-    let (m, warnings) = finish(s, &content, found, meta).map_err(err(cmd))?;
+    if let Some((u, sha, size, label)) = remote {
+        let store = s.packs.clone();
+        store.root().map_err(err(cmd))?;
+        let (media, services) = (s.media.clone(), s.services.clone());
+        return run_job(s, cmd, format!("Installing {label}"), wait, move |progress| {
+            let stage = store.stage()?;
+            let file = stage.dir.join("download");
+            store::download(&u, &sha, size, store::MAX_DOWNLOAD_BYTES, &file, progress)?;
+            let mut notes = Vec::new();
+            let (content, found) = if looks_like_json(&file) { manifest_only(&file, &stage.dir)? } else { from_zip(&file, &stage.dir, &mut notes)? };
+            let (m, warnings) = finish(&media, &*services, &content, found, meta, &mut notes)?;
+            let ix = store.commit(&content, &m.id, replace)?;
+            drop(stage);
+            Ok(installed(&m, &ix, warnings, notes))
+        });
+    }
+    let stage = s.packs.stage().map_err(err(cmd))?;
+    let mut notes = Vec::new();
+    let src = PathBuf::from(path.unwrap_or_default());
+    let (content, found) = if src.is_dir() {
+        let dest = stage.dir.join("pack");
+        std::fs::create_dir_all(&dest).map_err(|e| bad(cmd, format!("{}: {e}", dest.display())))?;
+        let (files, skipped) = scan::walk(&src, false).map_err(err(cmd))?;
+        scan::copy_into(&files, &dest).map_err(err(cmd))?;
+        notes.extend(skipped.into_iter().map(|f| format!("skipped {f}")));
+        meta.source = meta.source.or(Some("own files".into()));
+        meta.derived_id = src.file_name().map(|n| manifest::slug(&n.to_string_lossy(), "my-pack"));
+        meta.name = meta.name.or_else(|| src.file_name().map(|n| n.to_string_lossy().to_string()));
+        let has = dest.join(MANIFEST).is_file();
+        (dest, has)
+    } else if src.is_file() {
+        if src.file_name().is_some_and(|n| n == MANIFEST) || looks_like_json(&src) {
+            let folder = folder_of(&src);
+            let others =
+                folder.read_dir().map(|r| r.flatten().any(|e| e.file_name() != MANIFEST && !e.file_name().to_string_lossy().starts_with('.'))).unwrap_or(false);
+            if src.file_name().is_some_and(|n| n == MANIFEST) && others {
+                return Err(bad(
+                    cmd,
+                    format!("{} sits in a folder with other files: install the folder (\"path\": its folder) so its files come along", src.display()),
+                ));
+            }
+            manifest_only(&src, &stage.dir).map_err(err(cmd))?
+        } else {
+            meta.source = meta.source.or(Some("own files".into()));
+            meta.derived_id = src.file_stem().map(|n| manifest::slug(&n.to_string_lossy(), "my-pack"));
+            from_zip(&src, &stage.dir, &mut notes).map_err(err(cmd))?
+        }
+    } else {
+        return Err(bad(cmd, format!("{} is not a folder or file Filmagic can read", manifest::truncate(&src.to_string_lossy()))));
+    };
+    let (m, warnings) = finish(&s.media, &*s.services, &content, found, meta, &mut notes).map_err(err(cmd))?;
     let ix = s.packs.commit(&content, &m.id, replace).map_err(err(cmd))?;
     drop(stage);
     Ok(installed(&m, &ix, warnings, notes))
 }
 
+/// The folder a file is in; a bare name (`pack.json`) has an empty parent, which is the
+/// working directory.
+fn folder_of(file: &Path) -> &Path {
+    file.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+/// Run `work` as a job (`jobs.list`, `jobs.cancel`): on a thread, or here with `wait` (the CLI,
+/// which exits after the command, always waits). `work` gets a progress callback for downloads
+/// that returns false once the job is cancelled. A job that waited returns `work`'s result; one
+/// that did not returns the job to poll, and its finished status says what it did.
+fn run_job(
+    s: &mut Session,
+    cmd: &'static str,
+    label: String,
+    wait: bool,
+    work: impl FnOnce(store::OnProgress) -> std::result::Result<Value, String> + Send + 'static,
+) -> Result<Value> {
+    use std::sync::PoisonError;
+    use std::sync::atomic::Ordering;
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
+    let (prog, res) = (job.progress.clone(), job.result.clone());
+    let out: std::sync::Arc<std::sync::Mutex<Option<std::result::Result<Value, String>>>> = Default::default();
+    let out2 = out.clone();
+    let body = move || {
+        let t0 = web_time::Instant::now();
+        let on = |done: u64, total: u64| {
+            prog.done.store(done, Ordering::Relaxed);
+            if total > 0 {
+                prog.total.store(total, Ordering::Relaxed);
+            }
+            !prog.cancel.load(Ordering::Relaxed)
+        };
+        let r = work(&on);
+        let status = match &r {
+            Ok(v) => v.get("status").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| "done".into()),
+            Err(e) => e.clone(),
+        };
+        *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
+        let report = match &r {
+            Ok(_) => Ok(filmagic_export::Report {
+                path: String::new(),
+                frames: 0,
+                seconds: t0.elapsed().as_secs_f64(),
+                bytes: 0,
+                render_fps: 0.0,
+                extra_files: Vec::new(),
+            }),
+            Err(e) => {
+                *prog.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
+                Err(e.clone())
+            }
+        };
+        prog.finished.store(true, Ordering::Relaxed);
+        *res.lock().unwrap_or_else(PoisonError::into_inner) = Some(report);
+        *out2.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
+    };
+    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), body);
+    s.jobs.push(job);
+    if wait || cfg!(target_arch = "wasm32") {
+        run();
+        let r = out.lock().unwrap_or_else(PoisonError::into_inner).take();
+        return match r {
+            Some(Ok(mut v)) => {
+                v["job"] = json!(id);
+                Ok(v)
+            }
+            Some(Err(e)) => Err(bad(cmd, e)),
+            None => Err(bad(cmd, "the job stopped before it finished (see the crash log)")),
+        };
+    }
+    std::thread::Builder::new().name("filmagic-assets".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    Ok(
+        json!({"job": id, "poll": "jobs.list", "cancel": "jobs.cancel", "notes": ["downloading in the background: poll jobs.list until this job is finished; its status says what was installed"]}),
+    )
+}
+
 /// The result of an install: the pack's summary and what to do next.
-fn installed(m: &Manifest, ix: &store::Index, warnings: Vec<String>, mut notes: Vec<String>) -> Value {
+fn installed(m: &Manifest, ix: &store::Index, mut warnings: Vec<String>, mut notes: Vec<String>) -> Value {
+    if m.license == UNKNOWN_LICENSE {
+        warnings.push("the archive has no pack.json and no `license` was given: its licence is recorded as unknown. Find out what it is before a video using it is published, and reinstall with \"license\" (and \"replace\": true) to record it".into());
+    }
     if m.license == OWN_FILES_LICENSE {
         notes.push(
             "licence recorded as your own files: make sure you may publish them before a video using them goes out (pass \"license\" to record another)".into(),
@@ -388,13 +498,17 @@ fn installed(m: &Manifest, ix: &store::Index, warnings: Vec<String>, mut notes: 
     }
     let remote = m.items.iter().filter(|i| i.url.is_some()).count();
     if remote > 0 {
-        notes.push(format!("{remote} items download when first placed (assets.place)"));
+        notes.push(format!(
+            "{remote} items are not downloaded yet: assets.fetch {{\"pack\": \"{}\"}} downloads them, or one with {{\"asset\": \"{}/<item>\"}}",
+            m.id, m.id
+        ));
     }
     notes.push(format!(
-        "find items with assets.search {{\"pack\": \"{}\"}} and put one on the timeline with assets.place {{\"asset\": \"{}/<item>\"}}",
-        m.id, m.id
+        "find items with assets.search {{\"pack\": \"{}\"}} and put one on the timeline with assets.place, passing the `asset` a search result gives",
+        m.id
     ));
-    json!({"pack": ix.pack(&m.id), "warnings": warnings, "notes": notes})
+    let status = format!("Installed the pack `{}` ({} items)", m.id, m.items.len());
+    json!({"status": status, "pack": ix.pack(&m.id), "warnings": warnings, "notes": notes})
 }
 
 fn looks_like_json(path: &Path) -> bool {
@@ -443,17 +557,32 @@ fn from_zip(zip: &Path, stage: &Path, notes: &mut Vec<String>) -> std::result::R
 
 /// Read (or make) the manifest of the pack in `dir`, check that every local item is there, and
 /// write the checked manifest back.
-fn finish(s: &Session, dir: &Path, has_manifest: bool, meta: Meta) -> std::result::Result<(Manifest, Vec<String>), String> {
+fn finish(
+    media: &MediaPool,
+    services: &dyn Services,
+    dir: &Path,
+    has_manifest: bool,
+    meta: Meta,
+    notes: &mut Vec<String>,
+) -> std::result::Result<(Manifest, Vec<String>), String> {
     let (m, mut warnings) = if has_manifest {
         let b = store::read_capped(&dir.join(MANIFEST), manifest::MAX_MANIFEST_BYTES).map_err(|e| e.to_string())?;
         let mut m = manifest::parse(&b)?;
         if let Some(id) = &meta.id {
             m.id = id.clone();
         }
+        let ignored: Vec<&str> = [("name", &meta.name), ("license", &meta.license), ("author", &meta.author), ("attribution", &meta.attribution)]
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .map(|(k, _)| *k)
+            .collect();
+        if !ignored.is_empty() && !meta.downloaded {
+            notes.push(format!("the pack's {MANIFEST} names these, so `{}` was not used: edit the manifest to change them", ignored.join("`, `")));
+        }
         let w = manifest::validate(&mut m)?;
         (m, w)
     } else {
-        let (mut items, w) = scan::items(s, dir, None)?;
+        let (mut items, w) = scan::items(media, services, dir, None)?;
         if items.is_empty() {
             return Err("found no media Filmagic can open in it (audio, video or pictures)".into());
         }
@@ -472,10 +601,11 @@ fn finish(s: &Session, dir: &Path, has_manifest: bool, meta: Meta) -> std::resul
             id,
             version: None,
             description: None,
-            license: meta.license.clone().unwrap_or_else(|| OWN_FILES_LICENSE.into()),
+            license: meta.license.clone().unwrap_or_else(|| if meta.downloaded { UNKNOWN_LICENSE } else { OWN_FILES_LICENSE }.into()),
             source: meta.source.clone().unwrap_or_else(|| "own files".into()),
             author: meta.author.clone(),
             attribution: meta.attribution.clone(),
+            tags: meta.tags.clone(),
             items,
         };
         let mut w2 = manifest::validate(&mut m)?;
@@ -518,9 +648,60 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut notes = Vec::new();
     if !cleared {
-        notes.push("some files were still in use; they are deleted on the next install or remove".to_string());
+        notes.push("some files were still in use (open in another program); they are deleted on the next install or remove".to_string());
     }
     Ok(json!({"removed": id, "packs": ix.packs.len(), "warnings": warnings, "notes": notes}))
+}
+
+/// `assets.fetch`: download remote items of an installed pack (one `asset`, or every one of a
+/// `pack` not downloaded yet), as a job.
+fn fetch(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "assets.fetch";
+    let wait = opt_bool(p, "wait", cmd)?.unwrap_or(false);
+    let (asset, pack) = (opt_str(p, "asset", cmd)?, opt_str(p, "pack", cmd)?);
+    let ix = s.packs.index().map_err(err(cmd))?;
+    let (pack, only) = match (asset, pack) {
+        (Some(r), None) => {
+            let (pk, id) = split_ref(r, cmd)?;
+            (pk.to_string(), Some(id.to_string()))
+        }
+        (None, Some(pk)) => (pk.to_string(), None),
+        _ => return Err(bad(cmd, "give `asset` (\"pack/item\") or `pack`, not both")),
+    };
+    if ix.pack(&pack).is_none() {
+        return Err(bad(cmd, not_installed(&pack, &ix)));
+    }
+    let dir = s.packs.pack_dir(&pack).map_err(err(cmd))?;
+    let todo: Vec<manifest::Item> = ix
+        .items
+        .iter()
+        .filter(|i| i.pack == pack && only.as_ref().is_none_or(|o| &i.item.id == o))
+        .map(|i| i.item.clone())
+        .filter(|it| it.url.is_some() && !dir.join(&it.file).is_file())
+        .collect();
+    if let Some(o) = &only
+        && ix.item(&pack, o).is_none()
+    {
+        return Err(bad(cmd, format!("the pack `{pack}` has no item `{}`", manifest::truncate(o))));
+    }
+    if todo.is_empty() {
+        return Ok(json!({"status": "nothing to download", "downloaded": 0, "notes": ["every item asked for is on disk already: assets.place it"]}));
+    }
+    let store = s.packs.clone();
+    let n = todo.len();
+    run_job(s, cmd, format!("Downloading {n} assets of {pack}"), wait, move |progress| {
+        for it in &todo {
+            manifest::safe_rel_path(&it.file)?;
+            let (Some(url), Some(sha)) = (&it.url, &it.sha256) else { continue };
+            let file = dir.join(&it.file);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            store::download(url, sha, it.size, manifest::MAX_REMOTE_ITEM_BYTES, &file, progress).map_err(|e| format!("`{pack}/{}`: {e}", it.id))?;
+        }
+        let _ = store.rebuild_index();
+        Ok(json!({"status": format!("Downloaded {n} assets of {pack}"), "downloaded": n, "notes": ["place them with assets.place"]}))
+    })
 }
 
 // ------------------------------------------------------------------------------------- build
@@ -544,7 +725,7 @@ fn build_pack(s: &mut Session, p: &Value) -> Result<Value> {
         (None, Some(m)) => m.id.clone(),
         (None, None) => from.file_name().map(|n| manifest::slug(&n.to_string_lossy(), "my-pack")).unwrap_or_else(|| "my-pack".into()),
     };
-    let (items, mut warnings) = scan::items(s, &from, previous.as_ref()).map_err(err(cmd))?;
+    let (items, mut warnings) = scan::items(&s.media, &*s.services, &from, previous.as_ref()).map_err(err(cmd))?;
     if items.is_empty() {
         return Err(bad(cmd, format!("{} holds no media Filmagic can open (audio, video or pictures)", from.display())));
     }
@@ -560,6 +741,7 @@ fn build_pack(s: &mut Session, p: &Value) -> Result<Value> {
         source: pick(&meta.source, previous.as_ref().map(|m| &m.source)).unwrap_or_else(|| "own files".into()),
         author: pick(&meta.author, previous.as_ref().and_then(|m| m.author.as_ref())),
         attribution: pick(&meta.attribution, previous.as_ref().and_then(|m| m.attribution.as_ref())),
+        tags: previous.as_ref().map(|m| m.tags.clone()).unwrap_or_default(),
         items,
     };
     warnings.extend(manifest::validate(&mut m).map_err(err(cmd))?);
@@ -607,6 +789,7 @@ fn split_ref<'a>(r: &'a str, cmd: &str) -> Result<(&'a str, &'a str)> {
 }
 
 /// The item's file on disk, downloaded first when it is a remote item not fetched yet.
+/// The item's file on disk, or what to run first when it is not there.
 fn local_file(s: &Session, pack: &str, it: &manifest::Item, cmd: &str) -> Result<PathBuf> {
     let dir = s.packs.pack_dir(pack).map_err(err(cmd))?;
     manifest::safe_rel_path(&it.file).map_err(err(cmd))?;
@@ -614,15 +797,17 @@ fn local_file(s: &Session, pack: &str, it: &manifest::Item, cmd: &str) -> Result
     if file.is_file() {
         return Ok(file);
     }
-    let (Some(url), Some(sha)) = (&it.url, &it.sha256) else {
-        return Err(bad(cmd, format!("{} is missing from the pack: reinstall it (assets.install with \"replace\":true)", file.display())));
-    };
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| bad(cmd, format!("{}: {e}", parent.display())))?;
+    if it.url.is_some() {
+        // a download here would hold up the app's UI thread: it is a job of its own
+        return Err(bad(
+            cmd,
+            format!(
+                "`{pack}/{}` is not downloaded yet: run assets.fetch {{\"asset\": \"{pack}/{}\"}}, wait until its job is finished (jobs.list), then place it",
+                it.id, it.id
+            ),
+        ));
     }
-    store::download(url, sha, it.size, manifest::MAX_REMOTE_ITEM_BYTES, &file).map_err(err(cmd))?;
-    let _ = s.packs.rebuild_index();
-    Ok(file)
+    Err(bad(cmd, format!("{} is missing from the pack: reinstall it (assets.install with \"replace\":true)", file.display())))
 }
 
 fn place(s: &mut Session, p: &Value) -> Result<Value> {
@@ -802,3 +987,10 @@ fn free_track(s: &Session, video: bool, start: Tick, end: Tick) -> Option<TrackI
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn a_bare_manifest_name_is_in_the_working_directory() {
+    assert_eq!(folder_of(Path::new("pack.json")), Path::new("."));
+    assert_eq!(folder_of(Path::new("memes/pack.json")), Path::new("memes"));
+}

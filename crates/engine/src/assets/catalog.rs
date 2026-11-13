@@ -16,6 +16,8 @@ pub struct Entry {
     pub description: &'static str,
     /// What its items are (the pack's own folder names do not say).
     pub kind: &'static str,
+    /// Words that fit every item, given to the installed pack (`assets.search` counts them below
+    /// the words of each file's own name). Only words that are true of every file in the archive.
     pub tags: &'static [&'static str],
     pub license: &'static str,
     pub author: &'static str,
@@ -36,7 +38,7 @@ pub const CATALOG: &[Entry] = &[
         name: "Interface Sounds (Kenney)",
         description: "100 short clicks, selects, confirmations, errors, open/close, toggles and glitches: UI and transition accents",
         kind: "sfx",
-        tags: &["ui", "click", "interface", "transition", "pop"],
+        tags: &["ui", "interface", "button", "menu"],
         license: "CC0-1.0",
         author: "Kenney (www.kenney.nl)",
         page: "https://kenney.nl/assets/interface-sounds",
@@ -51,7 +53,7 @@ pub const CATALOG: &[Entry] = &[
         name: "Sci-Fi Sounds (Kenney)",
         description: "73 sci-fi effects: metal impacts, explosions, lasers, force fields, thrusters, doors, computer noise",
         kind: "sfx",
-        tags: &["sci-fi", "impact", "explosion", "laser", "whoosh"],
+        tags: &["sci-fi", "space", "futuristic"],
         license: "CC0-1.0",
         author: "Kenney (www.kenney.nl)",
         page: "https://kenney.nl/assets/sci-fi-sounds",

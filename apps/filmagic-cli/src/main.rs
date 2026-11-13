@@ -199,7 +199,8 @@ impl Backend {
             // long commands wait unless the caller says otherwise (#2342)
             Backend::Local(s) => {
                 // mask tracking is applied when its job finishes, which this process never sees (#3302)
-                if (filmagic_automation::long_job::LONG_COMMANDS.contains(&id) || id == "masks.track")
+                // asset pack downloads are jobs too (assets.install from a URL or the catalogue, assets.fetch)
+                if (filmagic_automation::long_job::LONG_COMMANDS.contains(&id) || matches!(id, "masks.track" | "assets.install" | "assets.fetch"))
                     && let Some(p) = params.as_object_mut()
                 {
                     // anything but an explicit `false` (missing, null, a typo'd value) waits

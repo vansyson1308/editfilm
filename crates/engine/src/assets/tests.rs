@@ -607,20 +607,53 @@ fn downloads_are_installed_only_when_their_sha256_matches() {
     let z = root.join("p.zip");
     zip(&z, &[("Boom Pack/boom.wav", &std::fs::read(root.join("a.wav")).unwrap())]);
     let body = std::fs::read(&z).unwrap();
-    let url = serve(body.clone(), 2);
-    let e = s.execute("assets.install", json!({"url": url, "sha256": "0".repeat(64), "license": "CC0-1.0"})).unwrap_err().to_string();
+    let url = serve(body.clone(), 3);
+    let e = s.execute("assets.install", json!({"url": url, "sha256": "0".repeat(64), "license": "CC0-1.0", "wait": true})).unwrap_err().to_string();
     assert!(e.contains("checksum mismatch"), "{e}");
     assert!(s.packs.index().unwrap().packs.is_empty());
-    let r = s.execute("assets.install", json!({"url": url, "sha256": sha(&body), "id": "boom", "license": "CC0-1.0"})).unwrap();
+    let r = s.execute("assets.install", json!({"url": url, "sha256": sha(&body), "id": "boom", "license": "CC0-1.0", "wait": true})).unwrap();
     assert_eq!(r["pack"]["items"], 1, "{r}");
     assert_eq!(r["pack"]["source"], url.as_str());
     assert!(data.join("Packs/boom/Boom Pack/boom.wav").is_file(), "the archive's folders are kept");
+    // without a manifest or a `license`, a download's licence is unknown (not the user's own files)
+    let r = s.execute("assets.install", json!({"url": url, "sha256": sha(&body), "id": "boom2", "wait": true})).unwrap();
+    assert_eq!(r["pack"]["license"], "LicenseRef-Unknown", "{r}");
+    assert!(r["warnings"][0].as_str().unwrap().contains("unknown"), "{r}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Without `wait`, a download is a job the caller polls; the command returns at once.
+#[cfg(feature = "pack-download")]
+#[test]
+fn a_download_runs_as_a_job() {
+    let root = tmp_dir("assets-job");
+    let mut s = session(&root.join("data"));
+    wav(&root.join("a.wav"), 0.3, 0.3);
+    let z = root.join("p.zip");
+    zip(&z, &[("a.wav", &std::fs::read(root.join("a.wav")).unwrap())]);
+    let body = std::fs::read(&z).unwrap();
+    let url = serve(body.clone(), 1);
+    let r = s.execute("assets.install", json!({"url": url, "sha256": sha(&body), "id": "bg", "license": "CC0-1.0"})).unwrap();
+    let job = r["job"].as_u64().unwrap();
+    assert_eq!(r["poll"], "jobs.list", "{r}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let j = s.jobs.iter().find(|j| j.id == job).unwrap();
+        if j.progress.finished.load(std::sync::atomic::Ordering::Relaxed) {
+            let status = j.progress.status.lock().unwrap().clone();
+            assert!(status.contains("Installed the pack `bg`"), "{status}");
+            break;
+        }
+        assert!(t0.elapsed().as_secs() < 30, "the job did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(s.packs.index().unwrap().pack("bg").is_some());
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[cfg(feature = "pack-download")]
 #[test]
-fn remote_items_download_when_first_placed() {
+fn remote_items_are_fetched_before_they_are_placed() {
     let root = tmp_dir("assets-lazy");
     let (mut s, _) = edit_session(&root);
     wav(&root.join("cheer.wav"), 0.5, 0.4);
@@ -634,10 +667,266 @@ fn remote_items_download_when_first_placed() {
     std::fs::write(mdir.join("pack.json"), serde_json::to_vec(&m).unwrap()).unwrap();
     let r = s.execute("assets.install", json!({"path": mdir.join("pack.json").to_string_lossy()})).unwrap();
     assert_eq!(r["pack"]["remote"], 1, "nothing downloaded yet: {r}");
+    assert!(r["notes"].to_string().contains("assets.fetch"), "{r}");
     let file = root.join("data/Packs/remote/crowd/cheer.wav");
     assert!(!file.exists());
-    let r = s.execute("assets.place", json!({"asset": "remote/cheer", "seconds": 0.0})).unwrap();
-    assert!(file.is_file(), "{r}");
+    // placing does not download (that would hold up the app's UI thread): it says what to run
+    let (rev, undo) = (s.revision, s.history.undo.len());
+    let e = s.execute("assets.place", json!({"asset": "remote/cheer", "time": 0})).unwrap_err().to_string();
+    assert!(e.contains("assets.fetch"), "{e}");
+    assert_eq!((s.revision, s.history.undo.len()), (rev, undo));
+    let r = s.execute("assets.fetch", json!({"asset": "remote/cheer", "wait": true})).unwrap();
+    assert_eq!(r["downloaded"], 1, "{r}");
+    assert!(file.is_file());
     assert_eq!(s.packs.index().unwrap().pack("remote").unwrap().remote, 0);
+    s.execute("assets.place", json!({"asset": "remote/cheer", "time": 0})).unwrap();
+    let r = s.execute("assets.fetch", json!({"pack": "remote", "wait": true})).unwrap();
+    assert_eq!(r["downloaded"], 0, "nothing left: {r}");
+    for (p, why) in [
+        (json!({}), "not both"),
+        (json!({"asset": "remote/cheer", "pack": "remote"}), "not both"),
+        (json!({"pack": "nope"}), "no installed pack"),
+        (json!({"asset": "remote/nope"}), "no item"),
+    ] {
+        let e = s.execute("assets.fetch", p.clone()).unwrap_err().to_string();
+        assert!(e.contains(why), "{e} for {p}");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// ----------------------------------------------------------------------------- review findings
+
+/// A lawn, foliage or sky at the edge of an outdoor shot is not a green or blue screen.
+#[test]
+fn grass_and_sky_are_not_screens() {
+    let (w, h) = (96usize, 54usize);
+    let mut seed = 7u32;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let frame = |f: &mut dyn FnMut(usize, usize) -> [u8; 3]| {
+        let mut v = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let [r, g, b] = f(x, y);
+                v.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        v
+    };
+    // a noisy lawn: greens from dark to light, blades and shadows
+    let lawn = frame(&mut |_, _| {
+        let k = rnd();
+        [(40 + k % 60) as u8, (100 + (k >> 8) % 100) as u8, (20 + (k >> 16) % 40) as u8]
+    });
+    assert_eq!(super::scan::look(w, h, &lawn), (false, None), "a lawn");
+    // sky over sea: a pale sky above, a darker sea below
+    let sky = frame(&mut |_, y| {
+        let k = rnd() % 20;
+        if y < h / 2 { [(110 + k) as u8, (160 + k) as u8, 230] } else { [20, (60 + k * 2) as u8, (140 + k * 3) as u8] }
+    });
+    assert_eq!(super::scan::look(w, h, &sky).1, None, "sky and sea");
+    // a real screen: one flat green with sensor noise, a subject in the middle
+    let screen = frame(&mut |x, y| {
+        let k = (rnd() % 7) as u8;
+        if (30..66).contains(&x) && (12..42).contains(&y) { [200, 150, 120] } else { [10 + k, 190 + k, 60 + k] }
+    });
+    let key = super::scan::look(w, h, &screen).1.expect("a green screen");
+    assert!(key[1] > 180 && key[0] < 30, "{key:?}");
+    // a flat but grey-green wall is not saturated enough to be a screen
+    let wall = frame(&mut |_, _| [110, 150, 115]);
+    assert_eq!(super::scan::look(w, h, &wall).1, None, "a grey-green wall");
+}
+
+#[test]
+fn decomposed_vietnamese_names_are_one_word() {
+    // NFD, as macOS often stores file names: ạ = a + U+0323, ề = e + U+0302 + U+0300
+    assert_eq!(manifest::words("Nha\u{0323}c Vui"), ["nhac", "vui"]);
+    assert_eq!(manifest::words("Nhạc Vui"), ["nhac", "vui"], "precomposed (NFC)");
+    assert_eq!(manifest::fold("ne\u{0302}\u{0300}n"), "nen");
+    assert_eq!(manifest::slug("Nha\u{0323}c ne\u{0302}\u{0300}n", "x"), "nhac-nen");
+    let root = tmp_dir("assets-nfd");
+    let mut s = session(&root.join("data"));
+    let from = root.join("nfd");
+    wav(&from.join("music/Nha\u{0323}c Vui.wav"), 1.0, 0.2);
+    s.execute("assets.buildPack", json!({"from": from.to_string_lossy()})).unwrap();
+    let r = s.execute("assets.search", json!({"query": "nhạc vui"})).unwrap();
+    assert_eq!(r["total"], 1, "{r}");
+    assert_eq!(s.execute("assets.search", json!({"query": "nhac"})).unwrap()["total"], 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ids_cannot_take_the_index_s_name() {
+    for id in ["index.json", "INDEX.JSON", "index.json.tmp", "x.tmp", "pack.json"] {
+        assert!(manifest::check_id(id).is_err(), "{id}");
+    }
+    for p in ["COM\u{b9}", "lpt\u{b2}.wav", "sfx/COM\u{b3}.ogg"] {
+        assert!(manifest::safe_rel_path(p).is_err(), "{p} is a Windows device name");
+    }
+    assert!(manifest::safe_rel_path("sfx/COM\u{b9}x.wav").is_ok());
+    // a pack named index.json cannot be built, so index.json stays a file
+    let root = tmp_dir("assets-index-id");
+    let data = root.join("data");
+    let mut s = session(&data);
+    let e = s.execute("assets.buildPack", json!({"from": own_folder(&root).to_string_lossy(), "id": "index.json"})).unwrap_err().to_string();
+    assert!(e.contains(".json"), "{e}");
+    s.execute("assets.list", json!({})).unwrap();
+    assert!(data.join("Packs/index.json").is_file());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn urls_to_this_machine_or_a_private_network_are_refused() {
+    for u in [
+        "http://localhost/p.zip",
+        "https://localhost/p.zip",
+        "https://127.0.0.1/p.zip",
+        "https://127.1.2.3:8443/x",
+        "https://10.0.0.5/x",
+        "https://192.168.1.10/x",
+        "https://172.16.0.1/x",
+        "https://172.31.255.255/x",
+        "https://169.254.169.254/latest/meta-data",
+        "https://[::1]/x",
+        "https://[fd00::1]/x",
+        "https://router.local/x",
+        "https://0.0.0.0/x",
+        "https://user@127.0.0.1/x",
+    ] {
+        assert!(manifest::check_url_with(u, false).is_err(), "{u}");
+    }
+    for u in ["https://opengameart.org/x.zip", "https://172.32.0.1/x", "https://8.8.8.8/x", "https://example.com:8443/a?b#c"] {
+        assert!(manifest::check_url_with(u, false).is_ok(), "{u}");
+    }
+    assert!(manifest::check_url_with("http://example.com/x", false).is_err(), "plain http");
+}
+
+#[test]
+fn symlinks_and_oversized_entries_in_zips_are_not_written() {
+    let root = tmp_dir("assets-zip-links");
+    let dest = root.join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+    wav(&root.join("x.wav"), 0.2, 0.3);
+    let good = std::fs::read(root.join("x.wav")).unwrap();
+    let z = root.join("links.zip");
+    {
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&z).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.add_symlink("sfx/link.wav", "/etc/passwd", o).unwrap();
+        w.start_file("sfx/real.wav", o).unwrap();
+        w.write_all(&good).unwrap();
+        w.finish().unwrap();
+    }
+    let skipped = super::store::extract_zip(&z, &dest).unwrap();
+    assert_eq!(skipped, ["sfx/link.wav"]);
+    assert!(std::fs::symlink_metadata(dest.join("sfx/link.wav")).is_err(), "no link was made");
+    assert!(dest.join("sfx/real.wav").is_file());
+    // an entry that inflates past the caps is refused on the bytes written, whatever it declares
+    let small = super::store::Limits { entries: 10, file_bytes: 1000, pack_bytes: 1500 };
+    let big = root.join("big.zip");
+    zip(&big, &[("a.wav", &vec![0u8; 5000])]);
+    let out2 = root.join("out2");
+    std::fs::create_dir_all(&out2).unwrap();
+    assert!(super::store::extract_zip_with(&big, &out2, small).unwrap_err().contains("1000"));
+    // the declared size is patched down to 10 bytes: the real bytes still count
+    let mut b = std::fs::read(&big).unwrap();
+    let lfh = b.windows(4).position(|w| w == [0x50, 0x4b, 0x03, 0x04]).unwrap();
+    b[lfh + 22..lfh + 26].copy_from_slice(&10u32.to_le_bytes());
+    let cdh = b.windows(4).position(|w| w == [0x50, 0x4b, 0x01, 0x02]).unwrap();
+    b[cdh + 24..cdh + 28].copy_from_slice(&10u32.to_le_bytes());
+    let lied = root.join("lied.zip");
+    std::fs::write(&lied, &b).unwrap();
+    let out3 = root.join("out3");
+    std::fs::create_dir_all(&out3).unwrap();
+    let r = std::panic::catch_unwind(|| super::store::extract_zip_with(&lied, &out3, small));
+    let written = std::fs::metadata(out3.join("a.wav")).map(|m| m.len()).unwrap_or(0);
+    assert!(r.is_ok() && written <= 1000, "{r:?}, {written} bytes written");
+    // too many entries are refused from the end record, before the directory is read
+    let many = root.join("many.zip");
+    let names: Vec<String> = (0..11).map(|i| format!("{i}.wav")).collect();
+    let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x"[..])).collect();
+    zip(&many, &entries);
+    assert!(super::store::extract_zip_with(&many, &out2, small).unwrap_err().contains("claims 11 entries"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_second_install_leaves_a_running_install_alone_and_an_interrupted_update_is_undone() {
+    let root = tmp_dir("assets-sweep");
+    let data = root.join("data");
+    let mut s = session(&data);
+    s.execute("assets.buildPack", json!({"from": own_folder(&root).to_string_lossy(), "id": "a"})).unwrap();
+    let packs = data.join("Packs");
+    // another process's install in progress: its staging folder is young, and stays
+    let busy = packs.join(".staging").join(format!("1-{}-0", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(busy.join("pack")).unwrap();
+    s.execute("assets.buildPack", json!({"from": root.join("My Memes").to_string_lossy(), "id": "b"})).unwrap();
+    assert!(busy.exists(), "a running install's staging was swept");
+    // a crash between the two renames of an update: the old pack is in the trash and its folder is gone
+    std::fs::create_dir_all(packs.join(".trash")).unwrap();
+    let t = packs.join(".trash").join("old~a~1-0-0");
+    std::fs::rename(packs.join("a"), &t).unwrap();
+    super::store::sweep_now(&packs);
+    assert!(packs.join("a/pack.json").is_file(), "the swapped-out pack came back");
+    // a removed pack's trash is deleted, never restored
+    let d = packs.join(".trash").join("del~b~1-0-0");
+    std::fs::rename(packs.join("b"), &d).unwrap();
+    super::store::sweep_now(&packs);
+    assert!(!d.exists() && !packs.join("b").exists());
+    // remove clears the trash too
+    std::fs::create_dir_all(packs.join(".trash").join("del~zz~1-0-0")).unwrap();
+    s.execute("assets.remove", json!({"pack": "a"})).unwrap();
+    assert_eq!(std::fs::read_dir(packs.join(".trash")).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_hand_edited_index_is_not_trusted() {
+    let root = tmp_dir("assets-index-trust");
+    let data = root.join("data");
+    let mut s = session(&data);
+    s.execute("assets.buildPack", json!({"from": own_folder(&root).to_string_lossy(), "id": "a"})).unwrap();
+    let path = data.join("Packs/index.json");
+    let mut ix: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    ix["items"][0]["file"] = json!("../../../outside.wav");
+    std::fs::write(&path, serde_json::to_vec(&ix).unwrap()).unwrap();
+    let r = s.execute("assets.list", json!({"pack": "a"})).unwrap();
+    assert!(r["items"].as_array().unwrap().iter().all(|i| !i["file"].as_str().unwrap().contains("..")), "rebuilt from the manifests: {r}");
+}
+
+#[test]
+fn pack_tags_are_searched_below_item_tags() {
+    let root = tmp_dir("assets-pack-tags");
+    let mut s = session(&root.join("data"));
+    let from = root.join("ui");
+    wav(&from.join("Audio/click_001.wav"), 0.1, 0.3);
+    wav(&from.join("Audio/toggle_001.wav"), 0.1, 0.3);
+    let m = json!({"format": 1, "id": "ui", "name": "UI", "license": "CC0-1.0", "source": "test", "tags": ["ui", "sci-fi"], "items": [
+        {"id": "click", "file": "Audio/click_001.wav", "kind": "sfx", "tags": ["click"]},
+        {"id": "toggle", "file": "Audio/toggle_001.wav", "kind": "sfx", "tags": ["toggle"]}
+    ]});
+    std::fs::write(from.join("pack.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+    let r = s.execute("assets.install", json!({"path": from.to_string_lossy(), "license": "MIT"})).unwrap();
+    assert!(r["notes"].to_string().contains("`license` was not used"), "the ignored parameter is pointed out: {r}");
+    assert_eq!(s.execute("assets.search", json!({"query": "ui"})).unwrap()["total"], 2);
+    assert_eq!(s.execute("assets.search", json!({"query": "sci-fi"})).unwrap()["total"], 2);
+    let r = s.execute("assets.search", json!({"query": "ui click"})).unwrap();
+    assert_eq!(r["items"][0]["asset"], "ui/click", "{r}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn one_undo_takes_the_clip_and_its_imported_item_away() {
+    let root = tmp_dir("assets-undo-item");
+    let (mut s, _) = edit_session(&root);
+    let items = s.project.items.len();
+    s.execute("assets.place", json!({"asset": "my-memes/memes-green-screen-bruh", "time": {"seconds": 0.5}})).unwrap();
+    assert_eq!(s.project.items.len(), items + 1);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.project.items.len(), items, "the imported item went with the clip");
     let _ = std::fs::remove_dir_all(root);
 }

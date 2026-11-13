@@ -10,14 +10,16 @@ use filmagic_time::Tick;
 
 use super::manifest::{self, Item, Kind, Manifest};
 use super::store;
-use crate::Session;
+use crate::{MediaPool, Services};
 
 /// Most files one folder may hold for a pack.
 pub const MAX_FILES: usize = 5_000;
 /// Deepest folder walked.
 const MAX_DEPTH: usize = 12;
-/// Seconds of sound measured for loudness.
-const LOUDNESS_SECONDS: i64 = 300;
+/// Seconds of sound measured for loudness (a minute tells how loud a file plays).
+const LOUDNESS_SECONDS: i64 = 60;
+/// Most folders walked (a deep tree of empty folders costs time without files to cap it).
+const MAX_FOLDERS: usize = 2_000;
 /// Sound at least this long, with nothing in its name to say otherwise, is music.
 const MUSIC_SECONDS: f64 = 45.0;
 
@@ -35,7 +37,12 @@ pub fn walk(root: &Path, media_only: bool) -> Result<(Vec<Found>, Vec<String>), 
     let mut skipped = Vec::new();
     let mut total = 0u64;
     let mut stack = vec![(root.to_path_buf(), String::new(), 0usize)];
+    let mut folders = 0usize;
     while let Some((dir, prefix, depth)) = stack.pop() {
+        folders += 1;
+        if folders > MAX_FOLDERS {
+            return Err(format!("the folder holds more than {MAX_FOLDERS} folders; split it into smaller packs"));
+        }
         let rd = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut entries: Vec<_> = rd.flatten().collect();
         entries.sort_by_key(|e| e.file_name());
@@ -113,12 +120,12 @@ struct Probe {
 /// The items for the media files under `root`. An item of `previous` (a manifest the user may
 /// have edited) for the same file keeps its id, kind, tags, mood, key colour and credits; the
 /// measured fields are measured again. Files that will not open are listed in the warnings.
-pub fn items(s: &Session, root: &Path, previous: Option<&Manifest>) -> Result<(Vec<Item>, Vec<String>), String> {
+pub fn items(media: &MediaPool, services: &dyn Services, root: &Path, previous: Option<&Manifest>) -> Result<(Vec<Item>, Vec<String>), String> {
     let (files, mut warnings) = walk(root, true)?;
     let mut out: Vec<Item> = Vec::new();
     let mut ids = std::collections::HashSet::new();
     for f in &files {
-        let probe = match probe(s, &f.path) {
+        let probe = match probe(media, services, &f.path) {
             Ok(p) => p,
             Err(e) => {
                 warnings.push(format!("{} skipped: {e}", f.rel));
@@ -152,9 +159,9 @@ pub fn items(s: &Session, root: &Path, previous: Option<&Manifest>) -> Result<(V
     Ok((out, warnings))
 }
 
-fn probe(s: &Session, path: &Path) -> Result<Probe, String> {
+fn probe(media: &MediaPool, services: &dyn Services, path: &Path) -> Result<Probe, String> {
     let p = path.to_string_lossy().to_string();
-    let src = s.media.probe_file(&p, &*s.services).map_err(|e| e.to_string())?;
+    let src = media.probe_file(&p, services).map_err(|e| e.to_string())?;
     let info = src.info().clone();
     let mut out = Probe { kind: Some(info.kind), video: info.has_video(), ..Default::default() };
     let still = matches!(info.kind, MediaKind::Still);
@@ -201,8 +208,17 @@ fn loudness(src: &dyn filmagic_media::MediaSource, rate: u32, channels: u32, dur
     Some(meter.integrated()).filter(|v| v.is_finite())
 }
 
+/// Most a screen's colour may vary along the border (per channel, standard deviation in 8-bit
+/// steps). A lit green or blue screen is one flat colour; grass, foliage, sky and sea vary far
+/// more (a noisy lawn measures 25 and up).
+const SCREEN_MAX_STD: f64 = 14.0;
+/// Least saturation of a screen colour ((max − min) / max of its channels).
+const SCREEN_MIN_SATURATION: f64 = 0.45;
+
 /// Whether a frame (RGBA, `w`×`h`) has transparency of its own, and the colour of a green or blue
-/// screen filling its border (at least 60 % of the outer band), if it has one.
+/// screen behind it, if it has one: at least 60 % of the outer band of the picture is one flat,
+/// saturated green or blue ([`SCREEN_MAX_STD`], [`SCREEN_MIN_SATURATION`]). Grass or sky at the
+/// edges of an outdoor shot is not a screen, and is not keyed out.
 pub fn look(w: usize, h: usize, rgba: &[u8]) -> (bool, Option<[u8; 3]>) {
     let px = w.saturating_mul(h);
     if px == 0 || rgba.len() < px.saturating_mul(4) {
@@ -212,7 +228,8 @@ pub fn look(w: usize, h: usize, rgba: &[u8]) -> (bool, Option<[u8; 3]>) {
     let alpha = see_through * 200 >= px; // 0.5 % of the picture or more
     let band_x = (w / 12).max(1);
     let band_y = (h / 12).max(1);
-    let (mut n, mut green, mut blue) = (0usize, [0u64; 4], [0u64; 4]);
+    let mut n = 0usize;
+    let (mut green, mut blue) = (Vec::new(), Vec::new());
     for y in 0..h {
         for x in 0..w {
             if x >= band_x && x + band_x < w && y >= band_y && y + band_y < h {
@@ -222,21 +239,25 @@ pub fn look(w: usize, h: usize, rgba: &[u8]) -> (bool, Option<[u8; 3]>) {
             let i = (y * w + x) * 4;
             let Some(p) = rgba.get(i..i + 4) else { continue };
             let (r, g, b) = (u32::from(p[0]), u32::from(p[1]), u32::from(p[2]));
-            let tally = |acc: &mut [u64; 4]| {
-                acc[0] += 1;
-                acc[1] += u64::from(r);
-                acc[2] += u64::from(g);
-                acc[3] += u64::from(b);
-            };
             if g >= 90 && g * 10 >= r * 13 && g * 10 >= b * 13 {
-                tally(&mut green);
+                green.push([p[0], p[1], p[2]]);
             } else if b >= 90 && b * 10 >= r * 13 && b * 10 >= g * 12 {
-                tally(&mut blue);
+                blue.push([p[0], p[1], p[2]]);
             }
         }
     }
-    let pick = |acc: [u64; 4]| (n > 0 && acc[0] * 10 >= n as u64 * 6).then(|| [(acc[1] / acc[0]) as u8, (acc[2] / acc[0]) as u8, (acc[3] / acc[0]) as u8]);
-    (alpha, pick(green).or_else(|| pick(blue)))
+    let pick = |px: &[[u8; 3]]| -> Option<[u8; 3]> {
+        if n == 0 || px.len() * 10 < n * 6 {
+            return None;
+        }
+        let count = px.len() as f64;
+        let mean: [f64; 3] = std::array::from_fn(|c| px.iter().map(|p| f64::from(p[c])).sum::<f64>() / count);
+        let flat = (0..3).all(|c| (px.iter().map(|p| (f64::from(p[c]) - mean[c]).powi(2)).sum::<f64>() / count).sqrt() <= SCREEN_MAX_STD);
+        let (hi, lo) = (mean.iter().copied().fold(0.0, f64::max), mean.iter().copied().fold(255.0, f64::min));
+        let saturated = hi > 0.0 && (hi - lo) / hi >= SCREEN_MIN_SATURATION;
+        (flat && saturated).then(|| mean.map(|v| v.round().clamp(0.0, 255.0) as u8))
+    };
+    (alpha, pick(&green).or_else(|| pick(&blue)))
 }
 
 /// The words of a file's path: its folders and its name without the extension.
@@ -283,7 +304,6 @@ pub const MOODS: &[&str] = &[
     "awkward",
     "vui",
     "buon",
-    "hai",
 ];
 
 /// Search tags from path words: no stop words, no bare numbers, no single letters.

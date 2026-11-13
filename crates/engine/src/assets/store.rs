@@ -42,6 +42,9 @@ pub struct PackSummary {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution: Option<String>,
+    /// Words that fit every item of the pack.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub items: usize,
     /// Bytes on disk.
     pub bytes: u64,
@@ -111,7 +114,14 @@ impl PackStore {
             have.sort_unstable();
             let mut want: Vec<&str> = dirs.iter().map(String::as_str).collect();
             want.sort_unstable();
-            if have == want {
+            // index.json is a cache another process (or a person) may have written: an entry
+            // that would not pass the manifest checks makes it be rebuilt from the manifests
+            let sound = ix.packs.iter().all(|p| manifest::check_id(&p.id).is_ok())
+                && ix
+                    .items
+                    .iter()
+                    .all(|i| manifest::check_id(&i.pack).is_ok() && manifest::check_id(&i.item.id).is_ok() && manifest::safe_rel_path(&i.item.file).is_ok());
+            if have == want && sound {
                 return Ok(ix);
             }
         }
@@ -142,6 +152,7 @@ impl PackStore {
                         source: m.source.clone(),
                         author: m.author.clone(),
                         attribution: m.attribution.clone(),
+                        tags: m.tags.clone(),
                         items: m.items.len(),
                         bytes: dir_bytes(&pdir),
                         remote,
@@ -185,7 +196,7 @@ impl PackStore {
             if !replace {
                 return Err(format!("the pack `{id}` is installed already: pass \"replace\":true to update it, or run assets.remove first"));
             }
-            let t = trash_path(root)?;
+            let t = trash_path(root, Trashed::Replaced, id)?;
             std::fs::rename(&dest, &t).map_err(|e| format!("cannot move the installed `{id}` aside (is a file of it open?): {e}"))?;
             old = Some(t);
         }
@@ -210,7 +221,8 @@ impl PackStore {
             let installed = pack_dirs(root);
             return Err(format!("no installed pack `{id}`; installed: {}", if installed.is_empty() { "none".to_string() } else { installed.join(", ") }));
         }
-        let t = trash_path(root)?;
+        sweep(root);
+        let t = trash_path(root, Trashed::Removed, id)?;
         std::fs::rename(&dest, &t).map_err(|e| format!("cannot remove `{id}` (is a file of it open in another program?): {e}"))?;
         let cleared = std::fs::remove_dir_all(&t).is_ok();
         Ok((self.rebuild_index()?, cleared))
@@ -236,21 +248,80 @@ impl Drop for Staging {
     }
 }
 
-fn trash_path(root: &Path) -> Result<PathBuf, String> {
-    let t = root.join(TRASH);
-    std::fs::create_dir_all(&t).map_err(|e| format!("cannot create {}: {e}", t.display()))?;
-    Ok(t.join(nonce()))
+/// Why a pack is in the trash: on its way out (`assets.remove`), or swapped out by a
+/// replacement that may not have finished.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trashed {
+    Removed,
+    Replaced,
 }
 
-/// Delete what an interrupted install or remove left in staging and trash.
+/// `Packs/.trash/<del|old>~<id>~<nonce>`.
+fn trash_path(root: &Path, why: Trashed, id: &str) -> Result<PathBuf, String> {
+    let t = root.join(TRASH);
+    std::fs::create_dir_all(&t).map_err(|e| format!("cannot create {}: {e}", t.display()))?;
+    let tag = if why == Trashed::Removed { "del" } else { "old" };
+    Ok(t.join(format!("{tag}~{id}~{}", nonce())))
+}
+
+/// Staging folders older than this belong to an install that died (no install takes this long);
+/// younger ones may belong to an install running in another process (the app and the CLI share
+/// `Packs/`), and are left alone.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(12 * 3600);
+/// A replaced pack is restored, or deleted, only once the replacement had time to finish.
+const STALE_TRASH: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether a staging or trash entry is at least `age` old, by the time its [`nonce`] records (a
+/// rename keeps a folder's old modification time, so that time cannot say when it was trashed).
+fn older_than(path: &Path, age: std::time::Duration) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let nanos = name.rsplit('~').next().and_then(|n| n.split('-').nth(1)).and_then(|t| t.parse::<u128>().ok());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    match nanos {
+        Some(t) => now.saturating_sub(t) >= age.as_nanos(),
+        // not a name this code made: by its modification time
+        None => std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e >= age),
+    }
+}
+
+/// Clear what interrupted installs and removes left behind. A pack a replacement swapped out
+/// comes back when the replacement never arrived (a crash between the two renames), so an
+/// interrupted update never loses the pack.
 fn sweep(root: &Path) {
-    for d in [STAGING, TRASH] {
-        if let Ok(rd) = std::fs::read_dir(root.join(d)) {
-            for e in rd.flatten() {
+    sweep_with(root, STALE_STAGING, STALE_TRASH);
+}
+
+fn sweep_with(root: &Path, staging_age: std::time::Duration, trash_age: std::time::Duration) {
+    if let Ok(rd) = std::fs::read_dir(root.join(STAGING)) {
+        for e in rd.flatten().filter(|e| older_than(&e.path(), staging_age)) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+    let Ok(rd) = std::fs::read_dir(root.join(TRASH)) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let mut parts = name.splitn(3, '~');
+        match (parts.next(), parts.next()) {
+            (Some("old"), Some(id)) if manifest::check_id(id).is_ok() => {
+                if !older_than(&e.path(), trash_age) {
+                    continue;
+                }
+                let dest = root.join(id);
+                if !dest.exists() && std::fs::rename(e.path(), &dest).is_ok() {
+                    continue;
+                }
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+            _ => {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn sweep_now(root: &Path) {
+    sweep_with(root, std::time::Duration::ZERO, std::time::Duration::ZERO);
 }
 
 /// A name no other install of this or another process uses at the same time.
@@ -358,16 +429,62 @@ pub fn keep_file(rel: &str) -> bool {
     filmagic_media::is_importable(Path::new(name))
 }
 
+/// The caps an archive is unpacked under (tests use small ones).
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub entries: usize,
+    pub file_bytes: u64,
+    pub pack_bytes: u64,
+}
+
+impl Limits {
+    pub const DEFAULT: Limits = Limits { entries: MAX_ARCHIVE_ENTRIES, file_bytes: MAX_FILE_BYTES, pack_bytes: MAX_PACK_BYTES };
+}
+
+/// The entry count and central-directory size a zip's end record claims, read before the zip
+/// reader parses the directory: an archive claiming more entries than `max` (or a zip64 count) is
+/// refused without reading the rest. `None` when no end record is found (the reader then fails).
+fn eocd_claims(archive: &Path) -> Result<Option<(u64, u64)>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    // the end record is 22 bytes plus a comment of at most 65 535
+    let tail = len.min(22 + 65_535);
+    f.seek(SeekFrom::Start(len - tail)).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    f.take(tail).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let Some(at) = buf.windows(4).rposition(|w| w == [0x50, 0x4b, 0x05, 0x06]) else { return Ok(None) };
+    let field = |o: usize, n: usize| buf.get(at + o..at + o + n).map(|b| b.iter().rev().fold(0u64, |acc, x| (acc << 8) | u64::from(*x)));
+    match (field(10, 2), field(12, 4)) {
+        (Some(entries), Some(dir_bytes)) => Ok(Some((entries, dir_bytes))),
+        _ => Ok(None),
+    }
+}
+
 /// Unpack a zip into `dest` with every entry name checked ([`manifest::safe_rel_path`]) and the
 /// size and count caps enforced on the bytes really written, not only on what the archive claims.
 /// Symlinks, encrypted entries and files [`keep_file`] rejects are skipped. Returns the skipped names.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn extract_zip(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
+    extract_zip_with(archive, dest, Limits::DEFAULT)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn extract_zip_with(archive: &Path, dest: &Path, lim: Limits) -> Result<Vec<String>, String> {
     use std::io::{Read, Write};
+    if let Some((entries, dir_bytes)) = eocd_claims(archive)? {
+        // 0xFFFF entries means a zip64 count: more than any pack may hold anyway
+        if entries as usize > lim.entries || entries == 0xFFFF {
+            return Err(format!("the archive claims {entries} entries; at most {} are allowed", lim.entries));
+        }
+        if dir_bytes > 64 << 20 {
+            return Err("the archive's file list is larger than 64 MiB".into());
+        }
+    }
     let f = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
     let mut z = zip::ZipArchive::new(std::io::BufReader::new(f)).map_err(|e| format!("not a readable zip archive: {e}"))?;
-    if z.len() > MAX_ARCHIVE_ENTRIES {
-        return Err(format!("the archive holds {} entries; at most {MAX_ARCHIVE_ENTRIES} are allowed", z.len()));
+    if z.len() > lim.entries {
+        return Err(format!("the archive holds {} entries; at most {} are allowed", z.len(), lim.entries));
     }
     let mut total = 0u64;
     let mut skipped = Vec::new();
@@ -385,15 +502,16 @@ pub fn extract_zip(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
         if !written.insert(name.to_lowercase()) {
             return Err(format!("the archive holds `{}` twice", manifest::truncate(&name)));
         }
-        if e.size() > MAX_FILE_BYTES {
-            return Err(format!("`{}` unpacks to more than {} MiB", manifest::truncate(&name), MAX_FILE_BYTES >> 20));
+        if e.size() > lim.file_bytes {
+            return Err(format!("`{}` unpacks to more than {} bytes", manifest::truncate(&name), lim.file_bytes));
         }
         let out_path = dest.join(&name);
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let mut out = std::fs::File::create(&out_path).map_err(|e| format!("{}: {e}", out_path.display()))?;
-        let budget = MAX_FILE_BYTES.min(MAX_PACK_BYTES.saturating_sub(total)).saturating_add(1);
+        // the caps hold for the bytes the entry really inflates to, whatever its header claims
+        let budget = lim.file_bytes.min(lim.pack_bytes.saturating_sub(total)).saturating_add(1);
         let mut limited = (&mut e).take(budget);
         let mut buf = vec![0u8; 1 << 16];
         let mut n_file = 0u64;
@@ -404,7 +522,7 @@ pub fn extract_zip(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
             }
             n_file += n as u64;
             if n_file >= budget {
-                return Err(format!("the archive unpacks to more than its limits ({} MiB a file, {} MiB a pack)", MAX_FILE_BYTES >> 20, MAX_PACK_BYTES >> 20));
+                return Err(format!("the archive unpacks to more than its limits ({} bytes a file, {} bytes a pack)", lim.file_bytes, lim.pack_bytes));
             }
             out.write_all(buf.get(..n).unwrap_or(&[])).map_err(|e| format!("{}: {e}", out_path.display()))?;
         }
@@ -418,15 +536,26 @@ pub fn extract_zip(_archive: &Path, _dest: &Path) -> Result<Vec<String>, String>
     Err("zip archives cannot be installed in the web build".into())
 }
 
+/// Bytes done and the total of a download, and whether to stop it (a job's progress).
+pub type OnProgress<'a> = &'a dyn Fn(u64, u64) -> bool;
+
+/// How long a download may wait for its next bytes before it is given up.
+pub const STALL_SECONDS: u64 = 60;
+
 /// Download `url` into `dest`, keeping it only if its SHA-256 (and size, when given) match. The
-/// download streams into `dest.part` and is capped at `max` bytes.
+/// download streams into `dest.part`, is capped at `max` bytes, gives up when the server sends
+/// nothing for [`STALL_SECONDS`], follows at most 5 redirects and only to https, and stops when
+/// `progress` returns false.
 #[cfg(all(feature = "pack-download", not(target_arch = "wasm32")))]
-pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Path) -> Result<u64, String> {
+pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Path, progress: OnProgress) -> Result<u64, String> {
     use sha2::Digest;
     use std::io::{Read, Write};
+    use std::time::Duration;
     manifest::check_url(url)?;
     let want = manifest::check_sha256(sha256)?;
     let provider = std::sync::Arc::new(rustls_rustcrypto::provider());
+    // https all the way, redirects included; the tests' local server is plain http
+    let https_only = url.to_ascii_lowercase().starts_with("https://");
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .tls_config(
             ureq::tls::TlsConfig::builder()
@@ -435,7 +564,12 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
                 .unversioned_rustls_crypto_provider(provider)
                 .build(),
         )
-        .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .https_only(https_only)
+        .max_redirects(5)
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_recv_response(Some(Duration::from_secs(STALL_SECONDS)))
+        .timeout_per_read(Some(Duration::from_secs(STALL_SECONDS)))
+        .timeout_recv_body(Some(Duration::from_secs(3 * 3600)))
         .user_agent("filmagic-asset-packs")
         .build()
         .into();
@@ -450,16 +584,17 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
     let mut h = sha2::Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     let mut got = 0u64;
-    let fail = |part: &Path, msg: String| {
-        let _ = std::fs::remove_file(part);
+    let total = size.unwrap_or(0);
+    let fail = |out: std::io::BufWriter<std::fs::File>, msg: String| {
+        drop(out);
+        let _ = std::fs::remove_file(&part);
         Err(msg)
     };
     loop {
         let n = match reader.read(&mut buf) {
             Ok(n) => n,
             Err(e) => {
-                drop(out);
-                return fail(&part, format!("downloading {url}: {e}"));
+                return fail(out, format!("downloading {url}: {e} (nothing arrived for {STALL_SECONDS} s, or the connection broke); nothing was installed"));
             }
         };
         if n == 0 {
@@ -467,37 +602,35 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
         }
         got += n as u64;
         if got > cap {
-            drop(out);
-            return fail(&part, format!("{url} is larger than {cap} bytes"));
+            return fail(out, format!("{url} is larger than {cap} bytes"));
+        }
+        if !progress(got, total) {
+            return fail(out, "cancelled; nothing was installed".to_string());
         }
         let chunk = buf.get(..n).unwrap_or(&[]);
         h.update(chunk);
         if let Err(e) = out.write_all(chunk) {
-            drop(out);
-            return fail(&part, format!("{}: {e}", part.display()));
+            return fail(out, format!("{}: {e}", part.display()));
         }
     }
     if let Err(e) = out.flush() {
-        drop(out);
-        return fail(&part, format!("{}: {e}", part.display()));
+        return fail(out, format!("{}: {e}", part.display()));
     }
     drop(out);
     let sha: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     if sha != want || size.is_some_and(|s| s != got) {
-        return fail(
-            &part,
-            format!(
-                "{url}: checksum mismatch (got {sha}, {got} bytes; expected {want}{}); nothing was installed",
-                size.map(|s| format!(", {s} bytes")).unwrap_or_default()
-            ),
-        );
+        let _ = std::fs::remove_file(&part);
+        return Err(format!(
+            "{url}: checksum mismatch (got {sha}, {got} bytes; expected {want}{}); nothing was installed",
+            size.map(|s| format!(", {s} bytes")).unwrap_or_default()
+        ));
     }
     std::fs::rename(&part, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     Ok(got)
 }
 
 #[cfg(not(all(feature = "pack-download", not(target_arch = "wasm32"))))]
-pub fn download(url: &str, sha256: &str, _size: Option<u64>, _max: u64, _dest: &Path) -> Result<u64, String> {
+pub fn download(url: &str, sha256: &str, _size: Option<u64>, _max: u64, _dest: &Path, _progress: OnProgress) -> Result<u64, String> {
     manifest::check_url(url)?;
     manifest::check_sha256(sha256)?;
     Err(format!(
