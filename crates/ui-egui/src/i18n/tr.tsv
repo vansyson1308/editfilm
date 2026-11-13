@@ -2934,6 +2934,10 @@
 	Luma Min / Max	Luma Min / Maks
 	Loudness Normalization	Ses Yüksekliği Normalizasyonu
 	True Peak Limit	Gerçek Tepe Sınırı
+	True-Peak Limiter	Gerçek Tepe Sınırlayıcı
+	Ceiling	Tavan
+	Find Speech Segments	Konuşma Bölümlerini Bul
+	Check Mix Loudness	Miks Ses Yüksekliğini Denetle
 	Audio only	Yalnızca ses
 	Scaling	Ölçeklendirme
 	Scale To Fit	Sığdırmak İçin Ölçeklendir

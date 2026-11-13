@@ -98,8 +98,15 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
             }
             continue;
         }
-        if let Err(e) = app.session.execute(&cmd, p) {
-            app.ui.status = e.to_string();
+        match app.session.execute(&cmd, p) {
+            Err(e) => app.ui.status = e.to_string(),
+            // Auto-Match can skip a clip with no speech or cap a large change: say so (#15)
+            Ok(v) => {
+                let w: Vec<&str> = v["warnings"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                if let Some(first) = w.first() {
+                    app.ui.status = if w.len() > 1 { format!("{first} (+{} more)", w.len() - 1) } else { (*first).to_string() };
+                }
+            }
         }
     }
 }

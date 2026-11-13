@@ -96,9 +96,15 @@ fn mix(s: &Session, a: i64, n: usize, chunk: usize) -> [Vec<f32>; 2] {
     out
 }
 
-fn lufs(x: &[Vec<f32>; 2]) -> f64 {
+/// Loudness of a stereo mix over its speech segments only: what Auto-Match matches a Dialogue
+/// clip to (#15), so pauses and room tone do not lower the reading.
+fn speech_lufs(x: &[Vec<f32>; 2]) -> f64 {
+    let mono: Vec<f32> = x[0].iter().zip(&x[1]).map(|(a, b)| 0.5 * (a + b)).collect();
     let mut m = LoudnessMeter::new(SR as f64, 2);
-    m.process(&[&x[0], &x[1]]);
+    for g in filmagic_audio_dsp::speech::detect(&mono, SR as f64, Default::default()).segments {
+        let (a, b) = ((g.start_s * SR as f64).floor() as usize, ((g.end_s * SR as f64).ceil() as usize).min(mono.len()));
+        m.process(&[&x[0][a..b], &x[1][a..b]]);
+    }
     m.integrated()
 }
 
@@ -250,16 +256,17 @@ fn auto_match_hits_the_target_loudness() {
             s.execute("prefs.set", json!({"key": "audio.dialogueTargetLufs", "value": t})).unwrap();
         }
         let want = target.unwrap_or(-23.0);
-        let r = s.execute("essentialSound.autoMatch", json!({"clips": [c.0]})).unwrap();
-        let got = lufs(&mix(&s, 0, 12 * SR as usize, 48_000));
+        // the loud clip needs -13.7 dB: past the default ±12 dB cap, which has its own test
+        let r = s.execute("essentialSound.autoMatch", json!({"clips": [c.0], "maxGainDb": 24})).unwrap();
+        let got = speech_lufs(&mix(&s, 0, 12 * SR as usize, 48_000));
         println!("auto-match: measured {:.2} LUFS → mix {got:.3} LUFS (target {want}), chain {chain}", r["clips"][0]["measuredLufs"].as_f64().unwrap());
         assert!((got - want).abs() <= 0.5, "mix {got} LUFS, target {want}");
         let st = item(&s, c).essential.unwrap();
         assert_eq!(st.loudness.target_lufs, Some(want));
         assert!((item(&s, c).gain_db - st.loudness.gain_db).abs() < 1e-9, "match gain is clip gain");
         // matching again is stable; switching Loudness off removes the gain
-        s.execute("essentialSound.autoMatch", json!({"clips": [c.0]})).unwrap();
-        assert!((lufs(&mix(&s, 0, 12 * SR as usize, 48_000)) - want).abs() <= 0.5);
+        s.execute("essentialSound.autoMatch", json!({"clips": [c.0], "maxGainDb": 24})).unwrap();
+        assert!((speech_lufs(&mix(&s, 0, 12 * SR as usize, 48_000)) - want).abs() <= 0.5);
         s.execute("essentialSound.set", json!({"clips": [c.0], "key": "loudness.enabled", "value": false})).unwrap();
         assert!(item(&s, c).gain_db.abs() < 1e-9);
     }
@@ -286,8 +293,13 @@ fn auto_match_measures_a_mono_clip_as_one_channel() {
         r["clips"][0]["measuredLufs"].as_f64().unwrap()
     };
     let (two, one) = (measured(&mut s, stereo), measured(&mut s, mono));
+    // Dialogue is measured where there is speech (#15): the file is measured over the same
+    // speech segments with a one-channel meter
     let mut file = LoudnessMeter::new(SR as f64, 1);
-    file.process(&[&sig]);
+    for g in filmagic_audio_dsp::speech::detect(&sig, SR as f64, Default::default()).segments {
+        let (a, b) = ((g.start_s * SR as f64).floor() as usize, ((g.end_s * SR as f64).ceil() as usize).min(sig.len()));
+        file.process(&[&sig[a..b]]);
+    }
     let want = file.integrated();
     println!("stereo (dual mono) {two:.3} LUFS, mono {one:.3} LUFS, mono file {want:.3} LUFS");
     assert!((one - want).abs() <= 0.1, "mono clip {one} LUFS, the file reads {want} LUFS");

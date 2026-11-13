@@ -512,8 +512,9 @@ Clip ▸ Remix ▸ Enable Remix / Remix Properties… / Revert Remix (`clip.remi
 
 ```text
 clip.essential (type + settings)  ──apply()──►  clip effects marked `essential`, clip gain, Volume, Panner
-essentialSound.autoMatch   BS.1770 integrated loudness of render::audio::clip_signal (mono clips as one channel) → match gain (clip gain)
-essentialSound.generateDucking   trigger clips' summed level (10 ms hops) → activity regions → Volume keyframes
+essentialSound.autoMatch   BS.1770 integrated loudness of render::audio::clip_signal (mono clips as one channel; Dialogue over its speech segments) → match gain (clip gain), capped ±12 dB
+essentialSound.generateDucking   Dialogue triggers' speech segments (audio_dsp::speech), or the triggers' summed level (10 ms hops) → activity regions → Volume keyframes (depthDb)
+audio.speechSegments / mix.check   audio_dsp::speech (voicing + adaptive level + syllabic modulation, no model) and the BS.1770 meter over tracks and roles (engine::audio_check)
 ```
 
 - **Model** (`project::essential`). A clip's `essential: Option<EssentialSound>` holds its audio type

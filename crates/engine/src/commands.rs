@@ -2099,7 +2099,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|prores|dnxhr|apv|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|jpg|tga|dpx|exr|gif|wav|aiff|aac|mp3|flac"?,"audioCodec":"auto|aac|pcm|flac"?,"flacLevel":0..8=5,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass|crf"?,"crf":0..51=23,"hardwareEncoding":"off|auto"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"alpha":bool=false,"exrCompression":"none|rle|zips|zip"?,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"truePeakLimiter":bool=true,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"dnxProfile":"lb|sq|hq|hqx"?,"apvProfile":"422-10|422-12|444-10|444-12|4444-10|4444-12|400-10"?,"h264Profile":"baseline|main|high|high10"?,"h264IntraOnly":bool=false,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -2707,20 +2707,24 @@ fn build() -> Vec<CommandSpec> {
             s.state.open_sequences.insert(to, tab);
             Ok(json!({"index": to}))
         }),
-        cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
+        cmd!("sequence.addEdit", "Add Edit", ["Sequence"], Some("Cmd+K"), r#"{"time":ticks?,"speechCheck":bool?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             // Like Premiere: selected clips under the playhead are cut, and only they (#164);
             // with none, the targeted tracks are.
             let sel = s.state.selection.clone();
             let selected_here =
                 s.active_sequence().is_some_and(|q| sel.iter().any(|c| q.find_item(*c).is_some_and(|(_, it)| it.start < t && t < it.start + it.duration)));
+            let before = crate::audio_check::audio_clips_at(s, t, None);
             let n = if selected_here {
                 s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor_items(q, &sel, t, ctx)))?
             } else {
                 let tg = s.targeting().targeted;
                 s.edit_sequence("Add Edit", |q, ctx, _| Ok(edit::razor(q, &tg, t, ctx)))?
             };
-            Ok(json!({"cuts": n.len()}))
+            let mut out = json!({"cuts": n.len()});
+            let cut = crate::audio_check::cut_at(s, before, t);
+            crate::audio_check::annotate_cuts(s, p, &mut out, &cut);
+            Ok(out)
         }),
         cmd!("sequence.addEditAllTracks", "Add Edit to All Tracks", ["Sequence"], Some("Cmd+Shift+K"), r#"{"time":ticks?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
@@ -3397,7 +3401,7 @@ fn build() -> Vec<CommandSpec> {
             "Trim Edit",
             [],
             None,
-            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?}"#,
+            r#"{"clip":id,"edge":"in|out","mode":"regular|ripple","delta":ticks|"deltaFrames":i64,"linked":bool?,"speechCheck":bool?}"#,
             has_seq,
             |s, p| {
                 let c = clip_p(p, "clip").ok_or_else(|| bad("timeline.trim", "need `clip`"))?;
@@ -3453,7 +3457,13 @@ fn build() -> Vec<CommandSpec> {
                     Ok(dd)
                 });
                 s.command_origin = outer;
-                Ok(json!({"delta": applied?.0}))
+                let applied = applied?;
+                let mut out = json!({"delta": applied.0});
+                if applied != Tick::ZERO {
+                    let edges = crate::audio_check::trim_edges(s, &clips, edge == Edge::Out);
+                    crate::audio_check::annotate_cuts(s, p, &mut out, &edges);
+                }
+                Ok(out)
             }
         ),
         // ================= Trim mode =================
@@ -3603,10 +3613,11 @@ fn build() -> Vec<CommandSpec> {
             let sp = s.edit_sequence("Rate Stretch", |q, ctx, _| Ok(edit::rate_stretch_items(q, &clips, edge, d, ctx)?))?;
             Ok(json!({"speed": sp}))
         }),
-        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?}"#, has_seq, |s, p| {
+        cmd!("timeline.razor", "Razor", [], None, r#"{"time":ticks,"track":"V1"|id?,"clip":id?,"speechCheck":bool?}"#, has_seq, |s, p| {
             let t = time_p(s, p, "").unwrap_or(s.playhead());
             let tr = track_p(s, p, "track", "timeline.razor")?;
             let clip = clip_p(p, "clip");
+            let before = crate::audio_check::audio_clips_at(s, t, None);
             let n = if let Some(c) = clip {
                 let clips = with_links(s, &[c]);
                 s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor_items(q, &clips, t, ctx)))?
@@ -3614,7 +3625,10 @@ fn build() -> Vec<CommandSpec> {
                 let tracks: Vec<TrackId> = tr.into_iter().collect();
                 s.edit_sequence("Razor", |q, ctx, _| Ok(edit::razor(q, &tracks, t, ctx)))?
             };
-            Ok(json!({"cuts": n.len()}))
+            let mut out = json!({"cuts": n.len()});
+            let cut = crate::audio_check::cut_at(s, before, t);
+            crate::audio_check::annotate_cuts(s, p, &mut out, &cut);
+            Ok(out)
         }),
         cmd!(
             "timeline.setTrack",
@@ -4232,6 +4246,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
+    v.extend(crate::audio_check::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::graphic_templates::commands());
@@ -5478,6 +5493,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, proj: filmagic_project::Project, path: Option<String>, clean: bool) {
+    // speech analyses belong to the media of the project they were made in
+    s.speech_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

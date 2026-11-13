@@ -325,6 +325,11 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.effects.loudness.enabled = true;
         settings.effects.loudness.target_lufs = v;
     }
+    match p.get("truePeakLimiter") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(on)) => settings.effects.peak_limiter.enabled = Some(*on),
+        Some(_) => return Err(bad(cmd, "truePeakLimiter: true (default: keep the audio under -1 dBTP) or false")),
+    }
     Ok(())
 }
 
@@ -634,6 +639,9 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         }
         out["result"] = v["result"].clone();
         out["offlineMedia"] = offline_media_json(s, id);
+        if let (Some(w), Some(more)) = (out["warnings"].as_array_mut(), v["result"]["warnings"].as_array()) {
+            w.extend(more.iter().cloned());
+        }
     }
     Ok(out)
 }

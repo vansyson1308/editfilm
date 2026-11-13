@@ -1662,15 +1662,31 @@ fn thirty_two_bit_audio_in_every_container() {
 }
 
 /// The mix is 32-bit float: 32-bit float export keeps a +6 dB tone's peaks of 2.0, integers clip
-/// them at full scale.
+/// them at full scale. The True-Peak Limiter (#15) is off by default for float, which people
+/// choose to keep overs; turned on, it holds float at -1 dBTP like every other format.
 #[test]
 fn float_export_keeps_peaks_above_full_scale() {
     let (p, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(6.0));
     let dir = Scratch::new("pcm-hot");
     let range = Some(TimeRange::new(Tick::ZERO, Tick(TICKS_PER_SECOND / 4)));
+    let float_peak = |limiter: Option<bool>, name: &str| {
+        let path = dir.path(name);
+        let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
+        s.audio.set_sample_format(SampleFormat::Float32);
+        s.effects.peak_limiter.enabled = limiter;
+        assert_eq!(s.peak_limiter_on(), limiter == Some(true), "{name}");
+        export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let src = filmagic_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
+        src.audio(0, 12_000, 48_000).unwrap().channels[0].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    let float = float_peak(None, "f.wav");
+    assert!((float - 2.0).abs() < 0.02, "float keeps +6 dBFS by default: {float}");
+    let limited = float_peak(Some(true), "f_limited.wav");
+    assert!(limited <= 0.892, "the limiter, turned on, holds -1 dBTP: {limited}");
     let peak = |sf: SampleFormat, name: &str| {
         let path = dir.path(name);
         let mut s = ExportSettings { format: Format::Wav, path: path.clone(), range, ..Default::default() };
+        s.effects.peak_limiter.enabled = Some(false);
         s.audio.set_sample_format(sf);
         export(&p, seq, &s, &m, &Progress::default()).unwrap();
         let src = filmagic_codecs::open_bytes(name, std::fs::read(&path).unwrap().into()).unwrap();
@@ -1823,4 +1839,127 @@ fn gif_output_goes_through_the_reserved_handle_and_a_displaced_path_is_an_error(
     std::fs::write(&path, b"decoy").unwrap();
     assert!(export(&p, seq, &settings, &m, &Progress::default()).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), b"decoy", "the replaced entry must not be written");
+}
+
+/// #15 (17): a draft with no loudness target peaked at +2.7 dBFS with no warning. The True-Peak
+/// Limiter (on by default) holds -1 dBTP, the written audio's true peak is always reported, and
+/// turning the limiter off still warns.
+#[test]
+fn true_peak_limiter_is_on_by_default_and_every_export_reports_its_peak() {
+    let dir = Scratch::new("peak");
+    let (hot, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(2.7));
+    assert!(ExportSettings::default().peak_limiter_on(), "on by default");
+    // default settings: limited to -1 dBTP
+    let path = dir.path("hot.wav");
+    let s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+    let prog = Progress::default();
+    export(&hot, seq, &s, &m, &prog).unwrap();
+    let (_, tp) = lufs(&read_wav16(&path), 48_000);
+    let rep = prog.audio.lock().unwrap().clone().unwrap();
+    println!("limited: {tp:.2} dBTP, report {rep:?}");
+    assert!(tp <= -0.9, "true peak {tp:.2} dBTP");
+    assert_eq!(rep.limiter, "truePeak");
+    assert_eq!(rep.ceiling_dbtp, Some(-1.0));
+    assert!((rep.limited_db - 3.8).abs() < 0.1, "3.7 dB over, plus the 0.1 dB margin: {rep:?}");
+    assert!(rep.true_peak_dbtp.is_some_and(|v| v <= -0.9), "{rep:?}");
+    assert!(rep.warnings.is_empty(), "{rep:?}");
+    // off: the peak is reported with a warning
+    let path = dir.path("hot_off.wav");
+    let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+    s.effects.peak_limiter.enabled = Some(false);
+    let prog = Progress::default();
+    export(&hot, seq, &s, &m, &prog).unwrap();
+    let rep = prog.audio.lock().unwrap().clone().unwrap();
+    println!("unlimited: report {rep:?}");
+    assert_eq!(rep.limiter, "off");
+    assert!(rep.true_peak_dbtp.is_some_and(|v| v > 2.0), "{rep:?}");
+    assert!(rep.warnings.iter().any(|w| w.contains("may clip")), "{rep:?}");
+    // a loudness target brings its own limiter: the True-Peak Limiter stands aside
+    let path = dir.path("hot_loud.wav");
+    let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+    s.effects.loudness = LoudnessNormalization { enabled: true, target_lufs: -16.0, true_peak_dbtp: -2.0 };
+    let prog = Progress::default();
+    export(&hot, seq, &s, &m, &prog).unwrap();
+    let rep = prog.audio.lock().unwrap().clone().unwrap();
+    assert_eq!((rep.limiter, rep.ceiling_dbtp), ("loudness", Some(-2.0)));
+    // the MP3 and AAC paths report too
+    for (f, name) in [(Format::Mp3, "hot.mp3"), (Format::Aac, "hot.m4a")] {
+        if !crate::available(f) {
+            continue;
+        }
+        let s = ExportSettings { format: f, path: dir.path(name), ..Default::default() };
+        let prog = Progress::default();
+        export(&hot, seq, &s, &m, &prog).unwrap();
+        let rep = prog.audio.lock().unwrap().clone().unwrap();
+        assert_eq!(rep.limiter, "truePeak", "{name}");
+        assert!(rep.true_peak_dbtp.is_some_and(|v| v <= -0.9), "{name}: {rep:?}");
+    }
+}
+
+/// Under the ceiling the limiter is an exact delay that the export removes: a quiet mix is written
+/// bit for bit as with the limiter off, so golden and oracle audio comparisons are unchanged.
+#[test]
+fn true_peak_limiter_leaves_audio_under_the_ceiling_untouched() {
+    let dir = Scratch::new("peak_quiet");
+    let (quiet, seq, m) = matte([0.0, 0.0, 0.0, 1.0], 64, 36, Some(-6.0));
+    let mut files = Vec::new();
+    for on in [true, false] {
+        let path = dir.path(&format!("q{on}.wav"));
+        let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+        s.effects.peak_limiter.enabled = Some(on);
+        let prog = Progress::default();
+        export(&quiet, seq, &s, &m, &prog).unwrap();
+        let rep = prog.audio.lock().unwrap().clone().unwrap();
+        assert!(rep.true_peak_dbtp.is_some_and(|v| (v + 6.0).abs() < 0.2), "{rep:?}");
+        assert!(rep.warnings.is_empty() && rep.limited_db == 0.0, "{rep:?}");
+        files.push(std::fs::read(&path).unwrap());
+    }
+    assert!(files[0] == files[1], "the limiter changed audio under its ceiling");
+    // the same at 44.1 kHz, in mono and in 5.1
+    for (rate, channels) in [(44_100, 2), (48_000, 1), (48_000, 6), (44_100, 6)] {
+        let mut out = Vec::new();
+        for on in [true, false] {
+            let path = dir.path(&format!("q{rate}_{channels}_{on}.wav"));
+            let mut s = ExportSettings { format: Format::Wav, path: path.clone(), ..Default::default() };
+            s.audio.sample_rate = Some(rate);
+            s.audio.channels = channels;
+            s.effects.peak_limiter.enabled = Some(on);
+            export(&quiet, seq, &s, &m, &Progress::default()).unwrap();
+            out.push(std::fs::read(&path).unwrap());
+        }
+        assert!(out[0].len() > 44 && out[0] == out[1], "{rate} Hz, {channels} channels: the limiter changed audio under its ceiling");
+    }
+    // a ceiling that is not a number falls back to -1 dBTP, never a panic
+    let mut s = ExportSettings { format: Format::Wav, path: dir.path("nan.wav"), ..Default::default() };
+    s.effects.peak_limiter.ceiling_dbtp = f64::NAN;
+    let prog = Progress::default();
+    export(&quiet, seq, &s, &m, &prog).unwrap();
+    assert_eq!(prog.audio.lock().unwrap().clone().unwrap().ceiling_dbtp, Some(-1.0));
+}
+
+/// The float exception applies only where float PCM is written: a float setting with AAC, MP3,
+/// FLAC or H.264's AAC (left over from a WAV export, or asked for) keeps the limiter on.
+#[test]
+fn the_float_exception_needs_float_pcm_to_be_written() {
+    let with = |format: Format, codec: AudioCodec| {
+        let mut s = ExportSettings { format, audio: AudioSettings { codec, ..Default::default() }, ..Default::default() };
+        s.audio.set_sample_format(SampleFormat::Float32);
+        s
+    };
+    for (format, codec) in [(Format::Wav, AudioCodec::Auto), (Format::Aiff, AudioCodec::Auto), (Format::ProRes, AudioCodec::Pcm)] {
+        let s = with(format, codec);
+        assert!(s.writes_float_pcm() && !s.peak_limiter_on(), "{format:?}/{codec:?} writes float: no limiter by default");
+    }
+    for (format, codec) in [
+        (Format::Aac, AudioCodec::Auto),
+        (Format::Mp3, AudioCodec::Auto),
+        (Format::Flac, AudioCodec::Auto),
+        (Format::H264, AudioCodec::Auto),
+        (Format::Hevc, AudioCodec::Auto),
+        (Format::MxfOp1a, AudioCodec::Auto),
+        (Format::ProRes, AudioCodec::Flac),
+    ] {
+        let s = with(format, codec);
+        assert!(!s.writes_float_pcm() && s.peak_limiter_on(), "{format:?}/{codec:?} writes no float: the limiter stays on");
+    }
 }

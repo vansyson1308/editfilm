@@ -2931,6 +2931,10 @@
 	Luma Min / Max	Minimum / maksimum lumy
 	Loudness Normalization	Normalizacja głośności
 	True Peak Limit	Limit szczytu rzeczywistego
+	True-Peak Limiter	Limiter szczytu rzeczywistego
+	Ceiling	Pułap
+	Find Speech Segments	Znajdź fragmenty mowy
+	Check Mix Loudness	Sprawdź głośność miksu
 	Audio only	Tylko audio
 	Scaling	Skalowanie
 	Scale To Fit	Skaluj, aby zmieścić
