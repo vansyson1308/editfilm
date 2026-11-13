@@ -537,3 +537,40 @@ fn project_inspect_rates_follow_the_picture() {
         }
     }
 }
+
+/// Follow-up review finding: a source time object given for several clips was converted with the
+/// first clip's media, and that result applied to every clip.
+#[test]
+fn a_source_time_object_for_clips_with_different_media_clocks_is_refused() {
+    let mut s = demo();
+    let items: Vec<_> = s.project.items.values().filter(|i| i.has_video() && i.as_media().is_some()).map(|i| i.id).take(2).collect();
+    assert_eq!(items.len(), 2, "the demo has two pictures");
+    s.execute("file.newSequence", json!({"name": "two"})).unwrap();
+    for (item, tc) in items.iter().zip(["01:00:00:00", "02:00:00:00"]) {
+        s.execute("clip.modifyTimecode", json!({"item": item.0, "timecode": tc})).unwrap();
+    }
+    s.execute("timeline.place", json!({"item": items[0].0, "time": 0, "audio": false})).unwrap();
+    let first_end = s.active_sequence().unwrap().video_tracks[0].items[0].end();
+    s.execute("timeline.place", json!({"item": items[1].0, "time": first_end.0, "audio": false})).unwrap();
+    let clips: Vec<u64> = s.active_sequence().unwrap().video_tracks[0].items.iter().map(|i| i.id.0).collect();
+    assert_eq!(clips.len(), 2);
+    let before = s.project.clone();
+    for time in [json!({"timecode": "01:00:02:00"}), json!({"frame": 48})] {
+        let e = s.execute("clip.frameHoldOptions", json!({"clips": clips, "holdOn": "sourceTimecode", "time": time})).unwrap_err().to_string();
+        assert!(e.contains("flat `timecode`") && e.contains("one call per clip"), "{e}");
+        assert_eq!(*before, *s.project, "nothing changed");
+    }
+    // seconds mean the same media time in every clip
+    s.execute("clip.frameHoldOptions", json!({"clips": clips, "holdOn": "sourceTimecode", "time": {"seconds": 1.0}})).unwrap();
+    // with one clock for all, the object form is per clip too
+    s.execute("clip.modifyTimecode", json!({"item": items[1].0, "timecode": "01:00:00:00"})).unwrap();
+    let rates: Vec<_> = items.iter().map(|i| s.project.item(*i).unwrap().frame_rate()).collect();
+    let r = s.execute("clip.frameHoldOptions", json!({"clips": clips, "holdOn": "sourceTimecode", "time": {"timecode": "01:00:02:00"}}));
+    if rates[0] == rates[1] {
+        r.unwrap();
+        let held: Vec<_> = clips.iter().map(|c| s.active_sequence().unwrap().find_item(ClipId(*c)).unwrap().1.frame_hold).collect();
+        assert_eq!(held[0], held[1], "{held:?}");
+    } else {
+        assert!(r.is_err(), "different rates are refused too");
+    }
+}
