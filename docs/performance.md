@@ -497,6 +497,46 @@ two runs each.
 The export's copy costs a second decoder and up to one more GOP cache of frames (384 MB at most)
 while it runs. A monitor playing a different file than the export dropped no frames either way.
 
+## Results (#18: export speed, drafts and smart render, main → after)
+
+`cargo run --release -p filmagic-engine --example bench_export -- --runs 3 --scenario …`, cloud
+container, 4 cores, Linux, 2026-11-13; main (c902dbb) and this change built side by side and run
+alternately with nothing else running; median wall seconds, software encoder, CPU renderer. `clip`:
+10 s of 1080p23.976 H.264 + AAC (ffmpeg `testsrc2` with noise) as it is; `edit`: the same clip cut
+every 2 s, a 12-frame cross dissolve and audio crossfade on each cut, Lumetri on every other shot,
+a title over the whole sequence; `demo`: the demo project's Main Edit (27 s of procedural footage,
+one run).
+
+| export | main | after |
+|---|---|---|
+| clip, default | 15.02 | **13.10** |
+| edit, default | 23.72 | 23.15 (no plain frames: the title covers all of them) |
+| demo, default | 88.6 | 90.7 (procedural footage: no plain frames; one run each, noise) |
+| clip, `draft: true` | — | **5.04** |
+| edit, `draft: true` | — | **8.25** |
+| demo, `draft: true` | — | **21.5** |
+| clip, `smartRender`, empty cache → re-export | — | 12.46 → **4.60** |
+| edit, `smartRender`, empty cache → re-export | — | 23.13 → **14.57** |
+| edit, `smartRender`, re-export after one shot's grade changed (3 of 5 segments) | — | **19.8** |
+
+Profile (callgrind, `edit` on a 3 s clip, instructions): the H.264 encoder's slice coding about
+56 % (SATD alone 11 %), decoding the source H.264 13 %, float → sRGB8 6.4 %, RGBA → 4:2:0 4.9 %,
+zeroing buffers 2.3 %, the title 2 %. With all four cores busy (3.6–3.8 cores of CPU time per
+second of wall time) the export is CPU-bound, and the encoder and the render overlap already.
+
+- **Plain cuts** (−13 % on `clip`): a frame that is one opaque 8-bit picture as it is goes to the
+  encoder as the bytes the monitor's shortcut makes from it (`render_sequence_frame`), without its
+  float image and the float → sRGB8 conversion; the file is byte-identical.
+- **Draft** (2.6–4.1×): half size, the encoder's `speed` preset, CRF 30. A draft is render-bound
+  (`wait` is a third of its time): the source is still decoded at full size.
+- **Smart render** saves the encoding of unchanged segments, so a re-export runs at the speed of
+  the render: 2.7× on plain footage, 1.6× on `edit`, whose render alone takes 14.5 s. Exporting
+  with it from an empty cache costs the same as without (the segment encodes on a thread of its
+  own while the next one renders).
+- Not done: skipping the render of unchanged segments (it needs a key over everything a frame
+  depends on), reduced-resolution decoding for drafts, and NVENC / GPU rendering measurements on
+  Windows (no Windows machine here; the export result's `encoder` and `stages` fields report them).
+
 ## Results (CPU H.264 export: encoder work and colour conversion, before → after)
 
 `cargo run --release -p filmagic-engine --example bench_export -- --runs 1`: 10 s of 1080p23.976

@@ -299,6 +299,46 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Export speed: review with drafts, export the final once (#18)
+
+A 1080p H.264 export runs at about 18 fps for a plain clip and about 10 fps for a cut sequence with
+dissolves, grades and a title on a 4-core machine (`cargo run --release -p filmagic-engine --example
+bench_export -- --scenario edit`). Most of the time goes to Filmagic's own H.264 encoder. To spend
+less of it:
+
+- **Review with a draft.** `file.exportMedia {"path": "review.mp4", "draft": true}` (or the built-in
+  preset `Draft – Half Size Review`) writes H.264 at half the sequence's size with the encoder's
+  `speed` preset, constant quality CRF 30 and AAC 128 kbps: 2.5–3× faster than the default export.
+  What the call names itself (`scale`, `width`/`height`, `crf`, `bitrateMode`, `bitrateKbps`,
+  `h264Preset`) wins over the draft; with a sized preset (`YouTube 1080p Full HD`) the draft halves
+  that size. The result says `"draft": true` and has a note. Check frames, cuts, titles and sound in
+  the draft (or with `render_preview` / `file.exportFrame` for single frames), and export the final
+  **once**, without `draft`. `draft` with a `format` other than `h264` is refused.
+- **Re-export after a small fix with `smartRender: true`.** The H.264 stream is then written in
+  independent segments of one keyframe interval (2 seconds by default), and a segment whose pictures
+  are all the same as in an earlier smart export is copied from the cache instead of encoded. The
+  file is byte for byte the one a smart export with an empty cache writes. Every frame is still
+  rendered (comparing the pictures is how a change is found, so nothing can be missed), so a
+  re-export saves the encoding of the unchanged segments: 2.7× faster for plain footage, 1.6× for a
+  sequence with a title and grades on every frame. Use it on the final export too, so the next fix
+  is fast. It needs Filmagic's own encoder: `format: "h264"` in MP4 or MOV, one pass, 8-bit,
+  `hardwareEncoding` off; otherwise the export runs as usual and its result's `notes` say so. The
+  cache is `filmagic-smart-render` in the system's temporary directory (`settings.smartRenderDir`
+  for another), at most 4 GB, oldest segments removed first.
+- **Hardware.** `gpuRendering: "auto"` composites frames on the GPU (2.4× faster on an effects-heavy
+  1080p edit where a GPU is present; off by default because its pixels differ slightly by GPU).
+  `hardwareEncoding: "auto"` uses NVENC (Windows and Linux, NVIDIA GPUs) or VideoToolbox (macOS) for
+  H.264 when it takes the settings. Windows has no other hardware H.264 encoder in Filmagic: Media
+  Foundation is used for decoding only, so without an NVIDIA GPU `auto` falls back to the software
+  encoder. Both settings fall back cleanly, and the result says what happened.
+- **Read the result.** A `wait: true` export (and the job's `result` in `jobs.list`) carries
+  `encoder`: `name` (`Filmagic H.264 (software)`, `NVENC H.264`, …), `hardware`,
+  `hardwareRequested`, `hardwareDeclined` (each hardware encoder's reason for not taking the
+  export), `gpuRequested`, `gpuFrames` / `cpuFrames`, and with smart render `segmentsReused` /
+  `segmentsEncoded`; `stages`, the seconds per stage (`render`, `encode`, `convert`, `audio`, `mux`,
+  `wait`: the time the encoder waited for frames; render and encode overlap, so they can add up to
+  more than `seconds`); and `notes`, which say what held the export back and what to try.
+
 ## 2. Control channel
 
 `filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

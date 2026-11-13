@@ -190,6 +190,11 @@ fn check(what: &str, specs: &[Spec], scale: f32) {
             // and as the monitor's bytes, straight from the frame where it is one picture alone
             let bytes = render_sequence_rgba8(&p, seq, t, opts, &map);
             assert!(bytes == (want.w, want.h, want.over_black_with_alpha_rgba8()), "{what} (frame {f}, render {round}): monitor bytes");
+            // and as the export takes it: the same bytes over black, or the same float image
+            match render_sequence_frame(&p, seq, t, opts, &map) {
+                SequenceFrame::Opaque8 { w, h, px } => assert!((w, h, px) == (want.w, want.h, want.over_black_rgba8()), "{what} (frame {f}): export bytes"),
+                SequenceFrame::Image(img) => same_bits(&img, &want, &format!("{what} (frame {f}, render {round}): export image")),
+            }
         }
     }
 }

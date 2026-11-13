@@ -309,7 +309,7 @@ engine behaviour without a window.
 | HEVC decode, 1080p / 2160p | `cargo test --release -p filmagic-hevc --test it perf:: -- --ignored --nocapture` |
 | ProRes decode/encode | `cargo test --release -p filmagic-prores --test it perf:: -- --ignored --nocapture` |
 | Encoder speed / PSNR / bitrate | `cargo run --release -p filmagic-h264enc --example h264enc_synth -- …` |
-| Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files) | `cargo run --release -p filmagic-engine --example bench_export -- --runs 7` |
+| Export to H.264 + AAC on the CPU (1080p clip through `file.exportMedia`, wall time per run, `--keep out.mp4` to compare files; `--scenario edit` cuts it every 2 s with dissolves, Lumetri and a title, `--scenario demo` exports the demo project, `--set '{"draft":true}'` adds export parameters, `--touch` changes one shot between runs for smart render) | `cargo run --release -p filmagic-engine --example bench_export -- --runs 7` |
 | Decode a real file through the media stack | `cargo run --release -p filmagic-cli -- bench-decode file.mp4 --frames 120` |
 | Coding-tool coverage of the fixtures | `cargo test --release -p filmagic-h264 --test it conformance::coverage_report -- --ignored --nocapture` (same for `hevc`) |
 | **Whole-app suite**: decode fps per codec, playback, scrubbing, timeline UI, export, project save/open, peak RSS | `cargo xtask bench` ([performance.md](performance.md)) |

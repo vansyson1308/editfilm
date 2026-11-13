@@ -3,7 +3,16 @@
 //!
 //! ```text
 //! cargo run --release -p filmagic-engine --example bench_export -- [--runs N] [--secs S] [--format h264] [--keep out.mp4] [--source file.mp4]
+//!     [--scenario clip|edit|demo] [--set '{"draft":true}'] [--hw auto|off] [--gpu auto|off] [--touch]
 //! ```
+//!
+//! Scenarios: `clip` (the default) exports the source clip as it is; `edit` cuts it every two
+//! seconds, puts a cross dissolve (video) and a constant-power crossfade (audio) on every cut, a
+//! Lumetri grade on every other shot and a title over the whole sequence (the commands an agent
+//! sends); `demo` exports the demo project's Main Edit (procedural footage: no decoding). `--set`
+//! merges more `file.exportMedia` parameters into every run. `--touch` (the `edit` scenario) changes
+//! the grade of one shot before every run after the first: with `--set '{"smartRender":true}'` that
+//! is a re-export after a small change.
 //!
 //! The source is made once in `target/fixtures/export-bench/` unless `--source` names a file:
 //! with ffmpeg when it is installed (the clip the documented numbers use), otherwise a procedural
@@ -127,6 +136,43 @@ fn session(src: &Path) -> Session {
     s
 }
 
+/// Cut the bench sequence into a typical edit: a cut every two seconds with a cross dissolve and
+/// an audio crossfade on each, a Lumetri grade on every other shot and a title on V2.
+fn make_edit(s: &mut Session) {
+    let run = |s: &mut Session, id: &str, p: Value| s.execute(id, p).unwrap_or_else(|e| panic!("{id}: {e}"));
+    let seq = s.state.active_sequence.expect("bench sequence");
+    let dur = s.project.sequence(seq).map(|q| q.duration()).expect("sequence");
+    let step = Tick::from_seconds_f64(2.0);
+    let mut t = step;
+    while t + Tick::from_seconds_f64(1.0) < dur {
+        run(s, "timeline.razor", json!({"time": t.0}));
+        t += step;
+    }
+    let clips = |s: &Session, video: bool| -> Vec<u64> {
+        let q = s.project.sequence(seq).expect("sequence");
+        let tracks = if video { &q.video_tracks } else { &q.audio_tracks };
+        tracks[0].items.iter().map(|i| i.id.0).collect()
+    };
+    let video = clips(s, true);
+    for (k, c) in video.iter().enumerate() {
+        if k + 1 < video.len() {
+            run(s, "sequence.applyVideoTransition", json!({"clip": c, "effect": "cross_dissolve", "edge": "out", "frames": 12}));
+        }
+        if k % 2 == 1 {
+            run(s, "effects.apply", json!({"clips": [c], "effect": "lumetri"}));
+            for (param, value) in [("temperature", 18.0), ("contrast", 22.0), ("saturation", 120.0)] {
+                let _ = s.execute("effects.setParam", json!({"clip": c, "effect": "lumetri", "param": param, "value": value}));
+            }
+        }
+    }
+    let audio = clips(s, false);
+    for c in audio.iter().take(audio.len().saturating_sub(1)) {
+        run(s, "sequence.applyAudioTransition", json!({"clip": c, "effect": "constant_power", "edge": "out", "frames": 12}));
+    }
+    s.set_playhead(Tick::ZERO);
+    run(s, "graphics.newText", json!({"text": "Filmagic export bench", "size": 96, "seconds": dur.seconds(), "track": 1, "time": 0}));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let runs: usize = arg(&args, "--runs").and_then(|v| v.parse().ok()).unwrap_or(7).max(1);
@@ -140,31 +186,62 @@ fn main() {
     let dir = std::env::temp_dir().join(format!("filmagic-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let out = keep.clone().unwrap_or_else(|| dir.join(format!("out.{}", if format == "prores" { "mov" } else { "mp4" })));
-    let mut s = session(&src);
+    let scenario = arg(&args, "--scenario").unwrap_or_else(|| "clip".into());
+    let mut s = match scenario.as_str() {
+        "demo" => {
+            let mut s = Session::default();
+            s.execute("file.openDemoProject", json!({})).expect("demo project");
+            s
+        }
+        "edit" => {
+            let mut s = session(&src);
+            make_edit(&mut s);
+            s
+        }
+        _ => session(&src),
+    };
+    let extra: Value = arg(&args, "--set").map(|v| serde_json::from_str(&v).expect("--set takes a JSON object")).unwrap_or_else(|| json!({}));
+    let hw = arg(&args, "--hw").unwrap_or_else(|| "off".into());
+    let gpu = arg(&args, "--gpu").unwrap_or_else(|| "off".into());
     let mut times = Vec::new();
     let mut stages = Vec::new();
+    let touch = args.iter().any(|a| a == "--touch");
     for i in 0..runs {
+        if touch && i > 0 {
+            // a small change between runs: one graded shot gets another temperature
+            let seq = s.state.active_sequence.expect("sequence");
+            let shot = s.project.sequence(seq).and_then(|q| q.video_tracks[0].items.get(1).map(|c| c.id.0)).expect("a second shot");
+            s.execute("effects.setParam", json!({"clip": shot, "effect": "lumetri", "param": "temperature", "value": 10.0 + i as f64})).expect("touch");
+        }
         let s0 = filmagic_export::stage_times();
         let t0 = Instant::now();
-        let r = s.execute(
-            "file.exportMedia",
-            json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": "off", "gpuRendering": "off", "wait": true}),
-        );
+        let mut params = json!({"path": out.to_string_lossy(), "format": format, "hardwareEncoding": hw, "gpuRendering": gpu, "wait": true});
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        let r = s.execute("file.exportMedia", params);
         let dt = t0.elapsed().as_secs_f64();
-        if let Err(e) = r {
-            panic!("export: {e}");
+        let r = r.unwrap_or_else(|e| panic!("export: {e}"));
+        if i == 0 {
+            eprintln!("result: {}", r["result"]);
         }
         if let Some(e) = s.jobs.last().and_then(|j| j.progress.error.lock().ok().and_then(|g| g.clone())) {
             panic!("export: {e}");
         }
         let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-        eprintln!("run {i}: {dt:.3} s, {bytes} bytes");
+        let enc = &r["result"]["encoder"];
+        let segments = if enc["segmentsReused"].is_null() {
+            String::new()
+        } else {
+            format!(", segments reused {} encoded {}", enc["segmentsReused"], enc["segmentsEncoded"])
+        };
+        eprintln!("run {i}: {dt:.3} s, {bytes} bytes{segments}");
         times.push(dt);
         stages = filmagic_export::stage_times().iter().zip(&s0).map(|((st, b), (_, a))| (st.name(), (b - a) as f64 / 1e9)).collect();
     }
     let mut sorted = times.clone();
     sorted.sort_by(f64::total_cmp);
-    println!("export {format}: runs {runs}, median {:.3} s, min {:.3} s", sorted[runs / 2], sorted[0]);
+    println!("export {format} ({scenario}): runs {runs}, median {:.3} s, min {:.3} s", sorted[runs / 2], sorted[0]);
     println!("stages (last run): {}", stages.iter().map(|(n, s)| format!("{n} {s:.3}")).collect::<Vec<_>>().join(", "));
     if keep.is_none() {
         let _ = std::fs::remove_dir_all(&dir);

@@ -4,7 +4,7 @@ use super::convert::{
 use super::format::{ColorSignal, DEFAULT_CRF, ExportSettings, Format, H264Pass};
 use super::registry::{AudioEncoder, EncodedPacket, EncoderFrame, PrepareAhead, VideoEncoder};
 use super::stats::{Stage, timed};
-use super::{BitrateMode, ExportError, FrameRate, H264Profile, Result, SampleEntry, SampleFormat};
+use super::{BitrateMode, ExportError, FrameRate, H264Preset, H264Profile, Result, SampleEntry, SampleFormat};
 use std::sync::{Arc, Mutex, PoisonError};
 
 struct MjpegEncoder {
@@ -15,6 +15,9 @@ struct MjpegEncoder {
 }
 
 impl VideoEncoder for MjpegEncoder {
+    fn name(&self) -> &str {
+        "Filmagic Motion-JPEG"
+    }
     fn sample_entry(&self) -> SampleEntry {
         SampleEntry::jpeg(self.w, self.h)
     }
@@ -140,6 +143,9 @@ struct ProResEncoder {
 }
 
 impl VideoEncoder for ProResEncoder {
+    fn name(&self) -> &str {
+        "Filmagic ProRes"
+    }
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::prores(filmagic_isobmff::FourCc(self.profile.fourcc()), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
@@ -220,6 +226,9 @@ struct DnxEncoder {
 }
 
 impl VideoEncoder for DnxEncoder {
+    fn name(&self) -> &str {
+        "Filmagic DNxHR"
+    }
     fn sample_entry(&self) -> SampleEntry {
         let mut e = SampleEntry::dnx(filmagic_isobmff::FourCc(*b"AVdh"), self.w as u16, self.h as u16);
         self.signal.apply_to(&mut e, true);
@@ -282,6 +291,9 @@ struct ApvEncoder {
 }
 
 impl VideoEncoder for ApvEncoder {
+    fn name(&self) -> &str {
+        "Filmagic APV"
+    }
     fn sample_entry(&self) -> SampleEntry {
         let apvc = filmagic_isobmff::ApvConfig::parse(&self.enc.decoder_config_record()).unwrap_or_default();
         let mut e = SampleEntry::apv(apvc, self.w as u16, self.h as u16);
@@ -373,7 +385,7 @@ struct H264Encoder {
 type Yuv420 = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 /// The encoder input of `f`: 8-bit limited-range 4:2:0 in the export's colour signal.
-fn h264_input(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
+pub(crate) fn h264_input(f: &EncoderFrame, signal: ColorSignal, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {
     match f.hdr {
         Some(rgb) => {
             let (kr, kb) = signal.kr_kb();
@@ -418,6 +430,9 @@ impl H264Encoder {
 }
 
 impl VideoEncoder for H264Encoder {
+    fn name(&self) -> &str {
+        "Filmagic H.264 (software)"
+    }
     fn sample_entry(&self) -> SampleEntry {
         let cfg = filmagic_isobmff::AvcConfig::parse(&self.enc.avcc()).unwrap_or_else(|_| {
             let (sps, pps) = self.enc.sps_pps();
@@ -499,6 +514,11 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     cfg.slices = h264_slices(h);
+    cfg.preset = match s.h264_preset {
+        H264Preset::Speed => filmagic_h264enc::Preset::Speed,
+        H264Preset::Balanced => filmagic_h264enc::Preset::Balanced,
+        H264Preset::Quality => filmagic_h264enc::Preset::Quality,
+    };
     let kbps = s.bitrate_kbps.max(100);
     let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or_else(|| (u64::from(kbps) * 3 / 2).min(u64::from(u32::MAX)) as u32);
     cfg.rate = match s.bitrate_mode {
@@ -532,6 +552,11 @@ pub(crate) fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &
             cfg.mastering_display = Some(b);
             cfg.content_light = Some(cll);
         }
+    }
+    // smart render: Filmagic's encoder in cached segments (8-bit, one pass, MP4 / MOV)
+    if s.smart_render && cfg.bit_depth == 8 && matches!(s.h264_pass, H264Pass::Single) && !s.format.is_mxf() {
+        let dir = s.smart_render_dir.as_deref().filter(|d| !d.trim().is_empty()).map(std::path::PathBuf::from).unwrap_or_else(crate::smart::default_dir);
+        return Some(crate::smart::SmartH264::new(cfg, w, h, rate, s.signal, Some(dir)).map(|e| Box::new(e) as Box<dyn VideoEncoder>));
     }
     Some(
         filmagic_h264enc::Encoder::new(cfg)

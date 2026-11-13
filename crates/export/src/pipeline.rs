@@ -26,6 +26,10 @@ fn bounded_overlay_dimensions(w: usize, h: usize) -> Result<()> {
     Ok(())
 }
 
+/// Frames that went to the encoder as the picture's own bytes ([`Pipeline::plain_bytes_allowed`]),
+/// process-wide (tests).
+pub(crate) static PLAIN_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Where the rendered picture lands in the output frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Geometry {
@@ -149,6 +153,8 @@ pub(crate) struct Pipeline {
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// Never take the opaque-bytes shortcut ([`Pipeline::plain_bytes_allowed`]; tests).
+    force_float: bool,
     /// Free the pool's float images when the export ends: a standalone export, not one part of a
     /// batch (`ExportSettings::part_of_batch`).
     trim_pool: bool,
@@ -231,6 +237,7 @@ impl Pipeline {
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
             trim_pool: !settings.part_of_batch,
+            force_float: false,
             project: project.clone(),
             seq,
             rate: r.rate,
@@ -277,7 +284,24 @@ impl Pipeline {
                 if self.renderer.is_some() {
                     note_gpu_fallback();
                 }
-                filmagic_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+                if self.plain_bytes_allowed() {
+                    match filmagic_render::render_sequence_frame(&self.project, self.seq, t, self.opts, sources) {
+                        filmagic_render::SequenceFrame::Opaque8 { w, h, mut px } if (w, h) == (self.w as usize, self.h as usize) => {
+                            PLAIN_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // a plain cut: the picture's own sRGB bytes, the same as through its float
+                            // image, without converting and composing that image (#18)
+                            if self.effects.video_limiter.enabled {
+                                limit_rgba8(&mut px, self.effects.video_limiter.min_percent, self.effects.video_limiter.max_percent);
+                            }
+                            return (px, Vec::new());
+                        }
+                        // an output size the picture is cropped or padded to (odd scaled sizes): the float path
+                        filmagic_render::SequenceFrame::Opaque8 { .. } => filmagic_render::render_sequence(&self.project, self.seq, t, self.opts, sources),
+                        filmagic_render::SequenceFrame::Image(img) => img,
+                    }
+                } else {
+                    filmagic_render::render_sequence(&self.project, self.seq, t, self.opts, sources)
+                }
             }
         };
         let mut img = self.place(img);
@@ -304,6 +328,28 @@ impl Pipeline {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }
         (rgba, Vec::new())
+    }
+
+    /// Whether a frame that is one opaque 8-bit picture as it is can go to the encoder as the bytes
+    /// the renderer gives for it ([`filmagic_render::SequenceFrame::Opaque8`]): an SDR export
+    /// without alpha whose picture is the rendered frame as it is (no scaling into another frame
+    /// size, no offset) and that draws nothing over it. The limiter works on the bytes either way.
+    fn plain_bytes_allowed(&self) -> bool {
+        let fx = &self.effects;
+        !self.hdr_out
+            && !self.alpha
+            && !self.force_float
+            && self.geom.content.is_none()
+            && self.geom.offset == (0, 0)
+            && self.overlay.is_none()
+            && !(fx.name_overlay.enabled && !fx.name_overlay.text.trim().is_empty())
+            && !fx.timecode_overlay.enabled
+    }
+
+    /// Render every frame through its float image (tests compare the two paths).
+    #[cfg(test)]
+    pub(crate) fn set_force_float(&mut self, on: bool) {
+        self.force_float = on;
     }
 
     /// Fit the rendered picture into the output frame.

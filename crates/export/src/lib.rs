@@ -51,6 +51,7 @@ mod format;
 mod output;
 mod registry;
 mod run;
+mod smart;
 mod stats;
 mod still_encode;
 
@@ -79,7 +80,7 @@ pub use run::{export, export_range, frame_span, validate_range};
 pub(crate) use stats::note_lock_wait;
 pub use stats::{
     GpuRenderStats, HwEncodeStats, Stage, export_lock_wait, gpu_render_stats, hw_encode_stats, note_gpu_fallback, note_gpu_frame, note_hw_encode_declined,
-    note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
+    note_hw_encode_declined_because, note_hw_encode_frame, note_hw_encode_session, note_stage, reset_export_lock_wait, stage_times, timed,
 };
 pub use still_encode::{encode_png, encode_still, encode_still_with, encode_still_with_quality};
 
@@ -142,7 +143,7 @@ impl Progress {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub path: String,
     pub frames: u64,
@@ -152,6 +153,44 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// Which video encoder and renderer did the work, and why hardware was not used (the
+    /// encoded-video formats: H.264, H.265, ProRes …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<Box<EncoderReport>>,
+    /// Wall seconds per export stage ([`Stage::name`]), so a slow export says where its time went.
+    /// Render and encode run at the same time, so they can add up to more than `seconds`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub stages: std::collections::BTreeMap<String, f64>,
+    /// What an agent can act on (a hardware encoder that was asked for and not used …).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// The encoder and renderer of an export ([`Report::encoder`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncoderReport {
+    /// The video encoder that wrote the stream ([`VideoEncoder::name`]).
+    pub name: String,
+    /// A hardware encoder (NVENC, VideoToolbox) wrote it.
+    pub hardware: bool,
+    /// `hardwareEncoding` was `auto`.
+    pub hardware_requested: bool,
+    /// Why each hardware encoder that was asked declined (empty when none was asked or one took it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hardware_declined: Vec<String>,
+    /// `gpuRendering` was `auto`.
+    pub gpu_requested: bool,
+    /// Frames composited on the GPU, and frames the CPU renderer drew instead (both 0 with
+    /// `gpuRendering` off). Process-wide counters taken over the export.
+    pub gpu_frames: u64,
+    pub cpu_frames: u64,
+    /// Smart render: segments whose packets came from the cache, and segments encoded (absent
+    /// when the export did not smart-render).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments_reused: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segments_encoded: Option<u64>,
 }
 
 #[cfg(test)]
@@ -171,3 +210,9 @@ mod determinism_tests;
 
 #[cfg(test)]
 mod hdr_tests;
+
+#[cfg(test)]
+mod speed_tests;
+
+#[cfg(test)]
+mod smart_tests;

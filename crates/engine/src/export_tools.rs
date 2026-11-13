@@ -325,6 +325,61 @@ fn apply_flat_overrides(settings: &mut ExportSettings, p: &Value, cmd: &str) -> 
         settings.effects.loudness.enabled = true;
         settings.effects.loudness.target_lufs = v;
     }
+    match p.get("smartRender") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(v)) => settings.smart_render = *v,
+        Some(_) => return Err(bad(cmd, "smartRender: true (re-encode only the segments whose pictures changed since the last export) or false")),
+    }
+    if let Some(v) = p.get("h264Preset") {
+        settings.h264_preset = serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "h264Preset: speed | balanced | quality"))?;
+    }
+    match p.get("draft") {
+        None | Some(Value::Bool(false)) | Some(Value::Null) => {}
+        Some(Value::Bool(true)) => apply_draft(settings, p, cmd)?,
+        Some(_) => return Err(bad(cmd, "draft: true (a fast half-size review export) or false")),
+    }
+    Ok(())
+}
+
+/// What a draft export's result tells the agent.
+pub const DRAFT_NOTE: &str =
+    "draft export: half size, fast encoder, lower quality. Review it (frames, cuts, titles, sound), then export the final once without draft";
+
+/// `draft: true`: a quick review copy of the edit ([`filmagic_export::presets::draft`]) over whatever
+/// the preset and the other parameters chose. What the call names itself wins: `scale`, `width` /
+/// `height`, `crf` / `bitrateMode` / `bitrateKbps`, `h264Preset`. A preset's frame size is halved.
+fn apply_draft(settings: &mut ExportSettings, p: &Value, cmd: &str) -> Result<()> {
+    if str_p(p, "format").is_some() && settings.format != Format::H264 {
+        return Err(bad(cmd, "draft exports are H.264: leave out `format`, or set it to h264"));
+    }
+    let draft = filmagic_export::presets::draft();
+    settings.format = Format::H264;
+    let sized = ["scale", "width", "height"].iter().any(|k| p.get(*k).is_some());
+    if !sized {
+        match settings.frame_size {
+            // even sizes, as H.264 4:2:0 needs
+            Some((w, h)) => settings.frame_size = Some(((w / 2).max(2) & !1, (h / 2).max(2) & !1)),
+            None => settings.scale *= draft.scale,
+        }
+    }
+    if !["crf", "bitrateMode", "bitrateKbps"].iter().any(|k| p.get(*k).is_some()) {
+        settings.bitrate_mode = draft.bitrate_mode;
+        settings.crf = draft.crf;
+        settings.adaptive_bitrate = None;
+        settings.max_bitrate_kbps = None;
+    }
+    if p.get("h264Preset").is_none() {
+        settings.h264_preset = draft.h264_preset;
+    }
+    // a review copy: 8-bit High, long GOP, rendered at the size it is written
+    if settings.h264_profile == filmagic_export::H264Profile::High10 {
+        settings.h264_profile = filmagic_export::H264Profile::High;
+    }
+    settings.h264_intra_only = false;
+    settings.max_render_quality = false;
+    settings.audio.codec = filmagic_export::AudioCodec::Aac;
+    let kbps = settings.audio.bitrate_kbps;
+    settings.audio.bitrate_kbps = if kbps == 0 { draft.audio.bitrate_kbps } else { kbps.min(draft.audio.bitrate_kbps) };
     Ok(())
 }
 
@@ -620,6 +675,10 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
     output_json(&mut out, &path, files);
     if let Some(pr) = preset {
         out["preset"] = json!(pr.name);
+    }
+    if bool_p(p, "draft") == Some(true) {
+        out["draft"] = json!(true);
+        out["notes"] = json!([DRAFT_NOTE]);
     }
     if !wait {
         // where the job can be followed (#1544: it is not in `export.queue.list`, which only lists

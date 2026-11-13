@@ -71,6 +71,18 @@ impl H264Profile {
     }
 }
 
+/// The search effort of Filmagic's H.264 encoder ([`crate::ExportSettings::h264_preset`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum H264Preset {
+    /// Fewest partitions and the smallest search: the draft exports' choice.
+    Speed,
+    #[default]
+    Balanced,
+    /// Adds rate-distortion mode decision (slower).
+    Quality,
+}
+
 /// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
 /// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of Filmagic's own encoder. Off
 /// by default: hardware encoders make different streams, and exports are otherwise byte-identical

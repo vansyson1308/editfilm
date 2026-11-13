@@ -369,7 +369,11 @@ fn verify_builtin_preset(session: &mut Session, directory: &Scratch, preset: &Va
 fn frame_size(settings: &Value) -> (u64, u64) {
     match settings["frameSize"].as_array() {
         Some(size) => (size[0].as_u64().unwrap(), size[1].as_u64().unwrap()),
-        None => (1920, 1080),
+        // the demo sequence's size times the preset's scale (the draft preset: half size)
+        None => {
+            let scale = settings["scale"].as_f64().unwrap_or(1.0);
+            ((1920.0 * scale).round() as u64, (1080.0 * scale).round() as u64)
+        }
     }
 }
 
@@ -503,7 +507,8 @@ fn verify_h264_preset(name: &str, format_name: &str, settings: &Value, video: &V
     assert_eq!(video["profile"], profile, "{name}");
     assert_eq!(video["pix_fmt"], pix, "{name}");
     assert_eq!(audio["codec_name"], "aac", "{name}");
-    assert!((num(&audio["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", audio["bit_rate"]);
+    let kbps = settings["audio"]["bitrate_kbps"].as_f64().unwrap_or(320.0);
+    assert!((num(&audio["bit_rate"]) / 1000.0 - kbps).abs() < kbps / 4.0, "{name}: AAC {} (preset {kbps} kbps)", audio["bit_rate"]);
 }
 
 fn verify_prores_preset(name: &str, settings: &Value, video: &Value, audio: &Value, bitrate: f64, pixel_rate: f64, format_name: &str) {
@@ -1137,4 +1142,108 @@ fn max_threads_reaches_the_export_settings() {
     assert_eq!(settings_of(json!({"format": "mjpeg", "path": "out.mov"})).unwrap().max_threads, 0, "all cores unless asked");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "maxThreads": -1})).is_err(), "a negative count is refused");
     assert!(settings_of(json!({"format": "mjpeg", "path": "out.mov", "settings": {"maxThread": 2}})).is_err(), "a misspelt setting is refused, not ignored");
+}
+
+/// #18: `draft: true` is a fast review copy: half size, the encoder's speed preset, CRF 30, AAC
+/// 128 kbps, with a note saying to export the final once without it. What the call names itself
+/// (scale, size, rate control, encoder preset) wins over the draft.
+#[test]
+fn draft_exports_are_half_size_fast_and_say_so() {
+    let mut s = demo();
+    let resolve = |s: &mut Session, extra: Value| -> Value {
+        let mut p = json!({"draft": true, "range": "custom", "startSeconds": 1.0, "endSeconds": 1.5});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        s.execute("export.resolve", p).unwrap()
+    };
+    let r = resolve(&mut s, json!({}));
+    assert_eq!((r["output"]["width"].as_u64(), r["output"]["height"].as_u64()), (Some(960), Some(540)), "{r}");
+    let st = &r["settings"];
+    assert_eq!((st["format"].as_str(), st["h264Preset"].as_str(), st["bitrateMode"].as_str()), (Some("h264"), Some("speed"), Some("crf")), "{st}");
+    assert_eq!(st["crf"].as_f64(), Some(f64::from(filmagic_export::presets::DRAFT_CRF)));
+    assert_eq!(st["audio"]["bitrate_kbps"].as_u64(), Some(128));
+    // a preset's own frame size is halved; the call's own choices win
+    let r = resolve(&mut s, json!({"preset": "YouTube 2160p 4K Ultra HD"}));
+    assert_eq!((r["output"]["width"].as_u64(), r["output"]["height"].as_u64()), (Some(1920), Some(1080)), "{r}");
+    let r = resolve(&mut s, json!({"scale": 0.25, "crf": 20, "h264Preset": "balanced"}));
+    assert_eq!((r["output"]["width"].as_u64(), r["output"]["height"].as_u64()), (Some(480), Some(270)), "{r}");
+    assert_eq!((r["settings"]["crf"].as_f64(), r["settings"]["h264Preset"].as_str()), (Some(20.0), Some("balanced")));
+    let r = resolve(&mut s, json!({"preset": "H.264 High 10 Master"}));
+    assert_eq!(r["settings"]["h264Profile"].as_str(), Some("high"), "a review copy is 8-bit: {r}");
+    // the built-in preset is the same thing
+    let r = s
+        .execute("export.resolve", json!({"preset": filmagic_export::presets::DRAFT_PRESET, "range": "custom", "startSeconds": 1.0, "endSeconds": 1.5}))
+        .unwrap();
+    assert_eq!((r["output"]["width"].as_u64(), r["settings"]["h264Preset"].as_str()), (Some(960), Some("speed")), "{r}");
+
+    // the export itself: half size, and the result says it is a draft
+    let dir = Scratch::new("draft");
+    let path = dir.path("Draft.mp4");
+    let r =
+        s.execute("file.exportMedia", json!({"path": path, "draft": true, "range": "custom", "startSeconds": 1.0, "endSeconds": 1.5, "wait": true})).unwrap();
+    assert_eq!(r["draft"], true);
+    assert!(r["notes"][0].as_str().is_some_and(|n| n.contains("without draft")), "{r}");
+    assert_eq!(r["result"]["encoder"]["name"], "Filmagic H.264 (software)", "{r}");
+    let src = filmagic_codecs::open_bytes("Draft.mp4", std::fs::read(&path).unwrap().into()).unwrap();
+    let v = src.info().video.clone().unwrap();
+    assert_eq!((v.width, v.height), (960, 540));
+}
+
+/// #18: hostile `draft` and `h264Preset` values are refused with what to send instead, and change
+/// nothing; `draft: false` and `null` are plain exports.
+#[test]
+fn hostile_draft_parameters_are_refused() {
+    let mut s = demo();
+    let base = json!({"range": "custom", "startSeconds": 1.0, "endSeconds": 1.5});
+    let with = |extra: Value| {
+        let mut p = base.clone();
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    for (extra, hint) in [
+        (json!({"draft": "yes"}), "draft: true"),
+        (json!({"draft": 1}), "draft: true"),
+        (json!({"draft": f64::MAX}), "draft: true"),
+        (json!({"draft": [true]}), "draft: true"),
+        (json!({"draft": true, "format": "prores"}), "draft exports are H.264"),
+        (json!({"draft": true, "format": "wav"}), "draft exports are H.264"),
+        (json!({"h264Preset": "turbo"}), "h264Preset: speed | balanced | quality"),
+        (json!({"h264Preset": 3}), "h264Preset: speed | balanced | quality"),
+        (json!({"h264Preset": null}), "h264Preset: speed | balanced | quality"),
+    ] {
+        let e = s.execute("export.resolve", with(extra.clone())).unwrap_err().to_string();
+        assert!(e.contains(hint), "{extra}: {e}");
+    }
+    for extra in [json!({"draft": false}), json!({"draft": null})] {
+        let r = s.execute("export.resolve", with(extra.clone())).unwrap();
+        assert_eq!(r["output"]["width"].as_u64(), Some(1920), "{extra}: {r}");
+        assert_eq!(r["settings"]["h264Preset"].as_str(), Some("balanced"));
+    }
+    // a draft with an explicit h264 format is fine
+    let r = s.execute("export.resolve", with(json!({"draft": true, "format": "h264"}))).unwrap();
+    assert_eq!(r["output"]["width"].as_u64(), Some(960));
+}
+
+/// #18: `smartRender: true` on an engine export: the second export of an unchanged edit takes every
+/// segment from the cache and writes the same file; the result says how many segments it reused.
+#[test]
+fn smart_render_re_exports_reuse_segments() {
+    let mut s = demo();
+    let dir = Scratch::new("smart");
+    let cache = dir.path("cache");
+    let export = |s: &mut Session, name: &str| -> Value {
+        let params = json!({"path": dir.path(name), "smartRender": true, "settings": {"smartRenderDir": cache}, "range": "custom", "startSeconds": 1.0, "endSeconds": 3.0, "audio": false, "wait": true});
+        s.execute("file.exportMedia", params).unwrap()
+    };
+    let first = export(&mut s, "first.mp4");
+    let e = &first["result"]["encoder"];
+    assert_eq!(e["name"], "Filmagic H.264 (software, smart render)", "{first}");
+    assert_eq!((e["segmentsReused"].as_u64(), e["segmentsEncoded"].as_u64()), (Some(0), Some(2)), "{first}");
+    let second = export(&mut s, "second.mp4");
+    let e = &second["result"]["encoder"];
+    assert_eq!((e["segmentsReused"].as_u64(), e["segmentsEncoded"].as_u64()), (Some(2), Some(0)), "{second}");
+    assert!(std::fs::read(dir.path("first.mp4")).unwrap() == std::fs::read(dir.path("second.mp4")).unwrap());
+    for bad_value in [json!("yes"), json!(1), json!([true])] {
+        let e = s.execute("export.resolve", json!({"smartRender": bad_value})).unwrap_err().to_string();
+        assert!(e.contains("smartRender: true"), "{e}");
+    }
 }

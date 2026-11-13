@@ -114,13 +114,33 @@ pub fn output_size(seq: &Sequence, scale: f32) -> (usize, usize) {
 /// it is (one clip, placed as it is, no effects, no colour management, no captions) goes straight
 /// to those bytes ([`VideoFrame::to_opaque_srgb8`]), without the float picture in between.
 pub fn render_sequence_rgba8(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> (usize, usize, Vec<u8>) {
-    let Some(seq) = project.sequence(seq_id) else { return (1, 1, Image::new(1, 1).over_black_with_alpha_rgba8()) };
+    match render_sequence_frame(project, seq_id, t, opts, sources) {
+        SequenceFrame::Opaque8 { w, h, px } => (w, h, px),
+        SequenceFrame::Image(img) => (img.w, img.h, img.over_black_with_alpha_rgba8()),
+    }
+}
+
+/// A frame of [`render_sequence_frame`].
+pub enum SequenceFrame {
+    /// The frame is one opaque 8-bit video picture as it is: its sRGB RGBA8 bytes (alpha 255), byte
+    /// for byte what [`Image::over_black_rgba8`] and [`Image::over_black_with_alpha_rgba8`] give
+    /// for its float image ([`VideoFrame::to_opaque_srgb8`]).
+    Opaque8 { w: usize, h: usize, px: Vec<u8> },
+    /// Any other frame: the composited float image ([`render_sequence`]).
+    Image(Image),
+}
+
+/// [`render_sequence`], except that a frame that is one opaque 8-bit video picture as it is (one
+/// clip, placed as it is, no effects, no colour management, no captions) comes back as its sRGB
+/// bytes without the float picture in between: what an SDR export of a plain cut needs, at a
+/// fraction of the cost (#18).
+pub fn render_sequence_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> SequenceFrame {
+    let Some(seq) = project.sequence(seq_id) else { return SequenceFrame::Image(Image::new(1, 1)) };
     let canvas = seq_canvas(project, seq, t, opts, sources, None);
     if let Some(px) = canvas.frame.as_ref().and_then(|(f, n)| f.to_opaque_srgb8(*n)) {
-        return (canvas.w, canvas.h, px);
+        return SequenceFrame::Opaque8 { w: canvas.w, h: canvas.h, px };
     }
-    let img = canvas.into_image();
-    (img.w, img.h, img.over_black_with_alpha_rgba8())
+    SequenceFrame::Image(canvas.into_image())
 }
 
 /// Render sequence `seq_id` at timeline time `t`.
