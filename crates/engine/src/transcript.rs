@@ -478,7 +478,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.set",
             "Import Transcript",
             &[],
-            r#"{"item":id,"transcript":{"language":str,"speakers":[{"name":str}],"words":[{"text":str,"start":tick,"end":tick,"speaker":n?}]}}"#,
+            r#"{"item":id,"transcript":{"language":str,"speakers":[{"name":str}],"words":[{"text":str,"start":mediaTicks,"end":mediaTicks,"speaker":n?}]}}"#,
             always,
             set,
             true,
