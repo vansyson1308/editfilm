@@ -341,7 +341,7 @@ fn a_graphic_past_the_last_picture_frame_is_reported() {
     assert!(w.contains("after the last picture frame") && w.contains("timeline.trim"), "{w}");
     // the fix the warning gives works as written
     let clip = r["clip"].as_u64().unwrap();
-    s.execute("timeline.trim", json!({"clip": clip, "edge": "out", "mode": "regular", "delta": over["over"].as_i64().unwrap() * -1})).unwrap();
+    s.execute("timeline.trim", json!({"clip": clip, "edge": "out", "mode": "regular", "delta": -over["over"].as_i64().unwrap()})).unwrap();
     assert_eq!(s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.end(), end);
 
     // within the picture: no warning
