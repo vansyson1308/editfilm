@@ -503,10 +503,8 @@ fn sao_edge_ctb<S: Sample>(
                 return false;
             }
         }
-        if !pic.pps.loop_filter_across_tiles && pic.layout.tile_id[pic.layout.rs_to_ts[nrs] as usize] != pic.layout.tile_id[cur_ts as usize] {
-            return false;
-        }
-        true
+        // a neighbour in another tile is used only when the PPS lets filtering cross tiles
+        pic.pps.loop_filter_across_tiles || pic.layout.tile_id[pic.layout.rs_to_ts[nrs] as usize] == pic.layout.tile_id[cur_ts as usize]
     };
     // avail[dy][dx]: the CTB at (rx + dx - 1, ry + dy - 1) may be used.
     let (rx, ry) = (rs % pic.wctb, rs / pic.wctb);
