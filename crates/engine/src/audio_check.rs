@@ -25,8 +25,13 @@ use filmagic_time::Tick;
 use crate::commands::{CommandSpec, bad, clip_p, has_seq, item_p, track_p};
 use crate::{EngineError, Result, Session};
 
-/// Seconds of audio looked at on each side of a cut.
-const CUT_WINDOW_S: f64 = 8.0;
+/// Seconds of audio looked at on each side of a cut. The check runs inside the razor and trim
+/// commands, on the thread that called them (the UI thread for a click), so it stays short: a
+/// pause further away is reported as "more than 3 s away".
+const CUT_WINDOW_S: f64 = 3.0;
+/// The rate the cut check renders at: the detector works at about 8 kHz anyway, so the source
+/// produces six times fewer samples than at 48 kHz.
+const CUT_SR: u32 = 8000;
 /// A cut this close (seconds) to the edge of a speech segment is at the pause, not inside it.
 const CUT_EDGE_S: f64 = 0.03;
 /// Analysis chunk (samples at the sequence rate) for streaming renders.
@@ -148,8 +153,9 @@ fn speaks(item: &TrackItem) -> bool {
 /// whether the cut lands inside speech, with the nearest pauses before and after it.
 /// Returns (warnings, speechCuts).
 pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<String>, Vec<Value>) {
-    let Some(seq) = s.active_sequence() else { return (Vec::new(), Vec::new()) };
-    let sr = seq.settings.sample_rate.max(1);
+    if s.active_sequence().is_none() {
+        return (Vec::new(), Vec::new());
+    }
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let mut warnings = Vec::new();
     let mut found = Vec::new();
@@ -160,7 +166,12 @@ pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<Stri
         }
         let w = Tick::from_seconds_f64(CUT_WINDOW_S);
         let (lo, hi) = (*t - w, *t + w);
-        let wide = widened(it, lo.max(Tick::ZERO), hi);
+        let mut wide = widened(it, lo.max(Tick::ZERO), hi);
+        // the source as recorded is enough to hear speech: no clip effects (a denoiser alone would
+        // cost more than the razor) and no gain (the threshold adapts to the level)
+        wide.effects.clear();
+        wide.gain_db = 0.0;
+        let sr = CUT_SR;
         let a0 = wide.start.to_units_floor(sr as i64);
         let a1 = wide.end().to_units_floor(sr as i64);
         let Some(a) = clip_speech(&wide, a0, a1, sr, &provider, SpeechParams::default()) else { continue };

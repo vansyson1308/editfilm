@@ -223,25 +223,41 @@ impl SpeechDetector {
         let w = self.win.min(x.len());
         let e0: f64 = x.iter().take(w).map(|v| (*v as f64) * (*v as f64)).sum();
         let db = (10.0 * (e0 / w.max(1) as f64 + 1e-12).log10()) as f32;
-        if e0 <= 1e-14 || x.len() < w + self.lag_max {
+        // a frame at or under the absolute gate is never a speech core (the threshold is never
+        // below it), so its voicing is not needed: silence and quiet room tone cost no search
+        if e0 <= 1e-14 || x.len() < w + self.lag_max || db <= self.params.min_level_db {
             return Frame { db, voicing: 0.0 };
         }
-        // energy of the lagged window, slid one sample per lag
-        let mut el: f64 = x[self.lag_min..self.lag_min + w].iter().map(|v| (*v as f64) * (*v as f64)).sum();
-        let mut best = 0.0f64;
-        for tau in self.lag_min..=self.lag_max {
-            if tau > self.lag_min {
-                let out = x[tau - 1] as f64;
-                let inn = x[tau + w - 1] as f64;
-                el = (el - out * out + inn * inn).max(0.0);
-            }
+        // prefix sums of x², so the lagged window's energy is O(1) per lag
+        let mut pre = Vec::with_capacity(x.len() + 1);
+        pre.push(0.0f64);
+        for v in x {
+            let last = pre.last().copied().unwrap_or(0.0);
+            pre.push(last + (*v as f64) * (*v as f64));
+        }
+        let r_at = |tau: usize| -> f64 {
+            let (Some(hi), Some(lo), Some(b)) = (pre.get(tau + w), pre.get(tau), x.get(tau..tau + w)) else { return 0.0 };
+            let el = (hi - lo).max(0.0);
             if el <= 1e-14 {
-                continue;
+                return 0.0;
             }
-            let num: f64 = x[..w].iter().zip(&x[tau..tau + w]).map(|(a, b)| *a as f64 * *b as f64).sum();
-            let r = num / (e0 * el).sqrt();
+            let num: f64 = x[..w].iter().zip(b).map(|(a, b)| *a as f64 * *b as f64).sum();
+            num / (e0 * el).sqrt()
+        };
+        // every other lag, then the neighbours of the best: the autocorrelation peak of a voiced
+        // frame is several samples wide at ~8 kHz, so this finds the same peak for half the work
+        let (mut best, mut at) = (0.0f64, self.lag_min);
+        let mut tau = self.lag_min;
+        while tau <= self.lag_max {
+            let r = r_at(tau);
             if r > best {
-                best = r;
+                (best, at) = (r, tau);
+            }
+            tau += 2;
+        }
+        for t in [at.saturating_sub(1), at + 1] {
+            if (self.lag_min..=self.lag_max).contains(&t) {
+                best = best.max(r_at(t));
             }
         }
         Frame { db, voicing: best.clamp(0.0, 1.0) as f32 }
