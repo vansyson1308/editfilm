@@ -464,6 +464,12 @@ fn music_goes_on_a_free_track_as_music_and_ducks_under_dialogue() {
     assert_eq!(s.history.undo.len(), undo_before + 1, "one undo step");
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.active_sequence().unwrap().find_item(filmagic_project::ClipId(a)).is_none());
+    // time objects (#13's convention): `time` and `duration` in seconds, frames or timecode
+    let r = s.execute("assets.place", json!({"asset": "my-memes/sfx-whoosh-01", "time": {"seconds": 0.5}, "duration": {"frame": 6}})).unwrap();
+    let rate = s.sequence_rate();
+    let (_, c) = s.active_sequence().unwrap().find_item(filmagic_project::ClipId(r["audioClips"][0].as_u64().unwrap())).unwrap();
+    assert_eq!((c.start, c.range().duration), (rate.snap_nearest(filmagic_time::Tick::from_seconds_f64(0.5)), rate.tick_of(6)));
+    s.execute("edit.undo", json!({})).unwrap();
     // placing twice imports the file once
     s.execute("assets.place", json!({"asset": "my-memes/sfx-whoosh-01", "seconds": 0.5})).unwrap();
     let n = s.project.items.len();
@@ -515,7 +521,9 @@ fn hostile_place_parameters_change_nothing() {
         (json!({"asset": "my-memes/sfx-whoosh-01", "seconds": -1.0}), "negative"),
         (json!({"asset": "my-memes/sfx-whoosh-01", "duration": 0}), "longer than 0"),
         (json!({"asset": "my-memes/sfx-whoosh-01", "duration": -5}), "longer than 0"),
-        (json!({"asset": "my-memes/sfx-whoosh-01", "duration": "long"}), "time object"),
+        (json!({"asset": "my-memes/sfx-whoosh-01", "duration": "long"}), "must be ticks"),
+        (json!({"asset": "my-memes/sfx-whoosh-01", "time": {"seconds": f64::MAX}}), "time"),
+        (json!({"asset": "my-memes/sfx-whoosh-01", "time": {"frame": 1.5}}), "frame"),
         (json!({"asset": "my-memes/sfx-whoosh-01", "duration": 10, "untilEnd": true}), "not both"),
         (json!({"asset": "my-memes/sfx-whoosh-01", "untilEnd": 1}), "true or false"),
         (json!({"asset": "my-memes/sfx-whoosh-01", "keyColor": "zz"}), "#rrggbb"),

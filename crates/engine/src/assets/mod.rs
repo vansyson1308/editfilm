@@ -73,7 +73,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "assets.place",
             "Place Asset",
-            r##"{"asset":"pack/item","seconds":n?,"frame":n?,"timecode":str?,"time":ticks?,"duration":ticks|{"seconds":n}?,"untilEnd":bool?,"track":trackId|"V2"|"new"?,"audioTrack":trackId|"A2"|"new"?,"key":bool?,"keyColor":"#rrggbb"?,"duck":bool?}"##,
+            r##"{"asset":"pack/item","seconds":n?,"frame":n?,"timecode":str?,"time":ticks?,"duration":ticks|{"frame"|"seconds"|"timecode"}?,"untilEnd":bool?,"track":trackId|"V2"|"new"?,"audioTrack":trackId|"A2"|"new"?,"key":bool?,"keyColor":"#rrggbb"?,"duck":bool?}"##,
             has_seq,
             place,
             true,
