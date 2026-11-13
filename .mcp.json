@@ -2,7 +2,7 @@
   "mcpServers": {
     "filmagic": {
       "command": "target/release/filmagic-cli",
-      "args": ["mcp", "--bridge", "127.0.0.1:9876"]
+      "args": ["mcp"]
     },
     "filmagic-headless": {
       "command": "target/release/filmagic-cli",

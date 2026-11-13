@@ -3652,6 +3652,7 @@
 
 # Control server: the status-bar notice when --control cannot serve.
 	The control server is disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)	El servidor de control está desactivado: FILMAGIC_CONTROL_TOKEN debe contener 64 caracteres hexadecimales aleatorios (ver docs/control-protocol.md)
+	The control server is disabled: no control credential could be made (see the log, filmagic.log)	El servidor de control está desactivado: no se pudo crear una credencial de control (ver el registro, filmagic.log)
 
 # Control server: the bind-failure notice (port collisions; #3318 may show it too).
 
