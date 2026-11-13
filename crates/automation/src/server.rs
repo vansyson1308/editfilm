@@ -1,6 +1,7 @@
 //! The MCP server. Tool names are snake_case.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use base64::Engine as _;
 use filmagic_engine::Session;
@@ -12,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::app_link::Found;
 use crate::{AutomationError, BridgeClient, png_rgba};
 
 pub enum Backend {
@@ -34,7 +36,12 @@ fn join_error(e: tokio::task::JoinError) -> AutomationError {
 
 #[derive(Clone)]
 pub struct FilmagicMcp {
-    backend: Arc<Backend>,
+    /// Replaced only by `app_open`, which moves a headless session into the desktop app (#17).
+    backend: Arc<RwLock<Arc<Backend>>>,
+    /// Where the app's control file is looked for, and the data directory an opened app uses.
+    data_dir: Option<PathBuf>,
+    /// `app_open` calls take turns: two would launch two apps.
+    app_lock: Arc<tokio::sync::Mutex<()>>,
     /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
     /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
     render_lock: Arc<tokio::sync::Mutex<()>>,
@@ -183,6 +190,15 @@ pub struct ControlParams {
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AppOpenParams {
+    /// Headless mode: the `.fcproj` file to save the project to before the app opens it. Needed when
+    /// the project was never saved; otherwise it is saved where it is. With the app gone (bridge
+    /// mode): a project for the restarted app to open.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct BoardParams {
     /// Project item id: lay out frames across this clip's rushes. Omit for one frame per shot of the active sequence.
     #[serde(default)]
@@ -251,11 +267,39 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
 const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 
 impl FilmagicMcp {
-    pub fn headless(session: Session) -> Self {
-        Self { backend: Arc::new(Backend::Headless(Arc::new(Mutex::new(session)))), render_lock: Arc::default(), tool_router: Self::tool_router() }
+    fn with_backend(backend: Backend) -> Self {
+        Self {
+            backend: Arc::new(RwLock::new(Arc::new(backend))),
+            data_dir: None,
+            app_lock: Arc::default(),
+            render_lock: Arc::default(),
+            tool_router: Self::tool_router(),
+        }
     }
+    pub fn headless(session: Session) -> Self {
+        Self::with_backend(Backend::Headless(Arc::new(Mutex::new(session))))
+    }
+    /// Drive the app at `addr` with the credential from `FILMAGIC_CONTROL_TOKEN`.
     pub fn bridge(addr: &str) -> Result<Self, AutomationError> {
-        Ok(Self { backend: Arc::new(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))), render_lock: Arc::default(), tool_router: Self::tool_router() })
+        Ok(Self::with_backend(Backend::Bridge(Arc::new(BridgeClient::new(addr)?))))
+    }
+    /// Drive the app at `addr` with `token` (e.g. from the app's control file, #17).
+    pub fn bridge_with_token(addr: &str, token: Option<String>) -> Result<Self, AutomationError> {
+        Ok(Self::with_backend(Backend::Bridge(Arc::new(BridgeClient::with_token(addr, token)?))))
+    }
+    /// The data directory of the app's control file, and of an app `app_open` starts.
+    pub fn with_data_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.data_dir = dir;
+        self
+    }
+
+    /// The current backend. `app_open` may replace it between two calls; one call keeps the one it got.
+    fn backend(&self) -> Arc<Backend> {
+        self.backend.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn set_backend(&self, backend: Backend) {
+        *self.backend.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(backend);
     }
 
     pub async fn serve_stdio(self) -> Result<(), AutomationError> {
@@ -327,7 +371,7 @@ impl FilmagicMcp {
 
     /// Run an engine command on whichever backend.
     pub async fn run(&self, id: &str, params: Value) -> Result<Value, AutomationError> {
-        match &*self.backend {
+        match &*self.backend() {
             Backend::Headless(s) => {
                 let s = s.clone();
                 let id = id.to_string();
@@ -364,7 +408,7 @@ impl FilmagicMcp {
     }
 
     fn bridge_client(&self) -> Option<Arc<BridgeClient>> {
-        match &*self.backend {
+        match &*self.backend() {
             Backend::Bridge(b) => Some(b.clone()),
             Backend::Headless(_) => None,
         }
@@ -373,10 +417,118 @@ impl FilmagicMcp {
     async fn ui(&self, method: &str, params: Value) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
             Some(b) => wrap(b.call(method, params).await),
-            None => {
-                Ok(fail("this tool drives the live app: run `filmagic-cli mcp --bridge 127.0.0.1:<port>` with the app started as `filmagic --control <port>`"))
+            None => Ok(fail(
+                "this tool drives the live app, and this session is headless: call `app_open` to open your project in the desktop app and drive it from there",
+            )),
+        }
+    }
+
+    /// What `app_status` reports.
+    async fn status(&self) -> Value {
+        let control_file = self.data_dir.as_deref().map(|d| filmagic_engine::control_file::path(d).to_string_lossy().into_owned());
+        match &*self.backend() {
+            Backend::Bridge(b) => {
+                let answering = b.ping(crate::app_link::PING_TIMEOUT).await;
+                let mut v = json!({"mode": "app", "addr": b.addr(), "answering": answering.is_ok(), "controlFile": control_file});
+                if let Err(e) = answering {
+                    v["notes"] = json!([format!(
+                        "The app does not answer ({e}). Call `app_open` to start it again; edits made since its last save are in its auto-save recovery."
+                    )]);
+                }
+                v
+            }
+            Backend::Headless(_) => {
+                let found = crate::app_link::find_app(self.data_dir.as_deref()).await;
+                let note = match found.live() {
+                    Some(e) => format!(
+                        "A Filmagic app is running on {}, but this session edits its own headless copy: call `app_open` to save your project and drive the app instead.",
+                        e.addr()
+                    ),
+                    None => "The user cannot see this session's edits. Call `app_open` to open your project in the desktop app.".to_string(),
+                };
+                json!({"mode": "headless", "appRunning": found.live().is_some(), "controlFile": control_file, "notes": [note]})
             }
         }
+    }
+
+    /// `app_open`: move a headless session into the desktop app, or restart a closed app (#17).
+    /// Everything that can be refused is checked before the project is saved or an app started.
+    async fn open_app(&self, path: Option<String>) -> Result<Value, AutomationError> {
+        let _turn = self.app_lock.lock().await;
+        let data_dir = self
+            .data_dir
+            .clone()
+            .ok_or_else(|| AutomationError::BadRequest("app_open needs a data directory: start the MCP server with FILMAGIC_DATA_DIR or --data-dir".into()))?;
+        let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        if let Some(p) = &path
+            && !std::path::Path::new(p).extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"))
+        {
+            return Err(AutomationError::BadRequest(format!("`path` must be a .fcproj project file, got `{p}`")));
+        }
+        let path = path.map(|p| std::path::absolute(&p).map(|a| a.to_string_lossy().into_owned()).unwrap_or(p));
+        let backend = self.backend();
+        // The project the app is to open: in headless mode the one to save first.
+        let (headless, project) = match &*backend {
+            Backend::Bridge(b) => {
+                if b.ping(crate::app_link::PING_TIMEOUT).await.is_ok() {
+                    let note = match &path {
+                        Some(p) => format!("Already driving the open app; its project was not changed. To open {p} there, run `file.open` with that path."),
+                        None => "Already driving the open app; nothing changed.".to_string(),
+                    };
+                    return Ok(json!({"mode": "app", "addr": b.addr(), "launched": false, "notes": [note]}));
+                }
+                (false, path)
+            }
+            Backend::Headless(_) => {
+                let inspected = self.run("project.inspect", json!({})).await?;
+                let target = path.or_else(|| inspected.get("path").and_then(Value::as_str).map(str::to_string)).ok_or_else(|| {
+                    AutomationError::BadRequest(
+                        "the headless project has never been saved: pass `path`, an absolute path ending in .fcproj, to save it there and open it in the app"
+                            .into(),
+                    )
+                })?;
+                (true, Some(target))
+            }
+        };
+        // An app to attach to, or the executable to start one with.
+        let found = crate::app_link::find_app(Some(&data_dir)).await;
+        let exe = match found.live() {
+            Some(_) => None,
+            None => Some(crate::app_link::app_executable().map_err(AutomationError::Other)?),
+        };
+        let mut notes = Vec::new();
+        if headless && let Some(target) = &project {
+            self.run("file.saveAs", json!({"path": target})).await?;
+            notes.push(format!("Saved the headless project to {target}. The headless undo history stays behind."));
+        } else {
+            notes.push("The app had been closed: a new one is started. Edits it had not saved are offered by its auto-save recovery.".to_string());
+        }
+        let (endpoint, launched) = match (found, exe) {
+            // An app the user already has open: attach to it as it is, never replace its project.
+            (Found::Live(e), _) => {
+                if let Some(p) = &project {
+                    notes.push(format!(
+                        "A Filmagic app was already open; it was attached as it is and its project was not changed. Run `file.open` with path {p} to continue your project there."
+                    ));
+                }
+                (e, false)
+            }
+            (other, Some(exe)) => {
+                let previous = match other {
+                    Found::Stale { endpoint, .. } => Some(endpoint),
+                    _ => None,
+                };
+                (crate::app_link::launch(&exe, &data_dir, project.as_deref(), previous.as_ref()).await?, true)
+            }
+            (_, None) => return Err(AutomationError::Other("no app to attach to and none to start; call app_open again".into())),
+        };
+        let addr = endpoint.addr();
+        self.set_backend(Backend::Bridge(Arc::new(BridgeClient::with_token(addr.clone(), Some(endpoint.token))?)));
+        if launched && let Some(p) = &project {
+            notes.push(format!("The app opened {p}."));
+        }
+        notes.push("From now on every command runs in the app, and the `ui_*` tools work. If the user closes the app, call `app_open` again.".into());
+        Ok(json!({"mode": "app", "addr": addr, "launched": launched, "project": project, "notes": notes}))
     }
 }
 
@@ -495,7 +647,7 @@ impl FilmagicMcp {
     )]
     async fn render_frame(&self, Parameters(p): Parameters<RenderParams>) -> Result<CallToolResult, McpError> {
         let max = p.max_side.unwrap_or(960);
-        match &*self.backend {
+        match &*self.backend() {
             Backend::Headless(s) => {
                 let s = s.clone();
                 let r = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AutomationError> {
@@ -647,7 +799,7 @@ impl FilmagicMcp {
     async fn ui_screenshot(&self, Parameters(p): Parameters<ShotParams>) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
             Some(b) => self.screenshot(&b, p.panel, p.max_side.unwrap_or(1600)).await,
-            None => Ok(fail("ui_screenshot needs bridge mode")),
+            None => Ok(fail("ui_screenshot needs the live app, and this session is headless: call `app_open` to open your project in the desktop app")),
         }
     }
 
@@ -658,6 +810,24 @@ impl FilmagicMcp {
     )]
     async fn ui_control(&self, Parameters(p): Parameters<ControlParams>) -> Result<CallToolResult, McpError> {
         self.ui(&p.method, p.params.unwrap_or(json!({}))).await
+    }
+
+    #[tool(
+        title = "Which Filmagic am I driving?",
+        description = "Say whether this session drives the open desktop app (`mode: app`, the user sees every edit) or a headless session the user cannot see (`mode: headless`), and whether an app is running.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn app_status(&self) -> Result<CallToolResult, McpError> {
+        wrap(Ok(self.status().await))
+    }
+
+    #[tool(
+        title = "Open in the desktop app",
+        description = "Show the edit to the user: save the headless project (to `path` if it was never saved), start the Filmagic desktop app with it, and drive that app from now on (`ui_*` tools work, the user sees every edit). With an app already running, attach to it. In app mode with the app closed, start it again (with `path` if given).",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn app_open(&self, Parameters(p): Parameters<AppOpenParams>) -> Result<CallToolResult, McpError> {
+        wrap(self.open_app(p.path).await)
     }
 }
 
@@ -702,7 +872,7 @@ impl FilmagicMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "Filmagic video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. `file.exportMedia` with `wait: true` is stopped, and its partial file deleted, when your client's tool-call timeout ends first: for a whole film, call it without `wait` and poll `jobs.list` until the job is `finished`. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
+const INSTRUCTIONS: &str = "Filmagic video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. `file.exportMedia` with `wait: true` is stopped, and its partial file deleted, when your client's tool-call timeout ends first: for a whole film, call it without `wait` and poll `jobs.list` until the job is `finished`. `app_status` says whether you drive the desktop app the user sees or a headless copy; `app_open` saves a headless project and opens it in the app so the user can watch. In app mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmagic://document";

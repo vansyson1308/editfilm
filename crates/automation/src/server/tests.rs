@@ -110,12 +110,24 @@ async fn tools_are_titled_and_annotated() {
         }
     }
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    for want in ["command_list", "command_run", "command_batch", "doc_inspect", "render_preview", "project_inspect", "render_frame", "story_board", "ui_click"]
-    {
+    for want in [
+        "command_list",
+        "command_run",
+        "command_batch",
+        "doc_inspect",
+        "render_preview",
+        "project_inspect",
+        "render_frame",
+        "story_board",
+        "ui_click",
+        "app_status",
+        "app_open",
+    ] {
         assert!(names.contains(&want), "{want} not listed");
     }
     let ro = |n: &str| tools.iter().find(|t| t["name"] == n).map(|t| t["annotations"]["readOnlyHint"].clone());
     assert_eq!((ro("command_list"), ro("command_run"), ro("story_board")), (Some(json!(true)), Some(json!(false)), Some(json!(true))));
+    assert_eq!((ro("app_status"), ro("app_open")), (Some(json!(true)), Some(json!(false))));
 }
 
 /// Strict arguments, malformed JSON, batch, doc_inspect and render_preview over the raw line
@@ -321,7 +333,8 @@ async fn export_progress_and_cancel() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_poisoned_session_lock_keeps_serving() {
     let m = FilmagicMcp::headless(demo());
-    let Backend::Headless(s) = &*m.backend else { panic!("headless backend") };
+    let b = m.backend();
+    let Backend::Headless(s) = &*b else { panic!("headless backend") };
     let s = s.clone();
     let _ = std::thread::spawn(move || {
         let _g = s.lock().unwrap();
@@ -592,4 +605,120 @@ async fn story_and_layer_commands_run_over_the_wire() {
     }
     let seq = text(&c.call(9, "sequence_inspect", json!({})).await);
     assert_eq!(seq["video"].as_array().map(Vec::len), Some(3), "the layer's track is gone again");
+}
+
+/// A stand-in for the desktop app: answers `control.ping` and `engine.execute` for `token`, records
+/// the commands it is sent and refuses anything without the credential.
+async fn fake_app(token: String) -> (u16, Arc<tokio::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = listener.accept().await {
+            let (token, log) = (token.clone(), log.clone());
+            tokio::spawn(async move {
+                let (r, mut w) = s.into_split();
+                let mut lines = tokio::io::BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let req: Value = serde_json::from_str(&line).unwrap_or_default();
+                    let reply = if req["token"] != json!(token) {
+                        json!({"ok": false, "error": "control authentication failed"})
+                    } else if req["method"] == "control.ping" {
+                        json!({"id": req["id"], "ok": true, "result": {"app": "filmagic", "pid": 1}})
+                    } else {
+                        log.lock().await.push(req["params"]["command"].as_str().unwrap_or_default().to_string());
+                        json!({"id": req["id"], "ok": true, "result": {"inApp": true}})
+                    };
+                    let _ = w.write_all(format!("{reply}\n").as_bytes()).await;
+                }
+            });
+        }
+    });
+    (port, seen)
+}
+
+fn text_of(r: &CallToolResult) -> String {
+    serde_json::to_value(&r.content).unwrap()[0]["text"].as_str().unwrap_or_default().to_string()
+}
+
+/// `app_status` tells the agent the user cannot see a headless session, and that an app is running (#17).
+#[tokio::test]
+async fn app_status_says_headless_and_whether_an_app_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = FilmagicMcp::headless(demo()).with_data_dir(Some(dir.path().to_path_buf()));
+    let v: Value = serde_json::from_str(&text_of(&m.app_status().await.unwrap())).unwrap();
+    assert_eq!((v["mode"].as_str(), v["appRunning"].as_bool()), (Some("headless"), Some(false)), "{v}");
+    assert!(v["notes"][0].as_str().unwrap().contains("app_open"), "{v}");
+    let (port, _) = fake_app("d".repeat(64)).await;
+    let e = filmagic_engine::control_file::ControlEndpoint { port, token: "d".repeat(64), pid: 1, version: String::new() };
+    filmagic_engine::control_file::write(dir.path(), &e).unwrap();
+    let v: Value = serde_json::from_str(&text_of(&m.app_status().await.unwrap())).unwrap();
+    assert_eq!(v["appRunning"], true, "{v}");
+}
+
+/// `app_open` refuses what it cannot do with an error that says what to pass, and changes nothing.
+#[tokio::test]
+async fn app_open_rejects_hostile_or_missing_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    // no data directory at all
+    let r = FilmagicMcp::headless(demo()).app_open(Parameters(AppOpenParams { path: None })).await.unwrap();
+    assert!(r.is_error == Some(true) && text_of(&r).contains("data directory"), "{}", text_of(&r));
+    let m = FilmagicMcp::headless(demo()).with_data_dir(Some(dir.path().to_path_buf()));
+    // the demo project was never saved: `path` is needed
+    let r = m.app_open(Parameters(AppOpenParams { path: None })).await.unwrap();
+    assert!(r.is_error == Some(true) && text_of(&r).contains("pass `path`"), "{}", text_of(&r));
+    for bad in ["", "   ", "film.txt", "film", "fcproj", "/tmp/x.fcproj/..", "\u{0}.mov"] {
+        let r = m.app_open(Parameters(AppOpenParams { path: Some(bad.into()) })).await.unwrap();
+        assert_eq!(r.is_error, Some(true), "{bad:?}: {}", text_of(&r));
+    }
+    assert!(matches!(&*m.backend(), Backend::Headless(_)), "still headless");
+    // wrong types never reach the tool
+    let mut c = Client::start(demo());
+    c.init().await;
+    for args in [json!({"path": 3}), json!({"path": f64::NAN}), json!({"path": ["a.fcproj"]}), json!({"paht": "a.fcproj"})] {
+        let reply = c.call(1, "app_open", args.clone()).await;
+        assert!(reply.get("error").is_some() || reply["result"]["isError"] == true, "{args}: {reply}");
+    }
+}
+
+/// With the user's app already open, `app_open` saves the headless project, attaches to that app as
+/// it is (its project is not replaced) and sends every later command there (#17).
+#[tokio::test]
+async fn app_open_saves_and_attaches_to_a_running_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let (port, seen) = fake_app("e".repeat(64)).await;
+    let e = filmagic_engine::control_file::ControlEndpoint { port, token: "e".repeat(64), pid: 1, version: String::new() };
+    filmagic_engine::control_file::write(dir.path(), &e).unwrap();
+    let m = FilmagicMcp::headless(demo()).with_data_dir(Some(dir.path().to_path_buf()));
+    let project = dir.path().join("cut.fcproj");
+    let r = m.app_open(Parameters(AppOpenParams { path: Some(project.to_string_lossy().into_owned()) })).await.unwrap();
+    let v: Value = serde_json::from_str(&text_of(&r)).unwrap_or_else(|_| panic!("{}", text_of(&r)));
+    assert_eq!((v["mode"].as_str(), v["launched"].as_bool()), (Some("app"), Some(false)), "{v}");
+    assert!(project.is_file(), "the headless project was saved first");
+    assert!(v["notes"].to_string().contains("file.open"), "{v}");
+    assert!(seen.lock().await.is_empty(), "the app's own project was left alone");
+    assert_eq!(m.run("sequence.inspect", json!({})).await.unwrap(), json!({"inApp": true}));
+    assert_eq!(*seen.lock().await, ["sequence.inspect"]);
+    let v: Value = serde_json::from_str(&text_of(&m.app_status().await.unwrap())).unwrap();
+    assert_eq!((v["mode"].as_str(), v["answering"].as_bool()), (Some("app"), Some(true)), "{v}");
+    // calling it again changes nothing
+    let v: Value = serde_json::from_str(&text_of(&m.app_open(Parameters(AppOpenParams::default())).await.unwrap())).unwrap();
+    assert_eq!(v["launched"], false, "{v}");
+}
+
+/// When the user closes the app mid-session, the next command says so and names `app_open`, and
+/// `app_status` reports it, instead of the session quietly editing something else (#17).
+#[tokio::test]
+async fn a_closed_app_is_reported_with_the_way_back() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    drop(l);
+    let m = FilmagicMcp::bridge_with_token(&addr, Some("f".repeat(64))).unwrap();
+    let e = m.run("sequence.inspect", json!({})).await.unwrap_err().to_string();
+    assert!(e.contains("app_open") && e.contains("closed"), "{e}");
+    let v: Value = serde_json::from_str(&text_of(&m.app_status().await.unwrap())).unwrap();
+    assert_eq!((v["mode"].as_str(), v["answering"].as_bool()), (Some("app"), Some(false)), "{v}");
+    assert!(v["notes"][0].as_str().unwrap().contains("app_open"), "{v}");
 }

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -33,12 +33,25 @@ impl BridgeClient {
     /// `addr` such as `127.0.0.1:9876` (loopback only). Reads `FILMAGIC_CONTROL_TOKEN`
     /// from the environment; the desktop app requires this credential on every request.
     pub fn new(addr: impl Into<String>) -> Result<Self, AutomationError> {
+        Self::with_token(addr, std::env::var("FILMAGIC_CONTROL_TOKEN").ok())
+    }
+
+    /// [`Self::new`] with the credential given, e.g. from the app's control file (#17).
+    pub fn with_token(addr: impl Into<String>, token: Option<String>) -> Result<Self, AutomationError> {
         let addr = addr.into();
-        let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
-        if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
-            return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
-        }
-        Ok(Self { addr, token: std::env::var("FILMAGIC_CONTROL_TOKEN").ok(), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        check_loopback(&addr)?;
+        Ok(Self { addr, token, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+    }
+
+    /// The app's address, `127.0.0.1:<port>`.
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
+    /// Whether the app answers at this address with this credential (`control.ping`, answered by
+    /// the app's server thread even while it starts or is busy), within `timeout`.
+    pub async fn ping(&self, timeout: Duration) -> Result<Value, AutomationError> {
+        ping(&self.addr, self.token.as_deref(), timeout).await
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -123,13 +136,49 @@ impl BridgeClient {
         let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
             .await
             .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
-            .map_err(|e| AutomationError::Bridge(format!(
-                "cannot connect to {} ({e}); start the app with `filmagic --control <port>` and set FILMAGIC_CONTROL_TOKEN to the same 64-hex-character value on both sides (see docs/control-protocol.md)",
-                self.addr
-            )))?;
+            .map_err(|e| AutomationError::Bridge(not_answering(&self.addr, &e)))?;
         let (r, w) = s.into_split();
         Ok((BufReader::new(r), w))
     }
+}
+
+/// The error when nothing listens at `addr`: usually the user closed the app (#17).
+fn not_answering(addr: &str, e: &std::io::Error) -> String {
+    format!(
+        "Filmagic is not answering at {addr} ({e}): the app was closed, or was not started with `--control`. From MCP, call the `app_open` tool to start it again with your project; otherwise start it with `filmagic --control <port>`. The credential comes from the app's control file in its data directory, or from FILMAGIC_CONTROL_TOKEN set to the same 64 hex characters on both sides (see docs/control-protocol.md)"
+    )
+}
+
+/// Refuse a non-loopback address: the control server only listens on 127.0.0.1.
+fn check_loopback(addr: &str) -> Result<(), AutomationError> {
+    let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
+    }
+    Ok(())
+}
+
+/// One `control.ping` on a fresh connection, all within `timeout`. `Ok` only for an authenticated
+/// reply: a wrong credential, a port now used by another program, or no listener is an error.
+pub async fn ping(addr: &str, token: Option<&str>, timeout: Duration) -> Result<Value, AutomationError> {
+    check_loopback(addr)?;
+    let exchange = async {
+        let s = TcpStream::connect(addr).await.map_err(|e| AutomationError::Bridge(not_answering(addr, &e)))?;
+        let (r, mut w) = s.into_split();
+        let line = format!("{}\n", json!({"id": 0, "token": token, "method": "control.ping"}));
+        w.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+        let mut buf = String::new();
+        // bounded: a program that is not Filmagic may send anything
+        let mut reader = BufReader::new(r).take(64 * 1024);
+        reader.read_line(&mut buf).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+        let v: Value = serde_json::from_str(&buf).map_err(|_| AutomationError::Bridge(format!("{addr} is not a Filmagic control server")))?;
+        if v.get("ok").and_then(Value::as_bool) == Some(true) && v.pointer("/result/app").and_then(Value::as_str) == Some("filmagic") {
+            Ok(v.get("result").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("not a Filmagic control server").to_string()))
+        }
+    };
+    tokio::time::timeout(timeout, exchange).await.map_err(|_| AutomationError::Bridge(format!("{addr} did not answer within {} ms", timeout.as_millis())))?
 }
 
 #[cfg(test)]

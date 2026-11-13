@@ -1,10 +1,31 @@
 # Control protocol & MCP
 
 ## Desktop control channel
-`filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT`) listens on `127.0.0.1:<port>` (loopback only).
-The listener requires `FILMAGIC_CONTROL_TOKEN`: 64 random hex characters shared with authorized
-clients through their inherited environment. Generate a fresh token for each desktop session, then
-start the desktop and bridge from that environment:
+`filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT`; `--control 0` picks a free port) listens on
+`127.0.0.1:<port>` (loopback only). Every request must carry the session credential, 64 hex
+characters:
+
+- **Session credential (default).** Without `FILMAGIC_CONTROL_TOKEN`, the app makes a random
+  credential (32 bytes from the OS) when the control server starts.
+- **Fixed credential.** With `FILMAGIC_CONTROL_TOKEN` set, the app uses that value. A set value
+  that is not 64 hex characters keeps the listener closed, so a typo is never replaced silently.
+
+Either way the app writes the endpoint to the **control file** `<data dir>/control.json` (format
+and lifecycle in `crates/engine/src/control_file.rs`):
+
+```json
+{ "port": 9876, "token": "<64 hex characters>", "pid": 4242, "version": "0.20.0" }
+```
+
+The file is written atomically (a temporary file in the same folder, then a rename), with mode
+`0600` on macOS and Linux. On Windows it takes the data folder's permissions; the default
+`%APPDATA%\Filmagic` is in the user's profile. The app removes the file when it exits, but only
+while the file still holds its own credential. A file left by a crash is recognised by readers: its
+port does not answer `control.ping` with that credential. The next start replaces it.
+
+`filmagic-cli mcp` reads the file and attaches when the app answers. `--bridge ADDR` and
+`filmagic-cli --bridge ADDR exec …` send `FILMAGIC_CONTROL_TOKEN` when it is set, else the file's
+credential when the file names that port. Older setups export the variable for both sides:
 
 ```sh
 export FILMAGIC_CONTROL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"   # or: openssl rand -hex 32
@@ -12,11 +33,11 @@ filmagic --control 9876 &
 filmagic-cli mcp --bridge 127.0.0.1:9876
 ```
 
-The CLI / MCP bridge reads this variable automatically. Keep it private: don't put the value in
-command-line arguments, logs, checked-in MCP configuration, or shared files. Without a valid value,
-the desktop leaves the listener closed. Every raw JSON request must include the same top-level
-`token` string; missing or incorrect credentials get an error and close the connection before any
-request is dispatched. Loopback alone does not restrict clients to the desktop owner's OS account.
+Keep the credential private: don't put it in command-line arguments, logs or checked-in MCP
+configuration. The app logs the control file's path, never its contents. Every raw JSON request
+must include the same top-level `token` string. A missing or incorrect credential gets an error,
+and the connection is closed before any request is dispatched. Loopback alone does not restrict
+clients to the desktop owner's OS account; the credential and the file's permissions do.
 
 Socket reads and writes time out after two minutes without progress, releasing the connection slot.
 Expiration closes the connection without an unsolicited reply; reconnect before the next request
@@ -46,6 +67,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 
 | Method | Params | |
 |---|---|---|
+| `control.ping` | – | `{app: "filmagic", version, pid}`, answered by the server thread, also while the app starts or is busy; proves the port is this app and the credential is right |
 | `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
@@ -201,11 +223,13 @@ Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcu
 `shortcuts.*` (`shortcuts.key.K`, `shortcuts.cell.<command>`, `shortcuts.ok`, …).
 
 ## MCP
-`filmagic-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
-or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,
+`filmagic-cli mcp` serves MCP on stdio. It drives the open app named in the control file when that
+app answers, and otherwise works headless (an in-process session). `--headless`, `--demo` and
+`--project p.fcproj` force headless; `--bridge 127.0.0.1:9876` drives a given app (see
+[agents.md § MCP server](agents.md#1-mcp-server)). Tools: `app_status`, `app_open`, `command_list`, `command_run`,
 `command_batch`, `doc_inspect`, `render_preview`, `project_inspect`, `sequence_inspect`, `media_import`,
 `render_frame`, `story_board`, `ui_inspect`, `ui_elements`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`,
-`ui_control`; resources `filmagic://document` and `filmagic://commands`. `.mcp.json` registers both.
+`ui_control`; resources `filmagic://document` and `filmagic://commands`. `.mcp.json` registers `filmagic` (`mcp`) and `filmagic-headless` (`mcp --demo`).
 Annotations, argument checking, errors and export progress / cancellation:
 [agents.md § Conventions](agents.md#conventions).
 

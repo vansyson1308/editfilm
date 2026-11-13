@@ -201,8 +201,8 @@ pub(crate) enum ImeComposition {
 /// `control_server::DisabledWhy` onto this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlNotice {
-    /// `FILMAGIC_CONTROL_TOKEN` is missing or malformed. (A bind failure is only logged until
-    /// #3318 reworks port-collision reporting.)
+    /// `FILMAGIC_CONTROL_TOKEN` is set but malformed (unset, the app makes a session credential).
+    /// (A bind failure is only logged until #3318 reworks port-collision reporting.)
     Token,
 }
 

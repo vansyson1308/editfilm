@@ -230,12 +230,12 @@ fn active_connection_can_be_reused() {
 }
 
 #[test]
-fn missing_or_invalid_token_leaves_the_listener_closed() {
+fn an_invalid_token_leaves_the_listener_closed() {
     for token in [None, Some(String::new()), Some("a".repeat(63)), Some("a".repeat(65)), Some("z".repeat(64))] {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let (rx, _ready, why) = start_with_token(port, egui::Context::default(), token);
+        let (rx, _ready, why, _) = start_with_token(port, egui::Context::default(), token);
         assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
         // The reason is returned for the status bar (#3436) as well as logged.
         let Some(w) = &why else { panic!("a bad token must report why") };
@@ -250,7 +250,7 @@ fn a_refused_bind_is_reported_and_leaves_the_listener_closed() {
     // The port is held: the server cannot start, and the reason comes back for the log.
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let (rx, _ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    let (rx, _ready, why, _) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
     assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
     let Some(w) = &why else { panic!("a refused bind must report why") };
     assert!(matches!(w, DisabledWhy::Bind { .. }));
@@ -263,7 +263,7 @@ fn a_started_server_returns_no_notice() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let (_rx, _ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    let (_rx, _ready, why, _) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
     assert!(why.is_none());
 }
 
@@ -272,7 +272,7 @@ fn requests_before_ready_are_rejected_not_queued() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let (rx, ready, why) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
+    let (rx, ready, why, _) = start_with_token(port, egui::Context::default(), Some(TOKEN.into()));
     assert!(why.is_none());
     let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -370,4 +370,73 @@ fn authenticated_tcp_request_reaches_the_ui_queue() {
     c.read_to_string(&mut reply).unwrap();
     server.join().unwrap();
     assert_eq!(serde_json::from_str::<Value>(&reply).unwrap(), json!({"id": 7, "ok": true}));
+}
+
+/// Without `FILMAGIC_CONTROL_TOKEN` the session makes its own credential instead of staying closed
+/// (#17); a set but malformed value is still refused, so a typo is not silently replaced.
+#[test]
+fn the_session_token_is_the_variable_or_a_fresh_random_one() {
+    let generated = || Ok::<_, String>("f".repeat(64));
+    assert_eq!(session_token(None, generated).unwrap(), "f".repeat(64));
+    assert_eq!(session_token(Some(String::new()), generated).unwrap(), "f".repeat(64));
+    assert_eq!(session_token(Some(TOKEN.into()), || panic!("the variable wins")).unwrap(), TOKEN);
+    for bad in ["a".repeat(63), "a".repeat(65), "z".repeat(64), format!(" {}", &TOKEN[1..])] {
+        assert_eq!(session_token(Some(bad), generated), Err(DisabledWhy::Token));
+    }
+    let failed = session_token(None, || Err("no entropy".into())).unwrap_err();
+    assert_eq!(failed, DisabledWhy::Random("no entropy".into()));
+    assert!(failed.reason().contains("no entropy"));
+}
+
+#[test]
+fn random_tokens_are_valid_and_differ() {
+    let (a, b) = (random_token().unwrap(), random_token().unwrap());
+    assert!(filmagic_engine::control_file::is_valid_token(&a), "{a}");
+    assert_ne!(a, b);
+}
+
+/// `control.ping` is answered by the server thread, also before the app is ready, so a reader of the
+/// control file can tell a live app from a stale file (#17); it needs the credential like anything else.
+#[test]
+fn ping_is_answered_before_ready_and_only_with_the_token() {
+    let (rx, _ready, why, bound) = start_with_token(0, egui::Context::default(), Some(TOKEN.into()));
+    assert!(why.is_none());
+    let port = bound.unwrap();
+    assert_ne!(port, 0, "--control 0 reports the port it bound");
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(c, "{}", json!({"id": 3, "token": TOKEN, "method": "control.ping"})).unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["id"], 3);
+    assert_eq!(reply["result"]["pid"], std::process::id());
+    assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)), "ping never reaches the UI queue");
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(c, "{}", json!({"token": "0".repeat(64), "method": "control.ping"})).unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    assert!(line.contains("authentication failed"), "{line}");
+}
+
+/// The control file's lifecycle (#17): written with the bound port and the session's credential when
+/// the server starts, and removed by `unpublish` when the app exits.
+#[test]
+fn the_control_file_is_written_on_start_and_removed_on_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_rx, ready, why) = start(0, egui::Context::default(), Some(dir.path().to_path_buf()));
+    assert!(why.is_none(), "{why:?}");
+    ready.store(true, Ordering::Relaxed);
+    let endpoint = filmagic_engine::control_file::read(dir.path()).unwrap();
+    assert_eq!(endpoint.pid, std::process::id());
+    let mut c = TcpStream::connect(("127.0.0.1", endpoint.port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    writeln!(c, "{}", json!({"token": endpoint.token, "method": "control.ping"})).unwrap();
+    let mut line = String::new();
+    BufReader::new(&mut c).read_line(&mut line).unwrap();
+    assert!(line.contains("\"ok\":true"), "the file's credential is the server's: {line}");
+    unpublish();
+    assert_eq!(filmagic_engine::control_file::read(dir.path()), Err(filmagic_engine::control_file::ReadError::Missing));
 }

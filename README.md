@@ -256,9 +256,9 @@ cargo build --release -p filmagic -p filmagic-cli    # the desktop app and the c
 
 ### Connect an agent
 
-The agent starts the MCP server itself, over stdio, when it launches: you do not run `filmagic-cli mcp` in a terminal. There are two servers. **Headless** (`filmagic-cli mcp --demo`, or `--project <file.fcproj>`) edits a project in the background, with no window. **Bridge** (`filmagic-cli mcp --bridge 127.0.0.1:9876`) drives the desktop app you have open.
+The agent starts the MCP server itself, over stdio, when it launches: you do not run `filmagic-cli mcp` in a terminal. One server, `filmagic-cli mcp`, does both jobs. When the desktop app is open with its control server (`filmagic --control <port>`), the MCP server drives that app and you watch every edit. Otherwise it works **headless**, editing a project in the background with no window. `--demo` or `--project <file.fcproj>` always work headless; `--bridge 127.0.0.1:<port>` drives a given app.
 
-**Claude Code, inside this repository.** The checkout's [`.mcp.json`](.mcp.json) registers both servers (`filmagic-headless` and `filmagic`, the bridge). Start Claude Code in the checkout and approve them when asked:
+**Claude Code, inside this repository.** The checkout's [`.mcp.json`](.mcp.json) registers `filmagic` (the open app, else headless) and `filmagic-headless` (`--demo`). Start Claude Code in the checkout and approve them when asked:
 
 ```sh
 claude                    # in the editfilm folder; /mcp lists the servers
@@ -267,36 +267,42 @@ claude                    # in the editfilm folder; /mcp lists the servers
 **Claude Code, from any folder.** Register the binary you built by its absolute path (`--scope user` makes it available in every project; it goes before `--`, which hands everything after it to `filmagic-cli`):
 
 ```sh
-claude mcp add --scope user filmagic-headless -- /path/to/editfilm/target/release/filmagic-cli mcp --demo
+claude mcp add --scope user filmagic -- /path/to/editfilm/target/release/filmagic-cli mcp
 ```
 
 **Codex.** Codex reads [`AGENTS.md`](AGENTS.md) on its own but not `.mcp.json`. `codex mcp add` always writes your global `~/.codex/config.toml`, so one command covers the checkout and every other folder:
 
 ```sh
-codex mcp add filmagic-headless -- /path/to/editfilm/target/release/filmagic-cli mcp --demo
+codex mcp add filmagic -- /path/to/editfilm/target/release/filmagic-cli mcp
 codex                     # /mcp lists the servers
 ```
 
-Use `mcp --project /path/to/film.fcproj` instead of `--demo` to edit your own project.
+**Claude Desktop.** Settings ▸ Developer ▸ Edit Config opens `claude_desktop_config.json` (on Windows usually `%APPDATA%\Claude\claude_desktop_config.json`). Add the server with the binary's absolute path, every backslash doubled, then quit Claude Desktop completely, including its tray icon, and start it again:
 
-**Drive the desktop app.** The app's control server stays closed until it has a token: 64 random hex characters, shared by the app and the bridge through `FILMAGIC_CONTROL_TOKEN`. The agent starts the bridge when it launches, with the environment it had then, so export the token first and start the app and the agent from that same shell. An agent that is already running cannot pick the token up, not even by exporting it in its own shell tool or reconnecting from `/mcp`: quit it and start it again from the shell that exported the token.
+```json
+{
+  "mcpServers": {
+    "filmagic": {
+      "command": "C:\\Users\\you\\editfilm\\target\\release\\filmagic-cli.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Use `mcp --project /path/to/film.fcproj` to edit your own project headless.
+
+**Watch the agent edit.** Start the app with its control server, then the agent:
 
 ```sh
-export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"      # or: python3 -c 'import secrets; print(secrets.token_hex(32))'
 ./target/release/filmagic --control 9876 >/dev/null 2>&1 &   # its log is still written to Logs/filmagic.log
-claude                    # inside the checkout: the `filmagic` server in .mcp.json is the bridge
 ```
 
-On Windows (PowerShell):
+On Windows (PowerShell): `Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'`, or add `--control 9876` to a shortcut's Target.
 
-```powershell
-$b = [byte[]]::new(32); [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
-$env:FILMAGIC_CONTROL_TOKEN = -join ($b | ForEach-Object { $_.ToString('x2') })
-Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
-claude
-```
+The app makes a random credential for the session and writes it with the port to `control.json` in its data directory (`%APPDATA%\Filmagic\` on Windows). Only you can read that file. The MCP server reads it, so no token has to be set anywhere. An agent that is already working headless can call the MCP tool `app_open`. That tool saves the project, opens it in the app, and carries on there; `app_status` says which one the agent drives. The older setup, a shared `FILMAGIC_CONTROL_TOKEN` exported before starting the app and the agent, still works and takes precedence. [docs/agents.md](docs/agents.md#driving-the-desktop-app) explains both, and what happens when the app is closed mid-session.
 
-From another folder, add the bridge with `claude mcp add --scope user filmagic -- /path/to/editfilm/target/release/filmagic-cli mcp --bridge 127.0.0.1:9876`. Codex has no `codex mcp add` form for the bridge (`--env` would store the token's value): add it to `~/.codex/config.toml` by hand with `env_vars = ["FILMAGIC_CONTROL_TOKEN"]`, as [docs/agents.md](docs/agents.md#codex) shows. An agent can also drive the app without MCP, through the command-line tool: `./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec sequence.clips` reads the token from its environment, and an agent whose own environment lacks it can put it in front of that one command (`FILMAGIC_CONTROL_TOKEN=<token> ./target/release/filmagic-cli --bridge …`).
+An agent can also drive the app without MCP: `./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec sequence.clips` takes the credential from the app's control file (or from `FILMAGIC_CONTROL_TOKEN`). On Windows, piped `filmagic-cli` output is ASCII (JSON escapes non-ASCII as `\uXXXX`) so that it reads correctly in any console code page; `FILMAGIC_CLI_UTF8=1` keeps UTF-8.
 
 The command-line tool works without an agent too: `./target/release/filmagic-cli commands` lists every engine command, and `./target/release/filmagic-cli --help` shows the rest.
 

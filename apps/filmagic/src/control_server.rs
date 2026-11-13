@@ -4,15 +4,19 @@
 //! (an HTTP request line from a browser's cross-origin `fetch`, a stray `nc`, binary junk) gets
 //! one error reply and the connection is closed, so nothing after it is executed. Lines are
 //! bounded ([`MAX_LINE`]) and so is the number of open connections ([`MAX_CONNECTIONS`]); junk
-//! never reaches the UI thread. Every request must carry the session credential from
-//! `FILMAGIC_CONTROL_TOKEN`; without a configured credential the listener stays closed.
+//! never reaches the UI thread. Every request must carry the session credential: the value of
+//! `FILMAGIC_CONTROL_TOKEN` when it is set (it must then be 64 hex characters, or the listener stays
+//! closed), else a random one made for this session. Either way the port and credential are written
+//! to the owner-only control file in the data directory (`filmagic_engine::control_file`), which
+//! `filmagic-cli mcp` reads to attach to this app, and removed again when the app exits (#17).
 //! See `docs/control-protocol.md`.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use filmagic_ui_egui::ControlRequest;
@@ -30,8 +34,10 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(120);
 /// Why the control server is not serving although `--control` was given (#3436).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisabledWhy {
-    /// `FILMAGIC_CONTROL_TOKEN` is missing or is not 64 hex characters.
+    /// `FILMAGIC_CONTROL_TOKEN` is set but is not 64 hex characters.
     Token,
+    /// No credential could be generated: the operating system's random source failed.
+    Random(String),
     /// The port could not be bound. Showing this in the app is left to #3318, which reworks
     /// port-collision reporting; until then the reason is only logged.
     Bind { port: u16, error: String },
@@ -55,7 +61,10 @@ impl DisabledWhy {
     /// The reason as one line, for `filmagic.log` and the status bar.
     pub fn reason(&self) -> String {
         match self {
-            Self::Token => "FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters (see docs/control-protocol.md)".into(),
+            Self::Token => {
+                "FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters, or be unset for a session credential (see docs/control-protocol.md)".into()
+            }
+            Self::Random(error) => format!("could not make a control credential: {error}"),
             Self::Bind { port, error } => format!("could not bind 127.0.0.1:{port}: {error}"),
         }
     }
@@ -63,36 +72,99 @@ impl DisabledWhy {
 
 /// Start the server for `--control`. Returns the request queue, a flag the app sets once it can
 /// answer requests (until then they are rejected with a retryable error), and — when the server
-/// is *not* running — why (#3436), for the log and (for a bad token) the status bar.
-pub fn start(port: u16, ctx: egui::Context) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
-    start_with_token(port, ctx, std::env::var("FILMAGIC_CONTROL_TOKEN").ok())
+/// is *not* running — why (#3436), for the log and (for a bad token) the status bar. When it runs,
+/// its port and credential are published in `data_dir`'s control file (#17).
+pub fn start(port: u16, ctx: egui::Context, data_dir: Option<PathBuf>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+    let token = match session_token(std::env::var("FILMAGIC_CONTROL_TOKEN").ok(), random_token) {
+        Ok(t) => t,
+        Err(why) => {
+            // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
+            // the app, which shows it in the status bar.
+            log::warn!("control server disabled: {}", why.reason());
+            let (_tx, rx) = channel::<ControlRequest>();
+            return (rx, Arc::new(AtomicBool::new(true)), Some(why));
+        }
+    };
+    let (rx, ready, why, bound) = start_with_token(port, ctx, Some(token.clone()));
+    if let (Some(port), Some(dir)) = (bound, data_dir) {
+        publish(&dir, port, &token);
+    }
+    (rx, ready, why)
 }
 
-fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>) {
+/// The session's credential: `FILMAGIC_CONTROL_TOKEN` when it is set to something (it must then be
+/// valid: a typo should not silently start a server nobody can reach with the intended value),
+/// else a fresh random one from `generate`.
+fn session_token(env: Option<String>, generate: impl FnOnce() -> Result<String, String>) -> Result<String, DisabledWhy> {
+    match env.filter(|t| !t.is_empty()) {
+        Some(t) if filmagic_engine::control_file::is_valid_token(&t) => Ok(t),
+        Some(_) => Err(DisabledWhy::Token),
+        None => generate().map_err(DisabledWhy::Random),
+    }
+}
+
+/// 32 bytes from the operating system's random source, as 64 lowercase hex characters.
+fn random_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The control file this app wrote: removed by [`unpublish`] when the app exits.
+static PUBLISHED: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
+/// Write the control file for `port` and `token` in `dir`. A failure is logged and the server keeps
+/// running: agents can still reach it through `FILMAGIC_CONTROL_TOKEN` and `--bridge`.
+fn publish(dir: &Path, port: u16, token: &str) {
+    let endpoint = filmagic_engine::control_file::ControlEndpoint {
+        port,
+        token: token.to_string(),
+        pid: std::process::id(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    match filmagic_engine::control_file::write(dir, &endpoint) {
+        Ok(path) => {
+            // the path only: the credential never goes to the log
+            log::info!("control endpoint written to {}", path.display());
+            *PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner) = Some((dir.to_path_buf(), token.to_string()));
+        }
+        Err(e) => log::warn!("could not write the control file in {}: {e}; agents need FILMAGIC_CONTROL_TOKEN and --bridge", dir.display()),
+    }
+}
+
+/// Remove the control file this app wrote, if another app has not replaced it since. Called when
+/// the app exits; a crash leaves the file, which readers recognise as stale (`control.ping`).
+pub fn unpublish() {
+    let Some((dir, token)) = PUBLISHED.lock().unwrap_or_else(PoisonError::into_inner).take() else { return };
+    if let Err(e) = filmagic_engine::control_file::remove_if_ours(&dir, &token) {
+        log::warn!("could not remove the control file in {}: {e}", dir.display());
+    }
+}
+
+/// [`start`] with a given credential (`None` or a malformed one leaves the listener closed). Also
+/// returns the port actually bound (`--control 0` binds a free one).
+fn start_with_token(port: u16, ctx: egui::Context, token: Option<String>) -> (Receiver<ControlRequest>, Arc<AtomicBool>, Option<DisabledWhy>, Option<u16>) {
     let (tx, rx) = channel::<ControlRequest>();
-    // An inherited environment variable shares the credential with the owner's bridge process
-    // without exposing it in command-line arguments, logs, or a shared discovery file.
-    let Some(token) = token.filter(|t| t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit())) else {
-        // The reason goes to the log (a desktop launch has no stderr to read; #3436) and back to
-        // the app, which shows it in the status bar.
+    let Some(token) = token.filter(|t| filmagic_engine::control_file::is_valid_token(t)) else {
         log::warn!("control server disabled: {}", DisabledWhy::Token.reason());
-        return (rx, Arc::new(AtomicBool::new(true)), Some(DisabledWhy::Token));
+        return (rx, Arc::new(AtomicBool::new(true)), Some(DisabledWhy::Token), None);
     };
     match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
-            log::info!("control server listening on 127.0.0.1:{port}");
+            let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+            log::info!("control server listening on 127.0.0.1:{bound}");
             // Requests that arrive before the app can answer them are rejected with a retryable
             // error instead of queued: a queued request outlives its 60 s reply wait, and a
             // client retry would then apply the same mutation twice (#3436).
             let ready = Arc::new(AtomicBool::new(false));
             let loop_ready = Arc::clone(&ready);
             std::thread::spawn(move || accept_loop(listener, tx, ctx, token, loop_ready));
-            (rx, ready, None)
+            (rx, ready, None, Some(bound))
         }
         Err(error) => {
             let why = DisabledWhy::Bind { port, error: error.to_string() };
             log::warn!("control server disabled: {}", why.reason());
-            (rx, Arc::new(AtomicBool::new(true)), Some(why))
+            (rx, Arc::new(AtomicBool::new(true)), Some(why), None)
         }
     }
 }
@@ -149,6 +221,12 @@ fn serve_with_timeout(
     stream.set_write_timeout(Some(timeout))?;
     let read = stream.try_clone()?;
     serve_lines(read, stream, token, |method, params| {
+        // Answered here, not by the UI thread: proves to a reader of the control file that this port
+        // is this app and accepts its credential (authentication already passed), even while the app
+        // is starting or busy (#17).
+        if method == "control.ping" {
+            return Some(ping_reply());
+        }
         // Until the app can drain the queue, a request would outlive its 60 s reply wait and
         // still run after startup: reject it instead, so a client retry is the only copy (#3436).
         if !ready.load(Ordering::Relaxed) {
@@ -160,6 +238,11 @@ fn serve_with_timeout(
         Some(rrx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| json!({"ok": false, "error": "timeout"})))
     });
     Ok(())
+}
+
+/// The reply to `control.ping`.
+fn ping_reply() -> Value {
+    json!({"ok": true, "result": {"app": "filmagic", "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id()}})
 }
 
 /// One parsed line.

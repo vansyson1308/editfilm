@@ -7,18 +7,28 @@ Filmagic from an agent. Part 2 covers developing Filmagic as an agent.
 
 ## 1. MCP server
 
-`filmagic-cli mcp` serves MCP on stdio. It has two modes:
+`filmagic-cli mcp` serves MCP on stdio. It drives one of two things:
 
 | Mode | Command | What it drives |
 |---|---|---|
-| Headless | `filmagic-cli mcp --demo` or `--project p.fcproj` (neither = empty project) | an in-process engine session, no window |
-| Bridge | `filmagic-cli mcp --bridge 127.0.0.1:9876` | the running desktop app started with `filmagic --control 9876` |
+| App | `filmagic-cli mcp` while the desktop app runs with `--control`, or `--bridge 127.0.0.1:9876` | the desktop app the user has open: they see every edit |
+| Headless | `filmagic-cli mcp` with no such app, or `--headless`, `--demo`, `--project p.fcproj` | an in-process engine session, no window: the user sees nothing |
 
-Headless mode also takes `--data-dir DIR` (user presets). Any other option is rejected (exit 2):
-there are no folder-confinement flags such as `--automation-read-root`, so the server can read
-and write wherever the user can.
+With no mode option, the server looks for the app's control file (`control.json` in the data
+directory, see [below](#driving-the-desktop-app)). When the app named there answers, the server
+drives it. Otherwise the server works headless on an empty project. It writes one line to stderr
+saying which mode it chose, and the MCP tool `app_status` says so too. The choice is made once, at start. If
+the app opens later, the server does not move the agent's work into it behind the agent's back.
+The agent calls `app_open` for that (see [Opening the app mid-session](#opening-the-app-mid-session)).
 
-Both modes are started by the agent, as a child process speaking MCP on stdin/stdout. A server
+`--bridge ADDR` drives that address. `--headless` (an empty project), `--demo` and `--project`
+always work headless, even while the app runs. `--data-dir DIR` sets the data directory. Headless
+mode reads user presets from it, and every mode looks for the app's control file there. The
+default is the app's own data directory, or `FILMAGIC_DATA_DIR` when that is set. Any other
+option is rejected (exit 2). There are no folder-confinement flags such as
+`--automation-read-root`, so the server can read and write wherever the user can.
+
+The agent starts the server itself, as a child process speaking MCP on stdin/stdout. A server
 started by hand in a terminal has no agent attached to it.
 
 ### Build
@@ -37,18 +47,19 @@ The binaries are `target/release/filmagic` (the desktop app) and `target/release
 
 ### Claude Code
 
-Inside the checkout, the repository's [`.mcp.json`](../.mcp.json) registers both servers:
-`filmagic-headless` (`mcp --demo`) and `filmagic` (the bridge, `mcp --bridge 127.0.0.1:9876`). Their
-`command` is the relative path `target/release/filmagic-cli`, so start `claude` at the root of the
-checkout, approve the project servers when asked, and check them with `/mcp`.
+Inside the checkout, the repository's [`.mcp.json`](../.mcp.json) registers two servers:
+`filmagic` (`mcp`: the open app when there is one, else headless) and `filmagic-headless`
+(`mcp --demo`, always headless). Their `command` is the relative path
+`target/release/filmagic-cli`. Start `claude` at the root of the checkout, approve the project
+servers when asked, and check them with `/mcp`.
 
 From any other folder, register the binary by its absolute path. `--scope user` makes it available
 in every project; it goes before `--`, because everything after `--` is passed to `filmagic-cli`,
 which rejects options it does not know (exit 2, "unknown mcp option"):
 
 ```sh
+claude mcp add --scope user filmagic -- /abs/path/editfilm/target/release/filmagic-cli mcp
 claude mcp add --scope user filmagic-headless -- /abs/path/editfilm/target/release/filmagic-cli mcp --demo
-claude mcp add --scope user filmagic -- /abs/path/editfilm/target/release/filmagic-cli mcp --bridge 127.0.0.1:9876
 ```
 
 Use `mcp --project /abs/path/film.fcproj` instead of `--demo` to open your own project.
@@ -58,48 +69,130 @@ Use `mcp --project /abs/path/film.fcproj` instead of `--demo` to open your own p
 Codex reads [`AGENTS.md`](../AGENTS.md) at the repository root by itself. It does not read
 `.mcp.json`; its MCP servers are configured in `~/.codex/config.toml`. `codex mcp add` always
 writes that global file, so there is no separate "inside the checkout" setup: one entry, with the
-absolute path of the binary, serves the checkout and every other folder. Add the headless server
-with `codex mcp add <name> -- <command> <args…>`:
+absolute path of the binary, serves the checkout and every other folder. Add the server with
+`codex mcp add <name> -- <command> <args…>`:
 
 ```sh
-codex mcp add filmagic-headless -- /abs/path/editfilm/target/release/filmagic-cli mcp --demo
+codex mcp add filmagic -- /abs/path/editfilm/target/release/filmagic-cli mcp
 codex mcp list            # or /mcp inside Codex
 ```
 
 That writes this table to `~/.codex/config.toml`, which can also be edited by hand:
 
 ```toml
-[mcp_servers.filmagic-headless]
-command = "/abs/path/editfilm/target/release/filmagic-cli"
-args = ["mcp", "--demo"]
-```
-
-The bridge has no `codex mcp add` form: its `--env KEY=VALUE` would store the token's value in the
-file. Add the bridge by editing `~/.codex/config.toml`, and let the token through from the
-environment Codex starts in with `env_vars`:
-
-```toml
 [mcp_servers.filmagic]
 command = "/abs/path/editfilm/target/release/filmagic-cli"
-args = ["mcp", "--bridge", "127.0.0.1:9876"]
-env_vars = ["FILMAGIC_CONTROL_TOKEN"]
+args = ["mcp"]
 ```
 
-### Driving the desktop app (bridge)
+The server finds the app through its control file, so no credential goes into this file. Only the
+[fixed-token setup](#fixed-token-filmagic_control_token) needs `env_vars = ["FILMAGIC_CONTROL_TOKEN"]`
+in the table.
 
-The app's control server stays closed unless `FILMAGIC_CONTROL_TOKEN` holds 64 hex characters
-(generate them randomly, fresh for each session); the bridge sends the same value. Generate the
-token, then start the app and the agent from that shell so both inherit it:
+### Claude Desktop
+
+Claude Desktop starts the servers listed in `claude_desktop_config.json`: Settings ▸ Developer ▸
+Edit Config opens it. On Windows the file is usually `%APPDATA%\Claude\claude_desktop_config.json`,
+and on macOS `~/Library/Application Support/Claude/claude_desktop_config.json`. Use the absolute path
+of the binary. JSON needs every backslash doubled:
+
+```json
+{
+  "mcpServers": {
+    "filmagic": {
+      "command": "C:\\Users\\you\\editfilm\\target\\release\\filmagic-cli.exe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Quit Claude Desktop completely (on Windows, also from the tray icon) and start it again: it reads
+the file only at start. No token is needed. Claude Desktop cannot easily pass one through its
+environment, and the server reads the app's control file instead. If the app runs with
+`--data-dir`, give the server the same folder: `"args": ["mcp", "--data-dir", "D:\\Filmagic data"]`.
+
+### Driving the desktop app
+
+Start the app with its control server. `--control <port>` takes a port (`0` lets the system pick
+a free one):
+
+```sh
+./target/release/filmagic --control 9876 >/dev/null 2>&1 &   # keeps the app's log out of the agent's terminal
+```
+
+On Windows, add `--control 9876` to a shortcut's Target, or in PowerShell:
+
+```powershell
+Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
+```
+
+Then start the agent, or let an agent that is already running call `app_status` or `app_open`. An
+agent started before the app came up is headless: it reaches the app through `app_open`, or by being
+restarted.
+
+When the control server starts, the app makes a random credential for the session (64 hex
+characters), unless `FILMAGIC_CONTROL_TOKEN` is set. It writes the port, the credential, its
+process id and its version to `control.json` in its data directory:
+
+- `~/.local/share/filmagic/` on Linux;
+- `~/Library/Application Support/Filmagic/` on macOS;
+- `%APPDATA%\Filmagic\` on Windows;
+- or `--data-dir` / `FILMAGIC_DATA_DIR`.
+
+The app's log is in `Logs/filmagic.log` in the same folder. The file is protected as follows:
+
+- **Only you can read it.** On macOS and Linux it is created with mode `0600`. On Windows it takes
+  the folder's permissions; `%APPDATA%` is in your user profile, which other users who are not
+  administrators cannot open. With `--data-dir` on Windows, choose a folder only you can read.
+- **It is written atomically**: a temporary file is renamed over it, so a reader never sees half a file.
+- **It is removed when the app exits**, unless another app has replaced it since.
+- **A stale file does no harm.** A file left by a crash names a port where nothing answers, or
+  where something answers without that credential. `filmagic-cli mcp` checks with `control.ping`
+  before it attaches. When the check fails, the server works headless, and the next app start
+  replaces the file.
+
+Two apps with `--control` at once: the later one's file wins, and agents attach to it.
+
+The control server listens on 127.0.0.1 only, and refuses every request without the credential.
+
+### Opening the app mid-session
+
+`app_status` says what the session drives: `mode: "app"` (with `answering`, whether the app still
+answers) or `mode: "headless"` (with `appRunning`, whether an app is open that it is not driving).
+
+`app_open` hands a headless session to the desktop app, so the user can watch:
+
+1. It saves the headless project, to `path` when given. A project that was never saved needs
+   `path`, an absolute `.fcproj` path. Without it, the call fails and says so.
+2. If an app is already running, it attaches to that app. It does not replace the app's open
+   project, and it returns a note: run `file.open` with the saved path to continue there.
+   Otherwise it starts the app (`filmagic --control 0 --data-dir <the server's> -- <project>`),
+   waits up to 90 s for the app's control server, and attaches.
+3. From then on, every command and the `ui_*` tools go to the app. The headless undo history does
+   not carry over: the app opens the saved file.
+
+The app is found next to `filmagic-cli` (`filmagic` or `filmagic.exe`), or at the path in
+`FILMAGIC_APP` in the server's environment. An agent never chooses the executable. The app
+outlives the MCP server: closing the agent leaves the app and its project open.
+
+If the user closes the app, the next command fails with "Filmagic is not answering at …: the app
+was closed". The session never falls back to headless on its own, because headless would edit a
+different copy. `app_open` then starts the app again, with `path` if given. Edits the closed app had not
+saved are offered by its auto-save recovery. In app mode with the app still open, `app_open`
+changes nothing.
+
+### Fixed token (`FILMAGIC_CONTROL_TOKEN`)
+
+The older setup still works, and it takes precedence over the session credential. Set
+`FILMAGIC_CONTROL_TOKEN` to 64 random hex characters, fresh for each session, and start the app
+and the agent from that shell so both inherit it:
 
 ```sh
 export FILMAGIC_CONTROL_TOKEN="$(openssl rand -hex 32)"      # or: python3 -c 'import secrets; print(secrets.token_hex(32))'
-./target/release/filmagic --control 9876 >/dev/null 2>&1 &   # keeps the app's log out of the agent's terminal
+./target/release/filmagic --control 9876 >/dev/null 2>&1 &
 claude                    # or codex
 ```
-
-The app's log is still written to `Logs/filmagic.log` in its data directory
-(`~/.local/share/filmagic/Logs/` on Linux, `~/Library/Application Support/Filmagic/Logs/` on macOS,
-`%APPDATA%\Filmagic\Logs\` on Windows, or under `--data-dir`).
 
 On Windows (PowerShell):
 
@@ -110,26 +203,41 @@ Start-Process .\target\release\filmagic.exe -ArgumentList '--control','9876'
 claude                    # or codex
 ```
 
-**Start the agent after the token.** Claude Code and Codex start their MCP servers when they
-launch, with the environment they had then. An agent that is already running cannot give its bridge
-the token: exporting it in the agent's own shell tool, or reconnecting the server from `/mcp`, still
-leaves a bridge without it, and every call fails with "control authentication failed". Quit the
-agent and start it again from the shell that exported the token.
+The app writes this value to its control file too. A bridge (`mcp --bridge ADDR`, or
+`filmagic-cli --bridge ADDR exec …`) sends `FILMAGIC_CONTROL_TOKEN` when it is set. Otherwise it
+sends the control file's credential when the file names the same port. An agent started before the
+variable was exported does not have it: exporting it in the agent's own shell tool, or reconnecting
+from `/mcp`, does not help. Without the control file, quit the agent and start it again from that
+shell. A value that is set but is not 64 hex characters keeps the control server closed. The app
+logs `control server disabled: FILMAGIC_CONTROL_TOKEN must contain 64 random hex characters` and
+shows it in the status bar, so a typo is never replaced silently.
 
-An agent can also drive the app without MCP, through the command-line tool. It reads the token
-from its environment; an agent whose own environment lacks it can put it in front of each command,
-which keeps it out of the command's arguments:
+An agent can also drive the app without MCP, through the command-line tool. The credential comes
+from the control file, or from the variable put in front of the command (which keeps it out of the
+command's arguments):
 
 ```sh
 ./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec sequence.clips
 FILMAGIC_CONTROL_TOKEN=<token> ./target/release/filmagic-cli --bridge 127.0.0.1:9876 exec playhead.set seconds=2
 ```
 
-Without the token the app logs `control server disabled: FILMAGIC_CONTROL_TOKEN must contain 64
-random hex characters`, shows it in the status bar and does not listen, so the bridge reports that
-it cannot connect. A bridge without the app's token reaches the app but gets `control
-authentication failed`. For a few seconds after launch the app answers `Filmagic is still starting;
-send the request again`.
+A bridge with the wrong credential reaches the app but gets `control authentication failed`. For a
+few seconds after launch the app answers `Filmagic is still starting; send the request again`.
+
+### Windows console output
+
+`filmagic-cli` prints UTF-8. Written to a console window, it shows correctly. Piped or redirected,
+for example captured by PowerShell or by an agent's shell tool, it is often decoded in the
+console's code page, and "…" turned into "�?�". So on Windows, output that does not go to a console
+is ASCII:
+
+- JSON escapes non-ASCII characters as `\uXXXX`, which any JSON reader turns back into the same
+  text. Nothing is lost.
+- Text spells "…" as `...`, "→" as `->`, "▸" as `>`, and shows any other non-ASCII character as
+  `?`. Use `--json` for exact text.
+
+Set `FILMAGIC_CLI_UTF8=1` to keep UTF-8, for a reader that decodes UTF-8: Git Bash, or PowerShell
+after `[Console]::OutputEncoding = [Text.Encoding]::UTF8`. MCP output is always UTF-8 JSON-RPC.
 
 ### Headless Linux machines
 
@@ -153,11 +261,12 @@ headless MCP server (`mcp --demo`) needs none of this.
 Any client that starts stdio servers takes the same command and arguments:
 
 ```json
-{ "mcpServers": { "filmagic": { "command": "/abs/path/filmagic-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
+{ "mcpServers": { "filmagic": { "command": "/abs/path/filmagic-cli", "args": ["mcp"] } } }
 ```
 
-For the bridge, the client must pass `FILMAGIC_CONTROL_TOKEN` through from its own environment
-(in Codex, `env_vars`); the token's value never goes into a checked-in file.
+The server finds the app through its control file. With the fixed-token setup the client must pass
+`FILMAGIC_CONTROL_TOKEN` through from its own environment (in Codex, `env_vars`). The token's
+value never goes into a checked-in file.
 
 ### Future releases
 

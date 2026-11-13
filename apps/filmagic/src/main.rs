@@ -7,9 +7,11 @@
 //! Without a project, `--demo` or `--empty`, Settings ▸ General ▸ At Startup decides: Show Home
 //! (the demo project), Open Most Recent, or an empty project.
 //!
-//! `--control <port>` (or `FILMAGIC_CONTROL_PORT`) starts a localhost JSON-lines control server;
-//! `FILMAGIC_CONTROL_TOKEN` is required (see `docs/control-protocol.md`).
-//! see `filmagic_ui_egui::control` for the methods. A port that is not a number is an error from
+//! `--control <port>` (or `FILMAGIC_CONTROL_PORT`; `0` picks a free port) starts a localhost
+//! JSON-lines control server. Its credential is `FILMAGIC_CONTROL_TOKEN` when set, else a random one
+//! for the session; the port and credential go to the owner-only `<data dir>/control.json`, which
+//! `filmagic-cli mcp` reads to attach (see `docs/control-protocol.md`, and
+//! `filmagic_ui_egui::control` for the methods). A port that is not a number is an error from
 //! either source.
 //!
 //! Auto-save and the crash-recovery journal run in every session (data in `--data-dir`, else
@@ -217,6 +219,8 @@ fn main() -> eframe::Result {
     };
     // However it ended, this start no longer counts as one that died.
     graphics.finish();
+    // Agents must not try to attach to a server that is gone (#17).
+    control_server::unpublish();
     // The window could not be created (no usable GPU / graphics driver, no display): say so
     // instead of exiting silently, and keep the reason in the crash log.
     if let Err(e) = &started {
@@ -314,7 +318,8 @@ fn app_creator(launch: Launch, graphics: graphics::GraphicsStart, created: Arc<A
         // Start the control server before anything touches recovery state: `file.recover`
         // consumes its candidate, and an input-only session that must abort (no server) may not
         // take that step first, or the recovered work is lost (#3436).
-        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone()));
+        // The control file goes in the same data directory as auto-save and the logs (#17).
+        let control = control_port.map(|port| control_server::start(port, cc.egui_ctx.clone(), data_dir.clone().or_else(default_data_dir)));
         if control_input_only && let Some((_, _, Some(why))) = &control {
             return Err(Box::new(control_server::ControlServerRequired(why.reason())));
         }

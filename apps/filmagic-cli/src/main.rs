@@ -7,11 +7,13 @@
 /// `println!` that doesn't panic when stdout is closed (`filmagic-cli commands | head`) with
 /// "failed printing to stdout: Broken pipe (os error 32)". Once stdout has failed, later output is
 /// dropped and the work goes on: see `stdout_failed`.
+///
+/// On Windows, output that does not go to a console is made ASCII (`console`, #17).
 macro_rules! outln {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
         if !$crate::stdout_gone() {
-            if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+            if let Err(e) = writeln!(std::io::stdout(), "{}", $crate::console::stdout_text(&format!($($arg)*))) {
                 $crate::stdout_failed(e);
             }
         }
@@ -23,7 +25,7 @@ macro_rules! out {
     ($($arg:tt)*) => {{
         use std::io::Write as _;
         if !$crate::stdout_gone() {
-            if let Err(e) = write!(std::io::stdout(), $($arg)*) {
+            if let Err(e) = write!(std::io::stdout(), "{}", $crate::console::stdout_text(&format!($($arg)*))) {
                 $crate::stdout_failed(e);
             }
         }
@@ -31,6 +33,7 @@ macro_rules! out {
 }
 
 mod args;
+mod console;
 mod probe;
 mod project_lock;
 
@@ -98,7 +101,9 @@ SUBCOMMANDS
                                 media info as JSON, with MXF / Ogg / BWF details; with
                                 --image-sequence <media> is the first numbered still of a sequence
   bench-decode <media> [--frames N]
-  mcp                           MCP server on stdio (headless, or --bridge to the live app)
+  mcp                           MCP server on stdio: drives the open desktop app when one runs
+                                with --control (found through its control file), else headless;
+                                --headless forces headless, --bridge ADDR a given app
   help                          this text
   --version                     print the version
 
@@ -114,6 +119,11 @@ OPTIONS
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
 
+WINDOWS
+  Output that is piped or redirected is ASCII (JSON escapes non-ASCII as \\uXXXX, text spells
+  … as ...), because many readers decode it in the console code page. FILMAGIC_CLI_UTF8=1 keeps
+  UTF-8 for a reader that decodes UTF-8.
+
 VALUES
   key=value parses value as JSON when it can (3.5, true, [1,2], {\"a\":1}), else as a string:
   `exec timeline.razor seconds=3.5`, `exec file.newBin name=Selects`.
@@ -127,7 +137,7 @@ EXIT STATUS
 /// Writes one diagnostic line to `w`, dropping any write error. `eprintln!` panics (exit 101) when stderr's
 /// reader is gone, which would turn a usage error, a failure or a finished export into a crash.
 fn write_diag(w: &mut dyn std::io::Write, msg: std::fmt::Arguments) {
-    let _ = writeln!(w, "{msg}");
+    let _ = writeln!(w, "{}", console::stderr_text(&msg.to_string()));
 }
 
 fn diag(msg: std::fmt::Arguments) {
@@ -175,11 +185,13 @@ impl Backend {
             if a.opt("--project").is_some() || a.flag("--demo") {
                 usage("--bridge drives the running app; open projects there (exec file.open path=…)");
             }
-            return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
+            // the credential: FILMAGIC_CONTROL_TOKEN, else the app's control file for that port (#17)
+            let token = filmagic_automation::app_link::token_for(addr, data_dir(a).as_deref(), std::env::var("FILMAGIC_CONTROL_TOKEN").ok());
+            return Backend::Bridge(BridgeClient::with_token(addr, token).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
         // user export presets (and other per-user libraries) from the data directory
-        if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmagic_engine::autosave::default_data_dir) {
+        if let Some(dir) = data_dir(a) {
             s.export_presets.set_dir(&dir);
         }
         if let Some(p) = a.opt("--project") {
@@ -233,7 +245,12 @@ impl Backend {
 
 fn print(a: &Args, v: &Value) {
     let s = if a.flag("--compact") { serde_json::to_string(v) } else { serde_json::to_string_pretty(v) };
-    outln!("{}", s.unwrap_or_default());
+    print_json(&s.unwrap_or_default());
+}
+
+/// Serialized JSON on stdout; ASCII-escaped where plain text would be transliterated (`console`).
+fn print_json(s: &str) {
+    outln!("{}", console::stdout_json(s));
 }
 
 /// Export format from the output file's extension.
@@ -417,9 +434,9 @@ async fn cli_run(a: &Args) {
         let v: Value = serde_json::from_str(line).unwrap_or_else(|e| usage(format!("line {}: {e}", n + 1)));
         let id = v["id"].as_str().unwrap_or_else(|| usage(format!("line {}: missing \"id\"", n + 1)));
         match b.exec(id, v.get("params").cloned().unwrap_or(json!({}))).await {
-            Ok(r) => outln!("{}", json!({"line": n + 1, "id": id, "ok": true, "result": r})),
+            Ok(r) => print_json(&json!({"line": n + 1, "id": id, "ok": true, "result": r}).to_string()),
             Err(e) => {
-                outln!("{}", json!({"line": n + 1, "id": id, "ok": false, "error": e}));
+                print_json(&json!({"line": n + 1, "id": id, "ok": false, "error": e}).to_string());
                 failed += 1;
                 if !a.flag("--keep-going") {
                     std::process::exit(1);
@@ -547,18 +564,43 @@ async fn cli_render(a: &Args) {
     diag(format_args!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0));
 }
 
+/// `--data-dir`, else the app's default data directory.
+fn data_dir(a: &Args) -> Option<std::path::PathBuf> {
+    a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmagic_engine::autosave::default_data_dir)
+}
+
+/// `mcp`: drive the open desktop app when its control file names one that answers, else work
+/// headless (#17). `--bridge ADDR` drives that address; `--headless`, `--demo` and `--project` work
+/// headless whatever runs.
 async fn cli_mcp(a: &Args) {
-    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir"]) {
+    use filmagic_automation::app_link::{Start, choose, find_app};
+    if let Some(opt) = a.unknown_opt(&["--bridge", "--project", "--demo", "--data-dir", "--headless"]) {
         usage(format!("unknown mcp option `{opt}`"));
     }
-    let server = match a.opt("--bridge") {
-        Some(addr) => filmagic_automation::FilmagicMcp::bridge(addr).unwrap_or_else(|e| usage(e)),
-        None => match Backend::open(a) {
-            Backend::Local(s) => filmagic_automation::FilmagicMcp::headless(*s),
-            Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
-        },
+    let headless = a.flag("--headless") || a.flag("--demo") || a.opt("--project").is_some();
+    if a.opt("--bridge").is_some() && headless {
+        usage("mcp: --bridge drives the running app; it does not take --headless, --demo or --project (open projects there with file.open)");
+    }
+    let dir = data_dir(a);
+    let found = if headless { filmagic_automation::app_link::Found::Missing } else { find_app(dir.as_deref()).await };
+    let server = match choose(a.opt("--bridge"), headless, &found, std::env::var("FILMAGIC_CONTROL_TOKEN").ok()) {
+        Start::Bridge { addr, token, from_file } => {
+            if from_file {
+                diag(format_args!("filmagic-cli mcp: driving the open Filmagic app on {addr} (from its control file)"));
+            }
+            filmagic_automation::FilmagicMcp::bridge_with_token(&addr, token).unwrap_or_else(|e| usage(e))
+        }
+        Start::Headless { why } => {
+            if let Some(why) = why {
+                diag(format_args!("filmagic-cli mcp: working headless: {why}"));
+            }
+            match Backend::open(a) {
+                Backend::Local(s) => filmagic_automation::FilmagicMcp::headless(*s),
+                Backend::Bridge(_) => usage("mcp: use --bridge ADDR to drive a running app"),
+            }
+        }
     };
-    if let Err(e) = server.serve_stdio().await {
+    if let Err(e) = server.with_data_dir(dir).serve_stdio().await {
         fail(format!("mcp: {e}"));
     }
 }
