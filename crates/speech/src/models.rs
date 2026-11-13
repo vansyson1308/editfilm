@@ -8,6 +8,8 @@
 //! Licence: OpenAI released the Whisper code and model weights under the MIT licence
 //! (<https://github.com/openai/whisper/blob/main/LICENSE>); the safetensors conversions OpenAI
 //! publishes at `huggingface.co/openai/whisper-*` are labelled Apache-2.0. Both are permissive.
+//! The whisper-large-v3-turbo pins were verified 2026-11-13 against the Hugging Face API (LFS
+//! SHA-256 of the weights) and by `sha256sum` of the small files.
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +58,8 @@ macro_rules! hf {
 }
 
 const TOKENIZER_MULTI: &str = "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566";
+/// The large-v3 tokenizer (one more language token, Cantonese).
+const TOKENIZER_V3: &str = "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd";
 
 static CATALOGUE: &[ModelInfo] = &[
     ModelInfo {
@@ -178,6 +182,47 @@ static CATALOGUE: &[ModelInfo] = &[
             ),
         ],
     },
+    ModelInfo {
+        id: "whisper-large-v3-turbo",
+        name: "Whisper large-v3 turbo (multilingual)",
+        multilingual: true,
+        description: "809 M parameters. Best for languages other than English (Vietnamese, Thai, …); about 1.6 GB, needs about 5 GB of memory.",
+        license: LICENSE,
+        license_url: LICENSE_URL,
+        author: AUTHOR,
+        source: "https://huggingface.co/openai/whisper-large-v3-turbo",
+        files: &[
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "config.json",
+                "c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a",
+                1256
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "generation_config.json",
+                "cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c",
+                3772
+            ),
+            // large-v3 adds Cantonese, so its tokenizer differs from the other models'
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "tokenizer.json",
+                "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+                2710337
+            ),
+            hf!(
+                "whisper-large-v3-turbo",
+                "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+                "model.safetensors",
+                "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
+                1617824864
+            ),
+        ],
+    },
 ];
 
 /// The default model.
@@ -231,6 +276,11 @@ pub fn missing_bytes(models_dir: &Path, m: &ModelInfo) -> u64 {
 /// The tokenizer shared by the multilingual models has one checksum.
 pub fn shared_tokenizer_sha() -> &'static str {
     TOKENIZER_MULTI
+}
+
+/// The checksum of the tokenizer the large-v3 models share.
+pub fn v3_tokenizer_sha() -> &'static str {
+    TOKENIZER_V3
 }
 
 /// Download progress: `(bytes done, bytes total, file)`; return false to cancel.
@@ -331,7 +381,8 @@ mod tests {
                 assert_eq!(f.sha256.len(), 64);
                 assert!(f.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
                 if f.name == "tokenizer.json" {
-                    assert_eq!(f.sha256, shared_tokenizer_sha());
+                    let expected = if m.id.contains("large-v3") { v3_tokenizer_sha() } else { shared_tokenizer_sha() };
+                    assert_eq!(f.sha256, expected, "{}", m.id);
                 }
             }
         }

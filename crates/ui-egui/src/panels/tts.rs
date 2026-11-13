@@ -78,9 +78,11 @@ impl TtsDraft {
     }
 }
 
-/// The natural voice package is downloaded.
+/// The default natural voice is downloaded (in the default or `FILMAGIC_MODELS_DIR` location: a
+/// new draft has no session to read the setting from).
 fn natural_installed() -> bool {
-    filmagic_engine::transcript::models_dir().as_deref().is_some_and(filmagic_tts::catalog::installed)
+    let dir = filmagic_engine::models_store::location("").map(|(d, _)| d);
+    filmagic_tts::catalog::find("kokoro-heart").is_some_and(|v| dir.as_deref().is_some_and(|d| filmagic_tts::catalog::voice_installed(d, v)))
 }
 
 /// This build can download and run the natural voices (`neural-voices` on the engine).
@@ -217,10 +219,17 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0.0, t.panel_bg);
-    let models = filmagic_engine::transcript::models_dir();
+    let models = app.session.models_dir();
     let available = natural_voices_available();
     let voices = filmagic_tts::voices_in(models.as_deref());
-    let installed = models.as_deref().is_some_and(filmagic_tts::catalog::installed);
+    let vieneu = models.as_deref().and_then(filmagic_tts::vieneu::cached_voices).unwrap_or_default();
+    // the chosen natural voice can speak (the shared model and its own voice file are here)
+    let selected = filmagic_tts::catalog::find(&app.ui.tts.voice);
+    let installed = selected.is_none_or(|v| models.as_deref().is_some_and(|d| filmagic_tts::catalog::voice_installed(d, v)));
+    let download_bytes = match (selected, models.as_deref()) {
+        (Some(v), Some(d)) => filmagic_tts::catalog::missing_bytes_for(d, &[v]),
+        _ => filmagic_tts::catalog::size(),
+    };
     let busy = app.ui.tts.pending.is_some();
     let download = app
         .ui
@@ -265,7 +274,8 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
         auto.add("tts.language", visible(ui, cb.response.rect), "Language");
         ui.add_space(10.0);
         label(ui, &t, "Voice");
-        let voice_name = voices.iter().find(|v| v.id == d.voice).map_or(d.voice.as_str(), |v| v.name);
+        let vieneu_name = d.voice.strip_prefix(filmagic_tts::vieneu::VOICE_PREFIX);
+        let voice_name = voices.iter().find(|v| v.id == d.voice).map_or_else(|| vieneu_name.unwrap_or(d.voice.as_str()), |v| v.name).to_string();
         let cb = craft_ui::ComboBox::from_id_salt("tts-voice").selected_text(voice_name).width(w).show_ui(ui, |ui| {
             for (engine, heading) in [("neural", "Natural voices"), ("basic", "Basic voices (built in)")] {
                 if engine == "neural" && !available {
@@ -277,6 +287,19 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
                     let r = ui.selectable_label(d.voice == v.id, label).on_hover_text(v.description);
                     if r.clicked() {
                         d.voice = v.id.to_string();
+                    }
+                }
+            }
+            if d.language == filmagic_tts::vieneu::LANGUAGE {
+                ui.label(egui::RichText::new(tl!("Vietnamese voices (VieNeu-TTS)")).color(t.text_faint).size(11.0));
+                if vieneu.is_empty() {
+                    ui.label(egui::RichText::new(tl!("VieNeu-TTS is not set up yet: see tts.engines and tts.setupVieneu.")).color(t.text_dim).size(11.0));
+                }
+                for v in &vieneu {
+                    let id = v.id();
+                    let r = ui.selectable_label(d.voice == id, &v.name).on_hover_text(v.description.clone().unwrap_or_default());
+                    if r.clicked() {
+                        d.voice = id;
                     }
                 }
             }
@@ -302,7 +325,7 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
                         }
                     }
                     None if d.confirm_download => {
-                        let mb = filmagic_tts::catalog::size() as f64 / 1e6;
+                        let mb = download_bytes as f64 / 1e6;
                         ui.label(egui::RichText::new(format!("Download the natural voices? {mb:.0} MB, once.")).color(t.text).size(12.0).strong());
                         ui.label(
                             egui::RichText::new(format!(
@@ -327,7 +350,7 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                     None => {
                         ui.label(egui::RichText::new("Natural voices need a one-time download.").color(t.text).size(11.5));
-                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", filmagic_tts::catalog::size() as f64 / 1e6));
+                        let b = ui.button(format!("Download natural voices ({:.0} MB)…", download_bytes as f64 / 1e6));
                         auto.add("tts.download", visible(ui, b.rect), "Download natural voices");
                         if b.clicked() {
                             d.confirm_download = true;
@@ -435,7 +458,10 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
             Action::Run(cmd, p, play) => start(app, cmd, p, play),
             Action::Download => {
                 app.ui.tts.confirm_download = false;
-                match app.session.execute("tts.downloadVoices", json!({})) {
+                // the chosen voice only (with the shared model): about 0.5 MB more per voice later
+                let voice = app.ui.tts.voice.clone();
+                let p = if filmagic_tts::catalog::find(&voice).is_some() { json!({"voices": [voice]}) } else { json!({}) };
+                match app.session.execute("tts.downloadVoices", p) {
                     Ok(r) => app.ui.tts.download_job = r["job"].as_u64(),
                     Err(e) => app.ui.status = e.to_string(),
                 }

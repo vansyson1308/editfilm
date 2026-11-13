@@ -299,6 +299,59 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Vietnamese narration, transcription languages and the models directory
+
+**Where models live.** Speech models, natural voices and VieNeu-TTS all go in one directory:
+`FILMAGIC_MODELS_DIR` if set, else the setting `mediaAnalysis.modelsLocation` (an absolute folder),
+else `<data dir>/models` (`%APPDATA%\Filmagic\models` on Windows). `models.info` says which one is
+used and what it holds. To move them (a full disk, a second drive), call `models.setLocation
+{"dir": "D:\\FilmagicModels"}`: it moves what is installed, never overwrites, and puts everything
+back if a step fails. `"move": false` only switches. Setting `mediaAnalysis.modelsLocation` with
+`prefs.set` does not move anything either. In both cases `models.info`, `tts.voices` and
+`transcript.models` warn, in `warnings`, about models left at the old place.
+
+**Transcription languages.** `transcript.generate` and `sequence.transcribe` take `language`:
+`"auto"`, or any Whisper code (`"vi"`, `"en"`, `"ja"`, …; `vi-VN` means `vi`). `transcript.models`
+lists them in `languages`. An unknown code is an error, and nothing is transcribed. For Vietnamese,
+download `whisper-large-v3-turbo` (1.6 GB, about 5 GB of memory) with `transcript.downloadModel
+{"model": "whisper-large-v3-turbo"}` and pass `"model": "whisper-large-v3-turbo"`. The smaller
+models also know Vietnamese, but they make more mistakes.
+
+**Natural voices one by one.** `tts.downloadVoices {"voices": ["kokoro-heart"]}` downloads the shared
+Kokoro model (331 MB, needed by every natural voice) and that voice (0.5 MB). `tts.voices` lists
+`package.perVoice` with what each voice still needs.
+
+**Vietnamese voices (VieNeu-TTS).** VieNeu-TTS is an optional external engine, used like ffmpeg:
+Filmagic runs a Python interpreter that has the `vieneu` package installed, as a subprocess, and
+never links or bundles it. Python is found from, in order:
+1. `FILMAGIC_VIENEU_PYTHON`;
+2. the setting `mediaAnalysis.vieneuPython`;
+3. `<models>/vieneu/venv`;
+4. `py -3` or `python` (Windows), `python3` or `python` (elsewhere).
+
+1. `tts.engines` reports whether a Python with `vieneu` was found, what was tried, and
+   `installSteps` with the exact commands for this machine.
+2. `tts.setupVieneu {"install": true}` (a job: follow it with `jobs.list`) does the setup. It creates
+   `<models>/vieneu/venv`, runs `pip install vieneu` there (about 0.9 GB), downloads the voice model
+   (about 0.6 GB) into `<models>/vieneu/cache`, and caches the voice list. Without `install` it only
+   checks an existing installation and downloads the model. `"python": "C:\\…\\python.exe"`
+   names the interpreter; when that interpreter has `vieneu`, the path is saved.
+3. `tts.voices` then lists `vieneu:<name>` voices (`"language": "vi-VN"`, `"engine": "vieneu"`), for
+   example `vieneu:Hải Đăng`. Listing them never starts Python.
+4. `tts.create {"text": "Xin chào…", "voice": "vieneu:Hải Đăng"}` makes the narration. Pause markers,
+   `pace` and `pitch` work as with the other voices. VieNeu is generative, so a take whose length does
+   not fit the text is generated again (up to three takes). It loads the model on each call and
+   speaks at about real time on a CPU, so call `tts.render` (a job) first. `tts.create` with the same
+   settings then returns at once, and an MCP client does not time out.
+5. Cloning: `"voice": "vieneu-clone", "referenceAudio": "<3–30 s clip>", "confirmAuthorizedVoice":
+   true`. Only pass `true` after the person whose voice is in the clip agreed. Without it the call
+   is refused. The clip path is kept with the narration, so `tts.edit` regenerates in the same voice.
+
+Errors name the next step: VieNeu missing, an unknown `vieneu:` name (with the list of voices), a
+stuck engine (`jobs.cancel` stops it). VieNeu returns audio only, with no word timings. For captions,
+run `transcript.generate {"language": "vi"}` on the narration's media, then
+`transcript.createCaptions`.
+
 ## 2. Control channel
 
 `filmagic --control 9876` (or `FILMAGIC_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

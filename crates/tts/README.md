@@ -22,10 +22,25 @@ clip behaviour: `crates/engine/src/narration.rs`.
   shifter (Kokoro has no pitch input). Pace is Kokoro's speed.
 - `catalog`: the natural-voice package (Kokoro-82M, 9 US English voices graded C+ or better on the
   model card, CMUdict; 336 MB), every file pinned to a revision and SHA-256. Downloaded by the
-  engine (`tts.downloadVoices`) after the user confirms; never bundled or committed.
+  engine (`tts.downloadVoices`) after the user confirms; never bundled or committed. The model and
+  dictionary (331 MB) are shared; each voice is its own 0.5 MB file, so voices download one by one.
+- `vieneu`: **Vietnamese voices from VieNeu-TTS** (Apache-2.0), an optional external engine. A
+  Python interpreter with the `vieneu` package runs as a subprocess, like ffmpeg; it is never
+  linked, bundled or installed without the user asking (`tts.setupVieneu {"install": true}`).
+  Interpreter discovery, a subprocess runner with a timeout and cancellation, the install steps,
+  the cached voice list, plausible-length retakes, pauses, pace (WSOLA) and pitch are Rust. The
+  interpreter runs `python/vieneu_bridge.py` (embedded, written to `<models>/vieneu/bridge/`). It is the only Python in the
+  repository. It holds no project logic: it reads a JSON request on stdin, calls `vieneu`'s public
+  API (`Vieneu()`, `list_preset_voices()`, `get_preset_voice()`, `infer()`) and writes raw float32
+  samples. A bridge is needed because VieNeu exists only as a Python package. Downloads go to
+  `<models>/vieneu/cache`. Output is 48 kHz. VieNeu gives no word timings.
+- `dsp`: time stretch (WSOLA from `filmagic-audio-dsp`), pitch shift and headroom for voices
+  without their own pace or pitch control.
 
-Everything is deterministic (the vocoder's noise is seeded). Without features the crate depends
-only on `serde` and `thiserror` (and checks for wasm).
+The built-in and Kokoro voices are deterministic (the vocoder's noise is seeded); VieNeu is
+generative and is not. Without features the crate depends on `serde`, `serde_json`, `thiserror`
+and `filmagic-audio-dsp` (and checks for wasm, where the external engine reports that it is not
+available).
 
 ## Measured quality and speed (M7.12, 2026-10-08)
 
@@ -50,7 +65,7 @@ builds), e.g. 186 s of speech in 84 s; model load 0.5 s. Reproduce with the `nar
 
 - The built-in voices are **robotic** and nearly unintelligible to a recogniser (above); they are
   the no-download fallback and the test voice.
-- English (United States) only. Words outside CMUdict go through letter-to-sound rules and are
+- Built-in and natural voices speak English (United States) only; Vietnamese needs VieNeu-TTS. Words outside CMUdict go through letter-to-sound rules and are
   often mispronounced (see `crates/tts-text/README.md`); homographs take the first pronunciation.
 - About 2× faster than real time on the CPU: a one-minute narration takes about 30 s. The UI runs
   synthesis as a background job.

@@ -2697,7 +2697,7 @@
 	Whip	Latigazo
 	Whip (Legacy)	Latigazo (heredado)
 	Whisper base (balanced)	Whisper base (equilibrado)
-	Whisper small (most accurate)	Whisper small (más preciso)
+	Whisper small (accurate)	Whisper small (preciso)
 	Whisper tiny (fastest)	Whisper tiny (más rápido)
 	White	Blanco
 	White Input Level	Nivel de entrada de blanco
@@ -3750,3 +3750,10 @@
 	Toggle Color Grading Section	Alternar sección de gradación de color
 	Color Grading Section	Sección de gradación de color
 	Read Video Scopes	Leer medidores de vídeo
+	Whisper large-v3 turbo (best for Vietnamese and other languages)	Whisper large-v3 turbo (el mejor para vietnamita y otros idiomas)
+	Vietnamese	Vietnamita
+	Models location	Ubicación de los modelos
+	Speech models, natural voices and VieNeu-TTS are stored here. Changing the location does not move models already downloaded: use Move Models (models.setLocation) to move them.	Aquí se guardan los modelos de voz, las voces naturales y VieNeu-TTS. Cambiar la ubicación no mueve los modelos ya descargados: usa Mover modelos (models.setLocation) para moverlos.
+	Python for VieNeu-TTS	Python para VieNeu-TTS
+	Vietnamese voices (VieNeu-TTS)	Voces vietnamitas (VieNeu-TTS)
+	VieNeu-TTS is not set up yet: see tts.engines and tts.setupVieneu.	VieNeu-TTS aún no está configurado: consulta tts.engines y tts.setupVieneu.

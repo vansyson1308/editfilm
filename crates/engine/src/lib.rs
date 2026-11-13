@@ -35,6 +35,7 @@ pub mod media_pool;
 mod media_queue;
 pub mod media_watch;
 pub mod mixer;
+pub mod models_store;
 pub mod multicam;
 pub mod narration;
 mod palette;
@@ -487,6 +488,8 @@ pub struct Session {
     pub tts_preview: Option<Arc<filmagic_tts::Audio>>,
     /// Synthesized narrations (`tts.render` fills it from a background job).
     pub tts_cache: narration::SynthCache,
+    /// The models directory before the last `models.setLocation` (its leftovers are reported).
+    pub previous_models_dir: Option<std::path::PathBuf>,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -602,6 +605,7 @@ impl Session {
             voiceover: Default::default(),
             tts_preview: None,
             tts_cache: Default::default(),
+            previous_models_dir: None,
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),

@@ -113,16 +113,52 @@ pub fn package_dir(models_dir: &Path) -> PathBuf {
     models_dir.join(PACKAGE_ID)
 }
 
+/// The files every voice needs: the model, its config and the pronunciation dictionary. The
+/// other files are one voice each (about 0.5 MB), so voices can be downloaded one by one.
+pub fn is_shared(f: &ModelFile) -> bool {
+    !VOICES.iter().any(|v| v.file == f.name)
+}
+
+fn present(dir: &Path, f: &ModelFile) -> bool {
+    std::fs::metadata(dir.join(f.name)).is_ok_and(|m| m.len() == f.size)
+}
+
+/// The shared files are present with their pinned sizes (contents were verified when downloaded).
+pub fn core_installed(models_dir: &Path) -> bool {
+    let d = package_dir(models_dir);
+    FILES.iter().filter(|f| is_shared(f)).all(|f| present(&d, f))
+}
+
+/// The voice can speak: the shared files and its own voice file are present.
+pub fn voice_installed(models_dir: &Path, v: &NeuralVoice) -> bool {
+    core_installed(models_dir) && FILES.iter().find(|f| f.name == v.file).is_some_and(|f| present(&package_dir(models_dir), f))
+}
+
 /// Every file present with its pinned size (contents were verified when downloaded).
 pub fn installed(models_dir: &Path) -> bool {
     let d = package_dir(models_dir);
-    FILES.iter().all(|f| std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size))
+    FILES.iter().all(|f| present(&d, f))
 }
 
-/// Bytes still to download.
-pub fn missing_bytes(models_dir: &Path) -> u64 {
+/// At least one voice can speak.
+pub fn any_installed(models_dir: &Path) -> bool {
+    VOICES.iter().any(|v| voice_installed(models_dir, v))
+}
+
+/// The files needed for `voices` (every voice when empty): the shared files, then theirs.
+pub fn files_for(voices: &[&NeuralVoice]) -> Vec<&'static ModelFile> {
+    FILES.iter().filter(|f| is_shared(f) || voices.is_empty() || voices.iter().any(|v| v.file == f.name)).collect()
+}
+
+/// Bytes still to download for `voices` (every voice when empty).
+pub fn missing_bytes_for(models_dir: &Path, voices: &[&NeuralVoice]) -> u64 {
     let d = package_dir(models_dir);
-    FILES.iter().filter(|f| !std::fs::metadata(d.join(f.name)).is_ok_and(|m| m.len() == f.size)).map(|f| f.size).sum()
+    files_for(voices).into_iter().filter(|f| !present(&d, f)).map(|f| f.size).sum()
+}
+
+/// Bytes still to download for every voice.
+pub fn missing_bytes(models_dir: &Path) -> u64 {
+    missing_bytes_for(models_dir, &[])
 }
 
 #[cfg(test)]
@@ -150,5 +186,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("filmagic-tts-cat-{}", std::process::id()));
         assert!(!installed(&dir));
         assert_eq!(missing_bytes(&dir), size());
+    }
+
+    #[test]
+    fn one_voice_needs_the_shared_files_and_its_own() {
+        let heart = find("kokoro-heart").unwrap();
+        let files = files_for(&[heart]);
+        assert_eq!(files.iter().filter(|f| !is_shared(f)).map(|f| f.name).collect::<Vec<_>>(), vec!["af_heart.pt"]);
+        assert_eq!(files.iter().filter(|f| is_shared(f)).count(), 3, "model, config, dictionary");
+        assert_eq!(files_for(&[]).len(), FILES.len());
+        let one = missing_bytes_for(std::path::Path::new("/nonexistent-filmagic"), &[heart]);
+        assert!(one < size() && size() - one > 4_000_000, "{one}");
+
+        let root = tempfile::tempdir().unwrap();
+        let d = package_dir(root.path());
+        std::fs::create_dir_all(&d).unwrap();
+        // sizes stand in for verified contents: sparse files of the pinned length
+        for f in files {
+            std::fs::File::create(d.join(f.name)).unwrap().set_len(f.size).unwrap();
+        }
+        assert!(core_installed(root.path()) && voice_installed(root.path(), heart) && any_installed(root.path()));
+        assert!(!voice_installed(root.path(), find("kokoro-bella").unwrap()));
+        assert!(!installed(root.path()));
+        assert_eq!(missing_bytes_for(root.path(), &[heart]), 0);
     }
 }

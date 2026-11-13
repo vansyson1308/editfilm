@@ -550,6 +550,7 @@ fn narration_selection_reveals_covered_floating_tts_once_without_editing_the_pro
         pitch: filmagic_project::VocalPitch::Default,
         pace: 1.2,
         speech_duration: filmagic_time::Tick::ZERO,
+        reference_audio: None,
     };
     std::sync::Arc::make_mut(&mut session.project).narrations.insert(clip.item, narration.clone());
     let project = session.project.clone();

@@ -22,7 +22,7 @@ the control channel and MCP agents can do the same.
 
 | Command | What it does |
 |---|---|
-| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default `whisper-base`), `language` (`auto` = detect), `diarize`, `maxSpeakers`. One undo step. |
+| `transcript.generate` | Transcribe media items (`items`, else the Project selection, else the media of the sequence's audio clips). Params: `model` (default: the setting, `whisper-base`), `language` (`auto` = detect, or a Whisper code such as `vi`, `en`, `ja`: `transcript.models` lists them; an unknown code is an error), `diarize`, `maxSpeakers`. One undo step. |
 | `transcript.set` | Store a transcript you bring (JSON: `language`, `speakers`, `words` with `text`/`start`/`end`/`speaker`); it is sorted and made well formed. |
 | `transcript.delete` | Remove transcripts. |
 | `transcript.inspect` | The sequence transcript: words (index, text, sequence times, speaker, clip), paragraphs, speakers, the word at the playhead. |
@@ -33,7 +33,7 @@ the control channel and MCP agents can do the same.
 | `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/…; phrases such as "you know" allowed). |
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
-| `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
+| `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) and the languages / download one into the models directory (`models.info`; `FILMAGIC_MODELS_DIR` or Settings ▸ Media Analysis & Transcription ▸ Models location). For Vietnamese and other languages besides English, `whisper-large-v3-turbo` (1.6 GB) is the most accurate. |
 
 ## Speech recognition
 
@@ -72,15 +72,18 @@ install any recogniser in `Session::transcriber`, which enables transcription in
 
 ### Models
 
-Weights are **never** bundled or committed. They are downloaded on request into
-`<data dir>/models/<id>/` (see `filmagic_engine::autosave::default_data_dir`), each file pinned to a
-revision of OpenAI's Hugging Face repositories and checked against its SHA-256:
+Weights are **never** bundled or committed. They are downloaded on request into `<models>/<id>/`.
+`<models>` is `FILMAGIC_MODELS_DIR`, else Settings ▸ Media Analysis & Transcription ▸ Models
+location, else `<data dir>/models` (`filmagic_engine::models_store`; `models.setLocation` moves
+them). Each file is pinned to a revision of OpenAI's Hugging Face repositories and checked against
+its SHA-256:
 
 | Id | Languages | Licence |
 |---|---|---|
 | `whisper-tiny` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-base` (default) | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
 | `whisper-small` | multilingual | MIT (OpenAI); HF conversion Apache-2.0 |
+| `whisper-large-v3-turbo` | multilingual, best for Vietnamese and other languages besides English (1.6 GB, about 5 GB of memory) | MIT (OpenAI) |
 
 ### Testing
 
