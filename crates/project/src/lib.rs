@@ -74,6 +74,7 @@ pub use settings::{IngestAction, IngestSettings, ProjectSettings, ScratchDisks};
 pub use source::resolve_auto_points;
 pub use track::{
     AudioChannels, FieldOptions, FieldProcessing, Marker, MarkerKind, TimeInterpolation, Track, TrackItem, TrackKind, Transition, TransitionAlign,
+    param_eq_default,
 };
 pub use view::{MAX_LUT_TEXT_BYTES, ProjectLut, ProjectView, SequenceView};
 id_type!(ItemId);

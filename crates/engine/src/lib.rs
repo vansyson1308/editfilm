@@ -828,7 +828,7 @@ impl Session {
         if let (Ok(v), Some(before)) = (&mut r, cuts_before)
             && !Arc::ptr_eq(&before, &self.project)
         {
-            source_cuts::annotate(self, id, &before, v);
+            source_cuts::annotate_guarded(self, id, &before, v);
         }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {

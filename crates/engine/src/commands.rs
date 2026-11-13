@@ -5386,7 +5386,7 @@ fn changed_params(e: &filmagic_project::EffectInstance) -> serde_json::Map<Strin
     let def = e.def();
     e.params
         .iter()
-        .filter(|(k, p)| !p.keyframes.is_empty() || def.and_then(|d| d.param(k)).is_none_or(|d| d.default != p.value))
+        .filter(|(k, p)| !p.keyframes.is_empty() || def.and_then(|d| d.param(k)).is_none_or(|d| !filmagic_project::param_eq_default(&p.value, &d.default)))
         .map(|(k, p)| {
             let v = crate::graphics::plain_value(&p.value);
             (k.clone(), if p.keyframes.is_empty() { v } else { json!({"value": v, "keyframes": p.keyframes.len()}) })
@@ -5447,24 +5447,31 @@ fn inspect_filtered(s: &Session, id: ItemId, q: &filmagic_project::Sequence, p: 
         return Ok(full);
     }
     // compact: `sequence.clips` (one short entry per clip), filtered, with what was changed
-    let mut brief = crate::story::list_clips_of(s, id, p.get("track").filter(|_| f.track.is_some()))?;
+    // the same track names as the full form (V1, a track's own name, its id), and the clip filter
+    // applied before the listing's cap
+    let track = match &f.track {
+        Some(_) => tracks().find(|(l, t)| f.track_ok(l, t)).map(|(_, t)| t.id),
+        None => None,
+    };
+    let mut brief = crate::story::list_clips_of(s, id, track, &|it| f.clip_ok(it))?;
     let find = |c: u64| q.all_tracks().flat_map(|t| t.items.iter()).find(|it| it.id.0 == c);
     if let Some(tracks) = brief.get_mut("tracks").and_then(Value::as_array_mut) {
         for t in tracks.iter_mut() {
             let Some(clips) = t.get_mut("clips").and_then(Value::as_array_mut) else { continue };
-            clips.retain(|c| c["clip"].as_u64().and_then(find).is_some_and(|it| f.clip_ok(it)));
             for c in clips.iter_mut() {
                 let Some(it) = c["clip"].as_u64().and_then(find) else { continue };
-                let changed: serde_json::Map<String, Value> = it
+                // one entry per effect, in the clip's order: two of the same effect stay apart
+                let changed: Vec<Value> = it
                     .effects
                     .iter()
-                    .filter(|e| f.effect_ok(e))
-                    .map(|e| (e.effect.clone(), changed_params(e)))
-                    .filter(|(_, m)| !m.is_empty())
-                    .map(|(k, m)| (k, Value::Object(m)))
+                    .enumerate()
+                    .filter(|(_, e)| f.effect_ok(e))
+                    .map(|(i, e)| (i, e, changed_params(e)))
+                    .filter(|(_, _, m)| !m.is_empty())
+                    .map(|(i, e, m)| json!({"effect": e.effect, "index": i, "params": m}))
                     .collect();
                 if !changed.is_empty() {
-                    c["changed"] = Value::Object(changed);
+                    c["changed"] = Value::Array(changed);
                 }
             }
         }

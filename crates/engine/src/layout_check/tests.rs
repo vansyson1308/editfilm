@@ -63,7 +63,7 @@ fn reports_overlaps_safe_areas_and_a_title_over_a_scoreboard() {
     assert!(pairs[0] == (over, cross) || pairs[0] == (cross, over));
     let w: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert!(w.iter().any(|w| w.contains("text-like") && w.contains(&format!("graphic clip {over}"))), "{w:?}");
-    assert!(w.iter().any(|w| w.contains("runs off the frame edge")), "{w:?}");
+    assert!(w.iter().any(|w| w.contains("touches or runs off the frame edge")), "{w:?}");
     assert!(w.iter().any(|w| w.contains("overlap")), "{w:?}");
     // one clip only
     let r = s.execute("layout.check", json!({"clip": calm})).unwrap();
@@ -139,4 +139,62 @@ fn hostile_parameters_are_refused() {
     ] {
         assert!(s.execute("graphics.anchor", p.clone()).is_err(), "{p}");
     }
+}
+
+/// Inside a dip to black, a graphic alone is still only its own pixels (#16 review: the hidden
+/// clips' transition filled the frame, so a title read as a full-frame box that ran off it).
+#[test]
+fn transitions_do_not_make_an_overlay_fill_the_frame() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let (w, h) = s.active_sequence().map(|q| (f64::from(q.settings.width), f64::from(q.settings.height))).unwrap();
+    let has_transitions = s.active_sequence().unwrap().video_tracks.iter().any(|t| !t.transitions.is_empty());
+    assert!(has_transitions, "the demo has transitions to check against");
+    // a title inside the opening dip to black (0–1 s) and a caption inside the one at 12.9–13.9 s
+    s.execute("graphics.newText", json!({"text": "Opening", "size": 80, "position": [960, 540], "time": 0, "seconds": 0.9, "newClip": true})).unwrap();
+    let at = filmagic_time::Tick::from_seconds_f64(12.95).0;
+    s.execute("captions.add", json!({"text": "Late line", "time": at, "durationSeconds": 0.8})).unwrap();
+    let r = s.execute("layout.check", json!({})).unwrap();
+    assert_eq!(r["items"].as_array().map(Vec::len), Some(2), "{r}");
+    for item in r["items"].as_array().unwrap() {
+        for sample in item["samples"].as_array().unwrap() {
+            let b: Vec<f64> = sample["box"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!(!(b[0] <= 0.0 && b[1] <= 0.0 && b[2] >= w && b[3] >= h), "a full-frame box: {item}");
+        }
+    }
+}
+
+#[test]
+fn a_bar_across_the_frame_is_a_note_and_captions_outside_are_said_once() {
+    let mut s = scoreboard_session("layout-bar");
+    let bar = shape(&mut s, [160.0, 170.0], [320.0, 20.0]);
+    for (k, t) in [0.0, 0.5].iter().enumerate() {
+        let tick = filmagic_time::Tick::from_seconds_f64(*t).0;
+        s.execute("captions.add", json!({"text": format!("Line {k}"), "time": tick, "durationSeconds": 0.4})).unwrap();
+    }
+    let r = s.execute("layout.check", json!({})).unwrap();
+    assert_eq!(item(&r, bar)["outside"], "spansFrame", "{r}");
+    let w: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(!w.iter().any(|w| w.contains(&format!("graphic clip {bar} ")) && w.contains("frame edge")), "{w:?}");
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().is_some_and(|n| n.contains("full width"))), "{r}");
+    let safe_lines: Vec<&&str> = w.iter().filter(|w| w.contains("caption") && w.contains("safe area")).collect();
+    assert_eq!(safe_lines.len(), 1, "captions outside a safe area are reported together: {w:?}");
+    assert!(safe_lines[0].starts_with("2 caption(s)"), "{w:?}");
+}
+
+#[test]
+fn anchor_refuses_a_clip_its_motion_moves_and_fits_a_vertical_frame() {
+    let mut s = scoreboard_session("layout-anchor-motion");
+    let c = shape(&mut s, [160.0, 90.0], [40.0, 20.0]);
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 150.0})).unwrap();
+    let e = s.execute("graphics.anchor", json!({"clip": c, "anchor": "topLeft"})).unwrap_err().to_string();
+    assert!(e.contains("Motion") && e.contains("effects.reset"), "{e}");
+    // a 9:16 sequence: the title-safe area is the vertical frame's
+    s.execute("file.newSequence", json!({"name": "Vertical", "fps": 24, "width": 180, "height": 320, "video": 2, "audio": 1})).unwrap();
+    let r = s.execute("graphics.newRectangle", json!({"position": [90, 160], "size": [40, 20], "newClip": true, "seconds": 2.0, "time": 0})).unwrap();
+    let v = r["clip"].as_u64().unwrap();
+    let r = s.execute("graphics.anchor", json!({"clip": v, "anchor": "bottomRight"})).unwrap();
+    // 20 % margin: 18 px each side across, 32 px each side down
+    assert_eq!(r["box"], json!([122.0, 268.0, 162.0, 288.0]), "{r}");
+    assert!(r["note"].as_str().unwrap().contains("playhead"), "{r}");
 }

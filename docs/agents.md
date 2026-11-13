@@ -195,7 +195,7 @@ returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at 
 | `command_batch` | both | run several commands in order `{steps: [{id, params}], stop_on_error}` → `{completed, failed, results}` |
 | `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`); takes the same filters as `sequence_inspect` |
 | `render_preview` | both | a still: same as `render_frame` |
-| `render_motion` | both | a few seconds of the sequence moving: an animated GIF returned as an image, or (`format: "mp4"`) an MP4 file whose path is returned (`from_seconds`, `to_seconds`, `fps`, `width`; at most 10 s, 30 fps, 640 px). Read-only |
+| `render_motion` | both | a few seconds of the sequence moving, for people: an animated GIF returned as an image, or (`format: "mp4"`) an MP4 file whose path is returned and which you delete (`from_seconds`, `to_seconds`, `fps`, `width` = the longest side; at most 10 s, 640 px, 60 GIF frames, 4 MB). To see motion yourself, use `story_board` with `fps`. Read-only |
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
 | `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection. Filters: `clip` (an id or a list), `track` (`"V1"`, `"A2"` or an id), `effect` (id or name: only clips with it, and only it); `compact: true` gives one short entry per clip as `sequence.clips` does, with `changed` listing only parameters that differ from their defaults |
 | `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
@@ -231,20 +231,28 @@ when the clip is moved, zoomed or turned.
 A still frame cannot show motion, and a rendered frame does not say what covers what. These close
 the gaps:
 
-- **Motion.** `render_motion` returns a short animated GIF (or MP4) of a range: check a transition,
-  a zoom, slow motion or an action in it. `story_board` with `fps` (or `step`) lays out a short
-  range frame by frame: `{"fps": 12, "from_seconds": 31.0, "to_seconds": 33.0}` shows a door closing
-  at 12 frames per second.
+- **Motion.** To see motion yourself, lay a moment out frame by frame: `story_board` with `fps`
+  (or `step`), e.g. `{"fps": 12, "from_seconds": 31.0, "to_seconds": 33.0}` shows a door closing
+  at 12 frames per second (up to 96 frames). `render_motion` makes a short GIF (or MP4) of a range
+  for a person to watch: many vision models see only the first frame of an animated GIF. It is
+  capped at 10 s, 640 px on the longest side, 60 GIF frames (the frame rate is lowered to fit) and
+  4 MB; an MP4 stays where it was written until you delete it.
 - **Cuts inside a source file.** Long recordings and compilations hold shot changes of their own.
-  `media.sourceCuts {item|clip, fromSeconds?, toSeconds?}` lists them (media seconds, and timeline
-  seconds for a `clip`; up to 7200 frames per call, `next` says where to continue). After
-  `timeline.razor`, `sequence.addEdit`, `sequence.addEditAllTracks`, `clip.speedDuration`,
-  `timeline.rateStretch`, `clip.frameHold`, `clip.frameHoldOptions`, `clip.insertFrameHoldSegment`
-  or a Time Remapping change, the result's `warnings` say when the edit lands within 3 frames of
-  such a cut, or the retimed clip straddles one, with the cut's time; `sourceCuts` has the details.
-  Each edit checks at most 240 new frames; what it could not check is in `notes`. Results are cached
-  per media item, so later checks are instant. The detection is Scene Edit Detection's measure at
-  its default sensitivity.
+  Finding them decodes every frame, which on long-GOP H.264 costs tens of milliseconds a frame, so
+  it runs in the background. `media.sourceCuts {item|clip, fromSeconds?, toSeconds?}` lists what is
+  known (media seconds, and timeline seconds for a `clip`) and starts a background job for the rest
+  (`job`; follow it with `jobs.list`, stop it with `jobs.cancel`); call it again when the job has
+  finished. `wait: true` checks before answering, which can take minutes. A job checks at most 7200
+  frames; `next` says where to continue. After `timeline.razor`, `sequence.addEdit`,
+  `sequence.addEditAllTracks`, `clip.speedDuration`, `timeline.rateStretch`, `clip.frameHold`,
+  `clip.frameHoldOptions`, `clip.insertFrameHoldSegment` or a Time Remapping change, the result's
+  `warnings` say when the edit lands within 3 frames of a known cut, or the retimed clip straddles
+  one, with the cut's time (`sourceCuts` has the details; with an animated Time Remapping curve the
+  timeline time is approximate). An edit never waits for a decode: where the cuts are not known
+  yet, `notes` says a background check started, and the next edit, or `media.sourceCuts`, reports
+  them. A file that is relinked or changes on disk is looked at afresh. The detection is Scene Edit
+  Detection's measure at its default sensitivity. A good habit: run `media.sourceCuts {item}` on
+  long rushes when you import them.
 - **Layout.** `layout.check {fromSeconds?, toSeconds?, clip?}` measures every graphic, title and
   caption in the range from the picture (the frame rendered with it alone) and reports overlaps,
   boxes outside the title-safe or action-safe area or off the frame, and overlays over busy or
@@ -255,16 +263,24 @@ the gaps:
   under the overlay (`edgeDensity`; busy from 0.06, text-like from 0.10 with a luma spread
   `contrast` of 0.12 or more). It finds sharp, high-contrast detail such as a burned-in scoreboard,
   not meaning: a striped shirt reads busy too, and soft text can be missed, so look at the frame.
+  An overlay that spans the frame's width or height (a bar, a border) gets a note, not a warning;
+  captions outside a safe area are reported once for all of them. Transitions are left out of the
+  measurement, so a dip to black does not make a title fill the frame.
 - **Placing graphics.** `graphics.anchor {clip, anchor, safe="title", margin=0}` moves a graphic's
   layers together to `topLeft`, `top`, `topRight`, `left`, `center`, `right`, `bottomLeft`, `bottom`
-  or `bottomRight` of the title-safe area, the action-safe area or the frame.
-  `graphics.template.apply` takes the same `anchor`, `safe` and `margin`.
+  or `bottomRight` of the title-safe area, the action-safe area or the frame (`safe: "none"` is the
+  frame too). It moves the layers where they are at the playhead: an animated Position gets a
+  keyframe there. It refuses a clip whose Motion moves, scales or turns it (reset Motion first),
+  and warns when the graphic's canvas is not the sequence's size. `graphics.template.apply` takes
+  the same `anchor`, `safe` and `margin`.
 - **Does it show?** `graphics.set` returns what it stored (`accepted`, values as you write them),
   `pictureChange` (how much this call changed the picture) and `layerShows` (the frame with the
   layer against the frame without it). A black band at 50 % opacity over dark footage reads
-  `subtle` or `none` in `layerShows`: raise its opacity or change its colour.
+  `subtle` or `none` in `layerShows`: raise its opacity or change its colour. The measurement
+  renders a few frames; `pictureChange: false` skips it (the app's own panels do).
 - **Reading a sequence.** `sequence_inspect` with `compact: true`, or a `clip`, `track` or `effect`
-  filter, is a fraction of the full answer. `effects.list {"effect": "Gaussian Blur"}` gives one
+  filter, is a fraction of the full answer. In compact form `changed` lists, per effect in the
+  clip's order (`effect`, `index`, `params`), only the parameters that differ from their defaults. `effects.list {"effect": "Gaussian Blur"}` gives one
   effect's parameters with their ids, types, ranges, units and defaults.
 
 ### Conventions

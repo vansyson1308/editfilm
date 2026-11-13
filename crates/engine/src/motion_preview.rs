@@ -17,8 +17,12 @@ const CMD: &str = "preview.motion";
 pub const MAX_SECONDS: f64 = 10.0;
 /// Highest frame rate of a preview.
 pub const MAX_FPS: f64 = 30.0;
-/// Widest preview, pixels.
+/// Longest side of a preview, pixels.
 pub const MAX_WIDTH: u32 = 640;
+/// Most frames of a GIF preview (the frame rate is lowered to fit).
+pub const MAX_GIF_FRAMES: f64 = 60.0;
+/// Largest GIF preview, bytes: about what MCP clients take as one image.
+pub const MAX_GIF_BYTES: u64 = 4_000_000;
 
 fn num_p(p: &Value, key: &str, lo: f64, hi: f64, what: &str) -> Result<Option<f64>> {
     match p.get(key) {
@@ -75,15 +79,25 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
         ));
     }
     let seq_fps = rate.as_f64();
-    let fps = num_p(p, "fps", 1.0, MAX_FPS, "frames per second from 1 to 30")?
-        .unwrap_or(if kind == "gif" { 12.0 } else { seq_fps.min(MAX_FPS) })
-        .min(seq_fps.max(1.0));
-    let width = num_p(p, "width", 64.0, f64::from(MAX_WIDTH), "pixels from 64 to 640")?.unwrap_or(480.0);
+    let gif = kind == "gif";
+    let mut notes: Vec<String> = Vec::new();
+    let mut fps =
+        num_p(p, "fps", 1.0, MAX_FPS, "frames per second from 1 to 30")?.unwrap_or(if gif { 12.0 } else { seq_fps.min(MAX_FPS) }).min(seq_fps.max(1.0));
+    // a GIF is handed to the caller whole: few enough frames to stay small
+    let span = (to - from).seconds();
+    if gif && fps * span > MAX_GIF_FRAMES {
+        fps = (MAX_GIF_FRAMES / span).floor().max(1.0);
+        notes.push(format!(
+            "lowered to {fps} fps so the GIF holds at most {MAX_GIF_FRAMES:.0} frames; for every frame of a moment, use `story.board` with `fps`"
+        ));
+    }
+    let side = num_p(p, "width", 64.0, f64::from(MAX_WIDTH), "pixels from 64 to 640")?.unwrap_or(if gif { 320.0 } else { 480.0 });
     let (sw, sh) = (f64::from(q.settings.width.max(1)), f64::from(q.settings.height.max(1)));
     let par = filmagic_project::par_ratio(filmagic_project::sane_par(q.settings.par));
-    let width = width.min(sw * par);
-    let height = width * sh / (sw * par);
-    let (w, h) = (even(width), even(height));
+    // `width` is the longest side: a 9:16 frame is as tall as a 16:9 one is wide
+    let (dw, dh) = (sw * par, sh);
+    let k = (side / dw.max(dh)).min(1.0);
+    let (w, h) = (even(dw * k), even(dh * k));
     let settings = filmagic_export::ExportSettings {
         format,
         path: path.clone(),
@@ -99,6 +113,18 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let report = filmagic_export::export(&s.project, seq, &settings, &provider, &Default::default()).map_err(|e| EngineError::Other(format!("{CMD}: {e}")))?;
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(report.bytes);
+    if gif && bytes > MAX_GIF_BYTES {
+        let _ = std::fs::remove_file(&path);
+        return Err(EngineError::Other(format!(
+            "{CMD}: the GIF came to {:.1} MB, more than the {:.0} MB an MCP client takes as an image; lower `width` or `fps`, shorten the range, or write an .mp4",
+            bytes as f64 / 1e6,
+            MAX_GIF_BYTES as f64 / 1e6
+        )));
+    }
+    notes.push("many vision models see only the first frame of an animated GIF: to look at motion yourself, lay the frames out with `story.board` (`fps` or `step`); the GIF/MP4 is for people".into());
+    if !gif {
+        notes.push("the MP4 stays where it was written: delete it when you are done".into());
+    }
     Ok(json!({
         "path": path,
         "format": kind,
@@ -110,6 +136,7 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
         "frames": report.frames,
         "bytes": bytes,
         "note": "a reduced preview for checking motion (transitions, zooms, speed changes); export with `file.exportMedia` for the real thing",
+        "notes": notes,
     }))
 }
 
@@ -119,7 +146,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Motion Preview",
         menu: &[],
         shortcut: None,
-        params: r#"{"path":str (.gif: animated image; .mp4: H.264 with sound),"fromSeconds":f64? (default the playhead),"toSeconds":f64? (default 3 s later; at most 10 s after fromSeconds),"fps":1..30? (default 12 for GIF, the sequence's rate up to 30 for MP4),"width":px=480 (64..640)}"#,
+        params: r#"{"path":str (.gif: animated image; .mp4: H.264 with sound),"fromSeconds":f64? (default the playhead),"toSeconds":f64? (default 3 s later; at most 10 s after fromSeconds),"fps":1..30? (default 12 for GIF, lowered to keep a GIF at 60 frames; the sequence's rate up to 30 for MP4),"width":px? (the longest side, 64..640; default 320 for GIF, 480 for MP4)} -> a GIF over 4 MB is refused. To look at motion yourself use story.board with fps/step"#,
         enabled: has_seq,
         run: preview,
         journal: false,

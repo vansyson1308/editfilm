@@ -62,3 +62,22 @@ fn hostile_parameters_are_refused_with_what_to_do() {
     let e = s.execute("preview.motion", json!({"path": gif, "fromSeconds": 0, "toSeconds": 30})).unwrap_err().to_string();
     assert!(e.contains("10 s at most"), "{e}");
 }
+
+#[test]
+fn the_longest_side_and_the_gif_frames_are_capped() {
+    let mut s = demo();
+    let dir = tmp_dir("motion-caps");
+    // a vertical sequence: 640 is its height, not its width
+    s.execute("file.newSequence", json!({"name": "Vertical", "fps": 24, "width": 1080, "height": 1920, "video": 1, "audio": 1})).unwrap();
+    s.execute("graphics.newRectangle", json!({"position": [540, 960], "size": [400, 400], "seconds": 10.0, "time": 0})).unwrap();
+    let mp4 = dir.join("v.mp4").to_string_lossy().into_owned();
+    let r = s.execute("preview.motion", json!({"path": mp4, "fromSeconds": 0.0, "toSeconds": 0.5, "width": 640})).unwrap();
+    assert_eq!((r["width"].as_u64(), r["height"].as_u64()), (Some(360), Some(640)), "{r}");
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().is_some_and(|n| n.contains("delete"))), "{r}");
+    // 10 s at 30 fps would be 300 GIF frames: the rate comes down to fit 60
+    let gif = dir.join("v.gif").to_string_lossy().into_owned();
+    let r = s.execute("preview.motion", json!({"path": gif, "fromSeconds": 0.0, "toSeconds": 10.0, "fps": 30, "width": 64})).unwrap();
+    assert_eq!(r["fps"], 6.0, "{r}");
+    assert!(r["frames"].as_u64().unwrap() <= 60, "{r}");
+    assert!(r["notes"][0].as_str().unwrap().contains("lowered"), "{r}");
+}

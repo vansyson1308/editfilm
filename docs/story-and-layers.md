@@ -157,10 +157,11 @@ have had: lower `width`, `max` or `count`.
 `fromSeconds`…`toSeconds` (of the sequence, or of the item's media), at most 96 frames; a range that
 needs more is refused with the longest one that fits. The labels then show hundredths of a second.
 
-An `item` board also marks the cuts inside the item's source (`media.sourceCuts`): a cell after one
-is labelled `| CUT` and carries `cutBefore` (the cuts' media seconds) and `sourceShot` (which shot
-of the file it shows); `sourceCuts` lists them. A board decodes at most 1440 new frames to look for
-them; past that `sourceCutsComplete` is false and `notes` says to run `media.sourceCuts` first. The MCP tool `story_board` takes the same options
+An `item` board also marks the cuts inside the item's source that are already known
+(`media.sourceCuts`): a cell after one is labelled `| CUT` and carries `cutBefore` (the cuts' media
+seconds) and `sourceShot` (which shot of the file it shows); `sourceCuts` lists them. A board never
+waits to find them: when some of its span is not known yet, `sourceCutsComplete` is false, a
+background check starts (`notes` names the job) and the next board marks them. The MCP tool `story_board` takes the same options
 (snake case, no `path`) and returns the image.
 
 ### `story.splitEdit`

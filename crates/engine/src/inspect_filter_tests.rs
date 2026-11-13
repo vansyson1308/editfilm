@@ -36,11 +36,13 @@ fn compact_is_short_and_lists_what_changed() {
     assert!(one["start"].is_number(), "{one}");
     let fx: Vec<&str> = one["effects"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert!(fx.iter().any(|e| e.contains("blur")), "{one}");
-    assert!(one["changed"].as_object().is_some_and(|m| !m.contains_key("opacity")), "an untouched Opacity is left out: {one}");
+    assert!(!one["changed"].as_array().into_iter().flatten().any(|e| e["effect"] == "opacity"), "an untouched Opacity is left out: {one}");
     // a changed value is listed, with its value
     s.execute("effects.setParam", json!({"clip": c, "effect": "opacity", "param": "opacity", "value": 50.0})).unwrap();
     let compact = s.execute("sequence.inspect", json!({"compact": true, "clip": c})).unwrap();
-    assert_eq!(compact_clips(&compact)[0]["changed"]["opacity"]["opacity"], 50.0, "{compact}");
+    let changed = compact_clips(&compact)[0]["changed"].clone();
+    let opacity = changed.as_array().unwrap().iter().find(|e| e["effect"] == "opacity").unwrap().clone();
+    assert_eq!(opacity["params"]["opacity"], 50.0, "{compact}");
 }
 
 #[test]
@@ -98,4 +100,75 @@ fn effects_list_gives_one_effect_with_its_parameters() {
     let e = s.execute("effects.list", json!({"effect": "No Such Effect"})).unwrap_err().to_string();
     assert!(e.contains("lists every id"), "{e}");
     assert!(s.execute("effects.list", json!({"effect": 3})).is_err());
+}
+
+#[test]
+fn compact_keeps_two_of_the_same_effect_apart_and_leaves_automatic_motion_out() {
+    let mut s = demo();
+    let c = first_clip(&s);
+    s.execute("effects.apply", json!({"clip": c, "effect": "Gaussian Blur"})).unwrap();
+    s.execute("effects.apply", json!({"clip": c, "effect": "Gaussian Blur"})).unwrap();
+    let blurs: Vec<usize> = s
+        .active_sequence()
+        .unwrap()
+        .find_item(filmagic_project::ClipId(c))
+        .unwrap()
+        .1
+        .effects
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.effect != "motion" && e.effect != "opacity" && e.effect != "time_remap")
+        .map(|(i, _)| i)
+        .collect();
+    for (k, i) in blurs.iter().enumerate() {
+        let id = s.active_sequence().unwrap().find_item(filmagic_project::ClipId(c)).unwrap().1.effects[*i].effect.clone();
+        let def = filmagic_project::find_effect(&id).unwrap();
+        let param = def.params.iter().find(|p| matches!(p.kind, filmagic_project::ParamKind::Float { .. })).unwrap().id;
+        s.execute("effects.setParam", json!({"clip": c, "effect": i, "param": param, "value": 10.0 + k as f64})).unwrap();
+    }
+    let r = s.execute("sequence.inspect", json!({"compact": true, "clip": c})).unwrap();
+    let one = &compact_clips(&r)[0];
+    let changed = one["changed"].as_array().unwrap();
+    let indices: Vec<u64> = changed.iter().map(|e| e["index"].as_u64().unwrap()).collect();
+    assert_eq!(indices, blurs.iter().map(|i| *i as u64).collect::<Vec<_>>(), "both blurs, each with its index: {one}");
+    // Motion left at its automatic position and anchor is not a change
+    assert!(!changed.iter().any(|e| e["effect"] == "motion"), "{one}");
+    // the demo's picture in a picture is scaled (a real change) but sits at its automatic
+    // position and anchor, which are not changes
+    for x in compact_clips(&s.execute("sequence.inspect", json!({"compact": true})).unwrap()) {
+        for e in x["changed"].as_array().into_iter().flatten().filter(|e| e["effect"] == "motion") {
+            assert!(e["params"].get("position").is_none() && e["params"].get("anchor_point").is_none() && e["params"].get("anchor").is_none(), "{x}");
+        }
+    }
+}
+
+#[test]
+fn compact_finds_a_clip_past_the_first_five_hundred_and_takes_track_names() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let mut p = (*s.project).clone();
+    let mut next = p.next_id;
+    let q = p.sequence_mut(seq).unwrap();
+    let template = q.video_tracks[0].items[0].clone();
+    let end = q.duration();
+    let mut last = 0;
+    for k in 0..600 {
+        let mut it = template.clone();
+        next += 1;
+        it.id = filmagic_project::ClipId(next);
+        it.link = None;
+        it.start = end + filmagic_time::Tick(template.duration.0 * k);
+        last = next;
+        q.video_tracks[0].items.push(it);
+    }
+    p.next_id = next + 1;
+    s.project = std::sync::Arc::new(p);
+    let r = s.execute("sequence.inspect", json!({"compact": true, "clip": last})).unwrap();
+    assert_eq!(compact_clips(&r).iter().map(|x| x["clip"].as_u64().unwrap()).collect::<Vec<_>>(), vec![last], "{r}");
+    // the track's own name works as in the full form
+    let name = s.active_sequence().unwrap().video_tracks[0].name.clone();
+    let full = s.execute("sequence.inspect", json!({"track": name})).unwrap();
+    let compact = s.execute("sequence.inspect", json!({"track": name, "compact": true})).unwrap();
+    assert_eq!(full["video"].as_array().map(Vec::len), Some(1));
+    assert_eq!(compact["tracks"].as_array().map(Vec::len), Some(1), "{}", compact["tracks"]);
 }

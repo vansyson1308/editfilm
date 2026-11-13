@@ -1278,13 +1278,11 @@ fn dense_sequence_cells(s: &Session, p: &Value, width: f64, columns: usize, step
     Ok((cells, par))
 }
 
-/// Frames of new media a board may decode to mark the cuts inside an item's source.
-const BOARD_CUT_FRAMES: i64 = 1440;
-
-/// Mark the cells of an item board that follow a cut inside the source; returns the cuts found
-/// and whether the whole span was checked.
-fn mark_source_cuts(s: &mut Session, item: ItemId, span: (Tick, Tick), cells: &mut [Cell]) -> Option<(Vec<Tick>, bool)> {
-    let (cuts, complete) = crate::source_cuts::known_cuts(s, item, span.0, span.1, BOARD_CUT_FRAMES)?;
+/// Mark the cells of an item board that follow a cut inside the source, from the cuts already
+/// found (a board never waits for a decode; the rest is checked in the background). Returns the
+/// cuts, whether the whole span is known, and the background job.
+fn mark_source_cuts(s: &mut Session, item: ItemId, span: (Tick, Tick), cells: &mut [Cell]) -> Option<(Vec<Tick>, bool, Option<u64>)> {
+    let (cuts, complete, job) = crate::source_cuts::known_cuts(s, item, span.0, span.1)?;
     let mut prev = span.0 - Tick(1);
     let mut shot = 1 + cuts.iter().filter(|c| **c <= span.0).count();
     for c in cells.iter_mut() {
@@ -1298,7 +1296,7 @@ fn mark_source_cuts(s: &mut Session, item: ItemId, span: (Tick, Tick), cells: &m
         c.info["sourceShot"] = json!(shot);
         prev = t;
     }
-    Some((cuts, complete))
+    Some((cuts, complete, job))
 }
 
 fn count_p(p: &Value, key: &str, default: usize, range: std::ops::RangeInclusive<u64>, cmd: &str) -> Result<usize> {
@@ -1367,13 +1365,14 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(step) = step {
         out["step"] = json!(round3(step.seconds()));
     }
-    if let Some((item, (cuts, complete))) = source {
+    if let Some((item, (cuts, complete, job))) = source {
         // cells after a cut inside the source are labelled "| CUT" and carry `cutBefore`
         out["sourceCuts"] = json!(cuts.iter().map(|c| round3(c.seconds())).collect::<Vec<_>>());
         out["sourceCutsComplete"] = json!(complete);
         if !complete {
+            let running = job.map_or_else(String::new, |j| format!(" a background check is running (job {j}, `jobs.list`);"));
             out["notes"] = json!([format!(
-                "cuts inside the source were looked for in part of this span only; run `media.sourceCuts` {{\"item\":{}}} (repeat with its `next`) and draw the board again to mark them all",
+                "only the cuts inside the source already found are marked:{running} when it finishes, draw the board again, or call `media.sourceCuts` {{\"item\":{}, \"wait\": true}} first",
                 item.0
             )]);
         }
@@ -1543,13 +1542,18 @@ fn list_clips(s: &mut Session, p: &Value) -> Result<Value> {
     list_clips_in(s, id, p)
 }
 
-/// [`list_clips`] of sequence `id`, with only the `track` given (a name such as "V1" or an id).
-pub(crate) fn list_clips_of(s: &Session, id: ItemId, track: Option<&Value>) -> Result<Value> {
-    let p = track.map_or_else(|| json!({}), |t| json!({"track": t}));
-    list_clips_in(s, id, &p)
+/// [`list_clips`] of sequence `id`, with only the `track` given (an id) and only the clips `keep`
+/// lets through, before the listing's cap.
+pub(crate) fn list_clips_of(s: &Session, id: ItemId, track: Option<filmagic_project::TrackId>, keep: &dyn Fn(&TrackItem) -> bool) -> Result<Value> {
+    let p = track.map_or_else(|| json!({}), |t| json!({"track": t.0}));
+    list_clips_filtered(s, id, &p, keep)
 }
 
 fn list_clips_in(s: &Session, id: ItemId, p: &Value) -> Result<Value> {
+    list_clips_filtered(s, id, p, &|_| true)
+}
+
+fn list_clips_filtered(s: &Session, id: ItemId, p: &Value, keep: &dyn Fn(&TrackItem) -> bool) -> Result<Value> {
     const CMD: &str = "sequence.clips";
     let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
     let rate = q.frame_rate();
@@ -1564,7 +1568,7 @@ fn list_clips_in(s: &Session, id: ItemId, p: &Value) -> Result<Value> {
         if only.is_some_and(|o| o != t.id) {
             continue;
         }
-        let mut items: Vec<&TrackItem> = t.items.iter().filter(|it| from.is_none_or(|f| it.end() > f) && to.is_none_or(|x| it.start < x)).collect();
+        let mut items: Vec<&TrackItem> = t.items.iter().filter(|it| from.is_none_or(|f| it.end() > f) && to.is_none_or(|x| it.start < x) && keep(it)).collect();
         items.sort_by_key(|it| it.start);
         let clips: Vec<Value> = items
             .iter()

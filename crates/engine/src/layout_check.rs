@@ -78,8 +78,6 @@ struct Overlay {
     name: String,
     start: Tick,
     end: Tick,
-    /// The project with only this overlay showing.
-    alone: Arc<Project>,
 }
 
 /// Whether a timeline clip is a graphic (a title, a shape, a template).
@@ -98,6 +96,11 @@ fn variant(p: &Project, seq: filmagic_project::ItemId, keep: Option<Kind>, foota
     let q = v.sequence_mut(seq)?;
     let mut k = 0;
     for t in q.video_tracks.iter_mut() {
+        // a transition between hidden clips would fill the frame (a dip to black): for one
+        // overlay alone, only its own pixels may draw
+        if !footage {
+            t.transitions.clear();
+        }
         for it in t.items.iter_mut() {
             let is_overlay = overlay.get(k).copied().unwrap_or(false);
             k += 1;
@@ -224,6 +227,8 @@ fn seconds_p(p: &Value, key: &str) -> Result<Option<Tick>> {
     }
 }
 
+/// The graphics and captions in `from..to`, in order of start: descriptors only (each one's
+/// render variant is built when it is looked at, one at a time).
 fn overlays(s: &Session, seq: filmagic_project::ItemId, from: Tick, to: Tick, only: Option<ClipId>) -> Vec<Overlay> {
     let Some(q) = s.project.sequence(seq) else { return Vec::new() };
     let mut out = Vec::new();
@@ -232,20 +237,14 @@ fn overlays(s: &Session, seq: filmagic_project::ItemId, from: Tick, to: Tick, on
             if only.is_some_and(|c| c != it.id) {
                 continue;
             }
-            let kind = Kind::Graphic(it.id);
-            if let Some(alone) = variant(&s.project, seq, Some(kind), false) {
-                out.push(Overlay { kind, name: it.name.clone(), start: it.start.max(from), end: it.end().min(to), alone });
-            }
+            out.push(Overlay { kind: Kind::Graphic(it.id), name: it.name.clone(), start: it.start.max(from), end: it.end().min(to) });
         }
     }
     if only.is_none() {
         for (i, t) in q.caption_tracks.iter().enumerate().filter(|(_, t)| t.enabled) {
             for c in t.captions.iter().filter(|c| c.start < to && c.start + c.duration > from) {
-                let kind = Kind::Caption(i, c.id);
                 let name: String = c.text.chars().take(40).collect();
-                if let Some(alone) = variant(&s.project, seq, Some(kind), false) {
-                    out.push(Overlay { kind, name, start: c.start.max(from), end: (c.start + c.duration).min(to), alone });
-                }
+                out.push(Overlay { kind: Kind::Caption(i, c.id), name, start: c.start.max(from), end: (c.start + c.duration).min(to) });
             }
         }
     }
@@ -253,164 +252,223 @@ fn overlays(s: &Session, seq: filmagic_project::ItemId, from: Tick, to: Tick, on
     out
 }
 
-fn check(s: &mut Session, p: &Value) -> Result<Value> {
-    let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let q = s.project.sequence(seq).ok_or(EngineError::NoSequence)?;
-    let rate = q.frame_rate();
-    let (w, h) = (f64::from(q.settings.width.max(1)), f64::from(q.settings.height.max(1)));
-    let end = q.duration();
-    let only = match p.get("clip") {
-        None | Some(Value::Null) => None,
-        Some(_) => {
-            let c = clip_p(p, "clip").ok_or_else(|| bad(CMD, "`clip` must be a timeline clip id"))?;
-            let (_, it) = q.find_item(c).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence (`sequence_inspect` lists them)", c.0)))?;
-            if !is_overlay_clip(&s.project, it) {
-                // nothing of its own to place: say so, as a result the caller can read on
-                return Ok(json!({
-                    "ok": true,
-                    "items": [],
-                    "overlaps": [],
-                    "warnings": [],
-                    "notes": [format!("clip {} is not a graphic, title or caption, so it has no layout to check; pass a graphic clip, or leave out `clip` to check them all", c.0)],
-                }));
-            }
-            Some(c)
-        }
-    };
-    let from = seconds_p(p, "fromSeconds")?.unwrap_or(Tick::ZERO);
-    let to = seconds_p(p, "toSeconds")?.unwrap_or(end).min(end.max(Tick(1)));
-    if to <= from {
-        return Err(bad(CMD, "nothing to check between `fromSeconds` and `toSeconds` (or the sequence is empty)"));
+/// One overlay as measured: its boxes at the times looked at.
+struct Measured {
+    samples: Vec<(Tick, [f64; 4])>,
+}
+
+impl Measured {
+    /// The same box at every time looked at: a static overlay.
+    fn still(&self) -> Option<[f64; 4]> {
+        let first = self.samples.first()?.1;
+        self.samples.iter().all(|(_, b)| *b == first).then_some(first)
     }
-    let st = s.project.settings.clone();
-    let (title, action) = (safe_rect(st.title_safe, w, h), safe_rect(st.action_safe, w, h));
-    let frame = [0.0, 0.0, w, h];
-    let mut all = overlays(s, seq, from, to, only);
-    let truncated = all.len() > MAX_OVERLAYS;
-    all.truncate(MAX_OVERLAYS);
-    let footage = variant(&s.project, seq, None, true).ok_or(EngineError::NoSequence)?;
-    let mut items = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    // each overlay's box at its middle frame, for the overlap check
-    let mut mids: Vec<Option<[f64; 4]>> = Vec::new();
-    let last_frame = |o: &Overlay| rate.snap((o.end - Tick(1)).max(o.start));
-    for o in &all {
-        let mid = rate.snap(o.start + Tick((o.end - o.start).0 / 2));
-        // the first frame on screen: the frame its start falls in may still show what was before
-        let first =
-            Some(rate.snap(o.start)).filter(|f| *f >= o.start).unwrap_or_else(|| rate.tick_of(rate.frame_at(o.start).saturating_add(1))).min(last_frame(o));
-        let times = [first, mid.max(first), last_frame(o)];
-        let captions = matches!(o.kind, Kind::Caption(..));
-        let mut samples = Vec::new();
-        let mut worst: Option<(&str, [f64; 4], Tick)> = None;
-        let mut mid_box = None;
-        for (k, t) in times.iter().enumerate() {
-            if k > 0 && times[..k].contains(t) {
-                continue;
-            }
-            let Some(img) = render(s, &o.alone, seq, *t, captions) else { continue };
-            let Some(b) = drawn_box(&img, w, h) else { continue };
-            if *t == mid {
-                mid_box = Some(b);
-            }
-            samples.push(json!({"seconds": round3(t.seconds()), "box": b}));
-            let level = if outside(b, frame).iter().any(|v| *v > 0.0) || b[0] <= 0.0 || b[1] <= 0.0 || b[2] >= w || b[3] >= h {
-                Some("frame")
-            } else if outside(b, action).iter().any(|v| *v > 0.0) {
-                Some("actionSafe")
-            } else if outside(b, title).iter().any(|v| *v > 0.0) {
-                Some("titleSafe")
-            } else {
-                None
-            };
-            let rank = |l: &str| match l {
-                "frame" => 3,
-                "actionSafe" => 2,
-                _ => 1,
-            };
-            if let Some(l) = level
-                && worst.is_none_or(|(x, _, _)| rank(l) > rank(x))
-            {
-                worst = Some((l, b, *t));
-            }
+}
+
+/// Most overlapping pairs whose boxes are rendered again where both show; past it, the boxes
+/// measured on their own are compared.
+const MAX_PAIR_RENDERS: usize = 60;
+
+/// What one check works against: the sequence, its frame and its safe areas.
+struct Ctx {
+    seq: filmagic_project::ItemId,
+    rate: filmagic_time::FrameRate,
+    w: f64,
+    h: f64,
+    title: [f64; 4],
+    action: [f64; 4],
+}
+
+/// What a check says, collected as it goes.
+#[derive(Default)]
+struct Said {
+    warnings: Vec<String>,
+    notes: Vec<String>,
+    /// captions outside a safe area are usually all of a track's captions in one position: said once
+    caption_outside: Vec<(&'static str, u64, [f64; 4])>,
+}
+
+/// How far outside the safe areas a box reaches: `frame` (touches the edge), `actionSafe`, `titleSafe`.
+fn level_of(cx: &Ctx, b: [f64; 4]) -> Option<&'static str> {
+    if b[0] <= 0.0 || b[1] <= 0.0 || b[2] >= cx.w || b[3] >= cx.h {
+        Some("frame")
+    } else if outside(b, cx.action).iter().any(|v| *v > 0.0) {
+        Some("actionSafe")
+    } else if outside(b, cx.title).iter().any(|v| *v > 0.0) {
+        Some("titleSafe")
+    } else {
+        None
+    }
+}
+
+fn rank(l: &str) -> u8 {
+    match l {
+        "frame" => 3,
+        "actionSafe" => 2,
+        _ => 1,
+    }
+}
+
+/// An overlay's boxes at its first, middle and last frames, rendered with it alone; and the worst
+/// safe-area level they reach.
+fn measure(s: &Session, cx: &Ctx, o: &Overlay) -> (Measured, Tick, Option<[f64; 4]>, Option<(&'static str, [f64; 4], Tick)>) {
+    let rate = cx.rate;
+    let last = rate.snap((o.end - Tick(1)).max(o.start));
+    let mid = rate.snap(o.start + Tick((o.end - o.start).0 / 2));
+    // the first frame on screen: the frame its start falls in may still show what was before
+    let first = Some(rate.snap(o.start)).filter(|f| *f >= o.start).unwrap_or_else(|| rate.tick_of(rate.frame_at(o.start).saturating_add(1))).min(last);
+    let times = [first, mid.max(first), last];
+    let (mut samples, mut mid_box, mut worst) = (Vec::new(), None, None::<(&'static str, [f64; 4], Tick)>);
+    // built for this overlay only, and dropped before the next one
+    let Some(alone) = variant(&s.project, cx.seq, Some(o.kind), false) else { return (Measured { samples }, mid, None, None) };
+    for (k, t) in times.iter().enumerate() {
+        if k > 0 && times[..k].contains(t) {
+            continue;
         }
-        let mut item = kind_json(o.kind);
-        item["name"] = json!(o.name);
-        item["start"] = json!(round3(o.start.seconds()));
-        item["end"] = json!(round3(o.end.seconds()));
-        item["samples"] = json!(samples);
-        if samples.is_empty() {
-            item["drawn"] = json!(false);
-            warnings.push(format!(
-                "{} draws nothing visible between {:.3} s and {:.3} s (empty text, zero opacity or off the frame)",
-                who(o),
-                o.start.seconds(),
-                o.end.seconds()
-            ));
+        let Some(b) = render(s, &alone, cx.seq, *t, matches!(o.kind, Kind::Caption(..))).and_then(|img| drawn_box(&img, cx.w, cx.h)) else { continue };
+        if *t == mid {
+            mid_box = Some(b);
         }
-        item["outside"] = worst.map_or(Value::Null, |(l, _, _)| json!(l));
-        if let Some((l, b, t)) = worst {
-            let (area_name, r) = match l {
-                "frame" => ("the frame edge", frame),
-                "actionSafe" => ("the action-safe area", action),
-                _ => ("the title-safe area", title),
-            };
-            let by = outside(b, r).map(|v| v.round());
-            let what = if l == "frame" { "runs off" } else { "reaches outside" };
-            warnings.push(format!(
-                "{} {what} {area_name} at {:.3} s: its box [{:.0}, {:.0}, {:.0}, {:.0}] is past it by {:.0} px left, {:.0} top, {:.0} right, {:.0} bottom. Move it inside (`graphics.anchor` {{\"anchor\":\"…\",\"safe\":\"title\"}})",
-                who(o),
-                t.seconds(),
-                b[0], b[1], b[2], b[3],
-                by[0], by[1], by[2], by[3]
-            ));
-        }
-        // the picture under it, at its middle frame
-        if let Some(b) = mid_box
-            && let Some(under) = render(s, &footage, seq, mid, false)
-            && let Some((edges, spread)) = busyness(&under, b, w, h)
+        samples.push((*t, b));
+        if let Some(l) = level_of(cx, b)
+            && worst.is_none_or(|(x, _, _)| rank(l) > rank(x))
         {
-            let reads = if edges >= TEXT_EDGES && spread >= TEXT_CONTRAST {
-                "textLike"
-            } else if edges >= BUSY_EDGES {
-                "busy"
-            } else {
-                "calm"
-            };
-            item["under"] = json!({"edgeDensity": round3(edges), "contrast": round3(spread), "reads": reads, "seconds": round3(mid.seconds())});
-            if reads != "calm" {
-                let like = if reads == "textLike" { "busy, text-like detail (a burned-in score, logo or sign?)" } else { "busy detail" };
-                warnings.push(format!(
-                    "{} sits over {like} in the picture at {:.3} s (edge density {:.2}, contrast {:.2}): it may cover something or be hard to read. Look with `render_frame`, then move it (`graphics.anchor`) or give it a background",
-                    who(o),
-                    mid.seconds(),
-                    edges,
-                    spread
-                ));
-            }
+            worst = Some((l, b, *t));
         }
-        items.push(item);
-        mids.push(mid_box);
     }
-    // overlaps: two overlays on screen together whose boxes cross, measured where both show
-    let mut overlaps = Vec::new();
-    for i in 0..all.len() {
-        for j in i + 1..all.len() {
-            let (a, b) = (&all[i], &all[j]);
+    (Measured { samples }, mid, mid_box, worst)
+}
+
+/// What to say about an overlay that reaches outside a safe area or the frame; returns what goes in
+/// its `outside`.
+fn report_outside(cx: &Ctx, o: &Overlay, (l, b, t): (&'static str, [f64; 4], Tick), said: &mut Said) -> &'static str {
+    let (full_w, full_h) = (b[2] - b[0] >= 0.98 * cx.w, b[3] - b[1] >= 0.98 * cx.h);
+    if l == "frame" && (full_w || full_h) {
+        // a bar across the frame, a border or a full-frame overlay is meant to reach the edges
+        let span = if full_w && full_h {
+            "whole picture"
+        } else if full_w {
+            "full width"
+        } else {
+            "full height"
+        };
+        said.notes.push(format!(
+            "{} spans the {span} of the frame at {:.3} s (a bar, border or full-frame overlay): its edges are not checked against the safe areas",
+            who(o),
+            t.seconds()
+        ));
+        return "spansFrame";
+    }
+    if let (Kind::Caption(_, id), true) = (o.kind, l != "frame") {
+        said.caption_outside.push((if l == "actionSafe" { "action-safe" } else { "title-safe" }, id.0, b));
+        return l;
+    }
+    let (area_name, r) = match l {
+        "frame" => ("the frame edge", [0.0, 0.0, cx.w, cx.h]),
+        "actionSafe" => ("the action-safe area", cx.action),
+        _ => ("the title-safe area", cx.title),
+    };
+    let by = outside(b, r).map(|v| v.round());
+    let (what, past) = if l == "frame" {
+        ("touches or runs off", String::from(": it may be cut off"))
+    } else {
+        ("reaches outside", format!(": past it by {:.0} px left, {:.0} top, {:.0} right, {:.0} bottom", by[0], by[1], by[2], by[3]))
+    };
+    said.warnings.push(format!(
+        "{} {what} {area_name} at {:.3} s (box [{:.0}, {:.0}, {:.0}, {:.0}]){past}. Move it inside (`graphics.anchor` {{\"anchor\":\"…\",\"safe\":\"title\"}})",
+        who(o),
+        t.seconds(),
+        b[0],
+        b[1],
+        b[2],
+        b[3]
+    ));
+    l
+}
+
+/// What the picture under an overlay's middle-frame box is like (the heuristic).
+fn report_under(s: &Session, cx: &Ctx, footage: &Arc<Project>, o: &Overlay, b: [f64; 4], mid: Tick, said: &mut Said) -> Option<Value> {
+    let under = render(s, footage, cx.seq, mid, false)?;
+    let (edges, spread) = busyness(&under, b, cx.w, cx.h)?;
+    let reads = if edges >= TEXT_EDGES && spread >= TEXT_CONTRAST {
+        "textLike"
+    } else if edges >= BUSY_EDGES {
+        "busy"
+    } else {
+        "calm"
+    };
+    if reads != "calm" {
+        let like = if reads == "textLike" { "busy, text-like detail (a burned-in score, logo or sign?)" } else { "busy detail" };
+        said.warnings.push(format!(
+            "{} sits over {like} in the picture at {:.3} s (edge density {:.2}, contrast {:.2}): it may cover something or be hard to read. Look with `render_frame`, then move it (`graphics.anchor`) or give it a background",
+            who(o),
+            mid.seconds(),
+            edges,
+            spread
+        ));
+    }
+    Some(json!({"edgeDensity": round3(edges), "contrast": round3(spread), "reads": reads, "seconds": round3(mid.seconds())}))
+}
+
+/// One warning per safe area for all the captions outside it.
+fn report_captions(cx: &Ctx, said: &mut Said) {
+    for area_name in ["action-safe", "title-safe"] {
+        let these: Vec<&(&str, u64, [f64; 4])> = said.caption_outside.iter().filter(|c| c.0 == area_name).collect();
+        let Some(first) = these.first() else { continue };
+        let r = if area_name == "action-safe" { cx.action } else { cx.title };
+        let by = outside(first.2, r).map(|v| v.round());
+        let ids: Vec<String> = these.iter().take(6).map(|c| c.1.to_string()).collect();
+        let more = if these.len() > 6 { format!(" and {} more", these.len() - 6) } else { String::new() };
+        let line = format!(
+            "{} caption(s) reach outside the {area_name} area (captions {}{more}; the first by {:.0} px left, {:.0} top, {:.0} right, {:.0} bottom): usually the caption track's position. Move the track's captions up, or check that it is what you want",
+            these.len(),
+            ids.join(", "),
+            by[0],
+            by[1],
+            by[2],
+            by[3]
+        );
+        said.warnings.push(line);
+    }
+}
+
+/// Two overlays on screen together whose boxes cross, measured where both show (a static
+/// overlay's box is reused; at most [`MAX_PAIR_RENDERS`] pairs are rendered again). Returns the
+/// overlaps and whether some were estimated from their middle frames.
+fn find_overlaps(s: &Session, cx: &Ctx, all: &[Overlay], measured: &[Measured], said: &mut Said) -> (Vec<Value>, bool) {
+    let (mut overlaps, mut renders, mut estimated) = (Vec::new(), 0usize, false);
+    let at = |o: &Overlay, t: Tick| {
+        let v = variant(&s.project, cx.seq, Some(o.kind), false)?;
+        render(s, &v, cx.seq, t, matches!(o.kind, Kind::Caption(..))).and_then(|img| drawn_box(&img, cx.w, cx.h))
+    };
+    let mid = |m: Option<&Measured>| m.and_then(|m| m.samples.get(m.samples.len() / 2)).map(|x| x.1);
+    for (i, a) in all.iter().enumerate() {
+        for (j, b) in all.iter().enumerate().skip(i + 1) {
             let (lo, hi) = (a.start.max(b.start), a.end.min(b.end));
             if hi <= lo {
                 continue;
             }
-            let t = rate.snap(lo + Tick((hi - lo).0 / 2)).max(rate.snap(lo));
-            let at = |o: &Overlay| render(s, &o.alone, seq, t, matches!(o.kind, Kind::Caption(..))).and_then(|img| drawn_box(&img, w, h));
-            let (Some(ba), Some(bb)) = (at(a), at(b)) else { continue };
+            let t = cx.rate.snap(lo + Tick((hi - lo).0 / 2)).max(cx.rate.snap(lo));
+            let (ma, mb) = (measured.get(i), measured.get(j));
+            let boxes = match (ma.and_then(Measured::still), mb.and_then(Measured::still)) {
+                (Some(x), Some(y)) => Some((x, y)),
+                _ if renders < MAX_PAIR_RENDERS => {
+                    renders += 1;
+                    at(a, t).zip(at(b, t))
+                }
+                _ => {
+                    estimated = true;
+                    mid(ma).zip(mid(mb))
+                }
+            };
+            let Some((ba, bb)) = boxes else { continue };
             let x = intersect(ba, bb);
             let shared = area(x);
             if shared <= 0.0 || shared < OVERLAP_SHARE * area(ba).min(area(bb)) {
                 continue;
             }
             overlaps.push(json!({"a": kind_json(a.kind), "b": kind_json(b.kind), "seconds": round3(t.seconds()), "box": x, "area": shared.round()}));
-            warnings.push(format!(
+            said.warnings.push(format!(
                 "{} and {} overlap at {:.3} s over [{:.0}, {:.0}, {:.0}, {:.0}]: one covers the other. Move one (`graphics.anchor`) or change when it shows",
                 who(a),
                 who(b),
@@ -422,10 +480,86 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
             ));
         }
     }
-    let mut notes = vec![
-        "boxes are measured from the picture: where each overlay alone draws anything".to_string(),
-        "`under` is a heuristic (share of strong luma edges, luma spread under the overlay): it flags sharp, high-contrast detail such as burned-in text, not meaning".to_string(),
-    ];
+    (overlaps, estimated)
+}
+
+/// `clip`: one graphic only. `Err(result)` for a clip with no layout of its own.
+fn only_p(s: &Session, q: &Sequence, p: &Value) -> Result<std::result::Result<Option<ClipId>, Value>> {
+    if p.get("clip").is_none_or(Value::is_null) {
+        return Ok(Ok(None));
+    }
+    let c = clip_p(p, "clip").ok_or_else(|| bad(CMD, "`clip` must be a timeline clip id"))?;
+    let (_, it) = q.find_item(c).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence (`sequence_inspect` lists them)", c.0)))?;
+    if is_overlay_clip(&s.project, it) {
+        return Ok(Ok(Some(c)));
+    }
+    // nothing of its own to place: said as a result the caller can read on
+    Ok(Err(json!({
+        "ok": true,
+        "items": [],
+        "overlaps": [],
+        "warnings": [],
+        "notes": [format!("clip {} is not a graphic, title or caption, so it has no layout to check; pass a graphic clip, or leave out `clip` to check them all", c.0)],
+    })))
+}
+
+fn check(s: &mut Session, p: &Value) -> Result<Value> {
+    let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let q = s.project.sequence(seq).ok_or(EngineError::NoSequence)?;
+    let (w, h) = (f64::from(q.settings.width.max(1)), f64::from(q.settings.height.max(1)));
+    let end = q.duration();
+    let only = match only_p(s, q, p)? {
+        Ok(c) => c,
+        Err(nothing) => return Ok(nothing),
+    };
+    let from = seconds_p(p, "fromSeconds")?.unwrap_or(Tick::ZERO);
+    let to = seconds_p(p, "toSeconds")?.unwrap_or(end).min(end.max(Tick(1)));
+    if to <= from {
+        return Err(bad(CMD, "nothing to check between `fromSeconds` and `toSeconds` (or the sequence is empty)"));
+    }
+    let st = s.project.settings.clone();
+    let cx = Ctx { seq, rate: q.frame_rate(), w, h, title: safe_rect(st.title_safe, w, h), action: safe_rect(st.action_safe, w, h) };
+    let (title, action) = (cx.title, cx.action);
+    let mut all = overlays(s, seq, from, to, only);
+    let truncated = all.len() > MAX_OVERLAYS;
+    all.truncate(MAX_OVERLAYS);
+    let footage = variant(&s.project, seq, None, true).ok_or(EngineError::NoSequence)?;
+    let mut items = Vec::new();
+    let mut said = Said::default();
+    let mut measured: Vec<Measured> = Vec::new();
+    for o in &all {
+        let (m, mid, mid_box, worst) = measure(s, &cx, o);
+        let mut item = kind_json(o.kind);
+        item["name"] = json!(o.name);
+        item["start"] = json!(round3(o.start.seconds()));
+        item["end"] = json!(round3(o.end.seconds()));
+        item["samples"] = json!(m.samples.iter().map(|(t, b)| json!({"seconds": round3(t.seconds()), "box": b})).collect::<Vec<_>>());
+        if m.samples.is_empty() {
+            item["drawn"] = json!(false);
+            said.warnings.push(format!(
+                "{} draws nothing visible between {:.3} s and {:.3} s (empty text, zero opacity or off the frame)",
+                who(o),
+                o.start.seconds(),
+                o.end.seconds()
+            ));
+        }
+        item["outside"] = worst.map_or(Value::Null, |wst| json!(report_outside(&cx, o, wst, &mut said)));
+        if let Some(b) = mid_box
+            && let Some(under) = report_under(s, &cx, &footage, o, b, mid, &mut said)
+        {
+            item["under"] = under;
+        }
+        items.push(item);
+        measured.push(m);
+    }
+    report_captions(&cx, &mut said);
+    let (overlaps, estimated) = find_overlaps(s, &cx, &all, &measured, &mut said);
+    let Said { warnings, mut notes, .. } = said;
+    notes.push("boxes are measured from the picture: where each overlay alone draws anything".into());
+    notes.push("`under` is a heuristic (share of strong luma edges, luma spread under the overlay): it flags sharp, high-contrast detail such as burned-in text, not meaning".into());
+    if estimated {
+        notes.push(format!("more than {MAX_PAIR_RENDERS} pairs of moving overlays share the screen: the rest were compared at their middle frames"));
+    }
     if truncated {
         notes.push(format!("only the first {MAX_OVERLAYS} graphics and captions were checked; pass `fromSeconds`/`toSeconds` to check the rest"));
     }

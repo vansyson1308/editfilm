@@ -750,6 +750,31 @@ pub(crate) fn anchor_clip(s: &mut Session, clip: ClipId, p: &Value) -> Result<Va
         return Err(bad(ID, format!("clip {} has no graphic layers to place", clip.0)));
     }
     let (boxes, size) = layer_boxes(s, clip, &(0..n).collect::<Vec<_>>())?;
+    let mut warnings = Vec::new();
+    // the layers are placed on the graphic's canvas: that is the frame only when the clip's own
+    // Motion leaves it where it is and the canvas is the sequence's size
+    if let Some((q, it)) = s.active_sequence().and_then(|q| q.find_item(clip).map(|(_, it)| (q, it))) {
+        let t = s.playhead().clamp(it.start, it.end() - Tick(1));
+        let m = filmagic_render::motion_matrix(q, it, size, None, it.effect_time_at(t));
+        let near = |x: f64, y: f64| (x - y).abs() < 1e-6;
+        let identity = near(m.a, 1.0) && near(m.b, 0.0) && near(m.c, 0.0) && near(m.d, 1.0) && near(m.e, 0.0) && near(m.f, 0.0);
+        if !identity {
+            let index = it.effects.iter().position(|e| e.effect == "motion").unwrap_or(0);
+            return Err(bad(
+                ID,
+                format!(
+                    "clip {} is moved, scaled or turned by its Motion effect, so its layers are not where the frame's safe areas are; reset Motion first (`effects.reset` {{\"clip\":{},\"index\":{index}}}) or place it with Motion ▸ Position",
+                    clip.0, clip.0
+                ),
+            ));
+        }
+        if (q.settings.width, q.settings.height) != size {
+            warnings.push(format!(
+                "the graphic's canvas is {}×{} but the sequence is {}×{}: the area is the canvas's",
+                size.0, size.1, q.settings.width, q.settings.height
+            ));
+        }
+    }
     let (w, h) = (f64::from(size.0), f64::from(size.1));
     let area = crate::layout_check::named_safe(&s.project.settings, safe, w, h).ok_or_else(|| bad(ID, "`safe` must be \"title\", \"action\" or \"frame\""))?;
     let r = [area[0] + margin, area[1] + margin, area[2] - margin, area[3] - margin];
@@ -760,7 +785,6 @@ pub(crate) fn anchor_clip(s: &mut Session, clip: ClipId, p: &Value) -> Result<Va
     let (bw, bh) = (u[2] - u[0], u[3] - u[1]);
     let dx = r[0] + (r[2] - r[0] - bw) * ax - u[0];
     let dy = r[1] + (r[3] - r[1] - bh) * ay - u[1];
-    let mut warnings = Vec::new();
     if bw > r[2] - r[0] || bh > r[3] - r[1] {
         warnings.push(format!(
             "the graphic ({bw:.0}×{bh:.0} px) is larger than the {safe}-safe area ({:.0}×{:.0} px): it cannot fit; make it smaller",
@@ -771,7 +795,10 @@ pub(crate) fn anchor_clip(s: &mut Session, clip: ClipId, p: &Value) -> Result<Va
     let moves: Vec<(usize, Vec2)> = boxes.iter().map(|(ei, pos, _)| (*ei, Vec2::new(pos.x + dx, pos.y + dy))).collect();
     move_layers(s, clip, moves, "Anchor Graphic")?;
     let placed = [u[0] + dx, u[1] + dy, u[2] + dx, u[3] + dy].map(|v| (v * 10.0).round() / 10.0);
-    Ok(json!({"clip": clip.0, "anchor": name, "safe": safe, "area": r, "box": placed, "moved": [dx, dy], "warnings": warnings}))
+    let at = s.playhead();
+    Ok(
+        json!({"clip": clip.0, "anchor": name, "safe": safe, "area": r, "box": placed, "moved": [dx, dy], "atSeconds": (at.seconds() * 1000.0).round() / 1000.0, "warnings": warnings, "note": "the layers moved where they are at the playhead; an animated Position got a keyframe there, other keyframes are unchanged"}),
+    )
 }
 
 /// Graphics ▸ Distribute: equal centre spacing, or (`space`) equal gaps between the layers.
@@ -1124,7 +1151,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Anchor Graphic",
             &[],
             None,
-            r#"{"clip":id?,"anchor":"topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight","safe":"title|action|frame"="title" (the area: Project Settings safe margins),"margin":px=0} (moves all its layers together; `layout.check` reports what overlaps or leaves the safe areas)"#,
+            r#"{"clip":id?,"anchor":"topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight","safe":"title|action|frame"="title" (the area: Project Settings safe margins; "none" is the frame),"margin":px=0} (moves all its layers together; `layout.check` reports what overlaps or leaves the safe areas)"#,
             has_graphic,
             |s, p| {
                 let clip = target_clip(s, p)

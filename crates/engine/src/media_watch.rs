@@ -164,6 +164,8 @@ impl Session {
                 }
             }
             self.media.insert_file(id, &path, src);
+            // the cuts found in the old file say nothing about the new one
+            self.source_cuts.forget(id);
             refreshed.push(id);
         }
         self.bump_view();

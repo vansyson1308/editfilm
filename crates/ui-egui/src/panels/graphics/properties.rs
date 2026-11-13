@@ -819,6 +819,7 @@ pub fn properties(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
             p["begin"] = json!(begun != press);
             wrote = true;
         }
+        let p = super::interactive_params(&cmd, p);
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
         }
