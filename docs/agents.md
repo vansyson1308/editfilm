@@ -186,6 +186,75 @@ is, to find it again. An explicit `time` keeps its place, outside the clip too, 
 only the playhead (when no `time` is given) is held to the clip's last tick. `effects.deleteKeyframe`
 returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at `mediaTime`).
 
+Keyframes by timeline time: `effects.setKeyframe`, `effects.setInterpolation`, `effects.deleteKeyframe`
+and `effects.moveKeyframe` take either `mediaTime` (the keyframe's source time, exact) or `time`
+(timeline time, e.g. `{"seconds": 52.5}`; the keyframe nearest it within half a frame). The engine
+turns timeline time into the clip's media time through its speed, reverse and frame hold, as
+rendering does, and the reply says which keyframe it was (`mediaTime`, `mediaSeconds`). With Hold
+Filters on, every timeline time of a held clip maps to the hold's media time, so `time` reaches only
+the keyframe there; give `mediaTime` for the others.
+`effects.setParam` takes `ease` (`linear`, `bezier`, `autoBezier`, `continuousBezier`, `hold`,
+`easeIn`, `easeOut`, the names `effects.setInterpolation` takes) to set the value, its keyframe and
+its easing in one call and one undo step:
+
+```json
+{"clip": 7, "param": "scale", "value": 130, "keyframe": true, "time": {"seconds": 52.5}, "ease": "easeOut"}
+```
+
+An unknown easing name is an error (it used to mean linear).
+
+### Time values
+
+Every parameter whose doc types it as ticks (`ticks`, `mediaTicks`, `timelineTicks`) takes the same
+forms. An integer is ticks (254 016 000 000 per second), as it always was; an object gives the time
+in another unit. The examples are all 52.5 s, the last two in a 24 fps time base:
+
+| Form | Example | Counts in |
+|---|---|---|
+| ticks | `"time": 13335840000000` | ticks |
+| seconds | `"time": {"seconds": 52.5}` | seconds |
+| frame | `"time": {"frame": 1260}` | frames at the rate of the time base |
+| timecode | `"time": {"timecode": "00:00:52:12"}` | `HH:MM:SS:FF` at the rate of the time base; `"+10"` / `"-00:00:01:00"` count from the playhead |
+
+Parameters typed in seconds (`seconds`, `durationSeconds`, `fromSeconds`, …) or frames
+(`durationFrames`, `deltaFrames`, …) keep their own unit and are not time objects.
+
+The doc says which time base each value is in:
+
+- `ticks`: sequence time, from the start of the sequence (00:00:00:00), at the sequence frame rate.
+- `mediaTicks` (and `mediaTime`, `sourceIn`, `time` with `"target": "source"`, and `time` of
+  `clip.frameHoldOptions` with `"holdOn": "sourceTimecode"`): source time, the media time of the
+  clip or item the command acts on (the `item`, `items`, `clip` or `clips` it names, else what it
+  falls back to: the selection, the Source Monitor's item), at that media's frame rate. A timecode
+  is the media's own: its start timecode (10:00:00:00 on many cameras) is subtracted. A relative
+  timecode counts from the Source Monitor's playhead when the item is open there, else from the
+  media's first frame.
+- `delta` and `timelineTicks`: a signed offset of sequence time.
+- `duration` and the graphics roll and responsive timings (`preroll`, `easeIn`, `intro`, …): a
+  length of sequence time.
+
+Commands that already took `seconds`, `frame` or `timecode` as separate keys (`playhead.set`,
+`timeline.place`, `markers.markIn`, …) still do. Prefer the object form: a separate `seconds` key
+means a duration in some commands (`graphics.newText`). A value the engine cannot use is an
+error that names the parameter: a non-number, a number beyond the tick range (about ±420 days), a
+negative absolute time or length, a fractional frame, a timecode that does not parse or is longer
+than 64 characters, or a frame or timecode where there is no usable frame rate (give seconds
+then).
+
+`probe` (CLI) reports `durationSeconds`, `durationFrames` (at the video frame rate) and, per audio
+stream, `durationSamples` next to `duration` in ticks; `project.inspect` reports `durationSeconds`,
+`durationFrames` and `frameRate` for each item.
+
+A graphic, title, still or caption that a command places or lengthens past the last picture frame
+(`graphics.new*`, `graphics.template.apply`, `graphics.resetDuration`, `captions.add`,
+`timeline.place`) is still placed, and the result says so. The picture is the sequence's footage:
+other titles, stills and captions do not count. `warnings` gives the overrun in seconds and frames
+and the call that fixes it: a `timeline.trim` (or `captions.trim`) that ends it with the picture,
+or, for one that starts at or after the picture's end, a `timeline.delete` (or `captions.delete`).
+`pastSequenceEnd` gives the same as data (`start`, `end`, `pictureEnd`, `over`, `overSeconds`,
+`overFrames`, `whollyPast`, `fix`). These commands answer an object; the warning is added to it.
+There is no trim option: an end card may run on past the last shot on purpose.
+
 ### Tools
 
 | Tool | Modes | Purpose |
@@ -395,8 +464,7 @@ print(call("engine.execute", command="sequence.inspect"))
 
 Notes:
 
-- Time is in ticks (254 016 000 000 per second). Commands also accept `seconds`, `frame` or
-  `timecode`.
+- Time values: see [Time values](#time-values) above.
 - A track parameter (`track`, `audioTrack`) is a track id or a name such as `"V1"` / `"A2"`.
   Leaving it out picks the command's default track; naming a track the sequence does not have is
   an "invalid parameters" error, never a different track.
