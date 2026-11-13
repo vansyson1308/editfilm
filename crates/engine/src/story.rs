@@ -75,7 +75,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             label: "Story Board",
             menu: &[],
             shortcut: None,
-            params: r#"{"path":str,"item":id? (frames across this clip's rushes; default: one frame per shot of the active sequence),"count":n=12 (item),"fromSeconds":f64?,"toSeconds":f64?,"columns":n=4,"width":px=320,"max":n=48,"labels":bool=true}"#,
+            params: r#"{"path":str,"item":id? (frames across this clip's rushes, cells after a cut inside the source marked "| CUT"; default: one frame per shot of the active sequence),"count":n=12 (item),"fps":f64? | "step":seconds? (sample densely instead: one frame every step across fromSeconds..toSeconds, at most 96 frames),"fromSeconds":f64?,"toSeconds":f64?,"columns":n=4,"width":px=320,"max":n=48,"labels":bool=true}"#,
             enabled: crate::commands::always,
             run: board,
             journal: false,
@@ -1168,7 +1168,15 @@ fn sequence_cells(s: &Session, p: &Value, width: f64, max: usize, columns: usize
 }
 
 /// `count` frames spread evenly across a project item's media.
-fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, columns: usize) -> Result<(Vec<Cell>, (u32, u32))> {
+fn item_cells(
+    s: &Session,
+    p: &Value,
+    item: ItemId,
+    width: f64,
+    count: usize,
+    columns: usize,
+    step: Option<Tick>,
+) -> Result<(Vec<Cell>, (u32, u32), (Tick, Tick))> {
     const CMD: &str = "story.board";
     let pi = s.project.item(item).ok_or_else(|| bad(CMD, format!("no project item {}", item.0)))?;
     let (lo, hi) = item_span(s, item, pi);
@@ -1181,20 +1189,116 @@ fn item_cells(s: &Session, p: &Value, item: ItemId, width: f64, count: usize, co
     let (w, h) = filmagic_render::source_size(&s.project, item).ok_or_else(|| bad(CMD, format!("`{}` has no picture", pi.name)))?;
     // media is decoded as it is stored; anamorphic footage is shown wider than that
     let par = filmagic_render::source_par(&s.project, item).map_or((1, 1), filmagic_project::sane_par);
-    board_budget(count, columns, width, (w, h), par, CMD)?;
+    let times: Vec<Tick> = match step {
+        Some(step) => dense_times(from, to, step, rate, CMD)?,
+        // the middle of each of `count` equal parts
+        None => (0..count).map(|k| rate.snap(from + Tick((to - from).0 / (count as i64 * 2) * (2 * k as i64 + 1)))).collect(),
+    };
+    board_budget(times.len(), columns, width, (w, h), par, CMD)?;
     let scale = (width / f64::from(w.max(1))).clamp(0.01, 1.0) as f32;
     let provider = s.media.provider(s.project.clone(), s.services.clone());
     let mut cells = Vec::new();
-    for k in 0..count {
-        // the middle of each of `count` equal parts
-        let t = rate.snap(from + Tick((to - from).0 / (count as i64 * 2) * (2 * k as i64 + 1)));
+    for (k, t) in times.into_iter().enumerate() {
         let Some(image) = filmagic_render::render_item(&s.project, item, t, scale, &provider) else { continue };
-        cells.push(Cell { image, label: format!("{}  {}", k + 1, clock(t)), info: json!({"index": k + 1, "at": time_json(t, rate)}) });
+        let label = if step.is_some() { format!("{}  {}", k + 1, fine_clock(t)) } else { format!("{}  {}", k + 1, clock(t)) };
+        cells.push(Cell { image, label, info: json!({"index": k + 1, "at": time_json(t, rate)}) });
     }
     if cells.is_empty() {
         return Err(bad(CMD, format!("no frame of `{}` could be decoded", pi.name)));
     }
+    Ok((cells, par, (from, to)))
+}
+
+/// Most frames a densely sampled board (`fps` / `step`) shows.
+const MAX_DENSE: i64 = 96;
+
+/// `fps` or `step` (seconds): sample a range densely instead of one frame per shot or part.
+fn dense_step_p(p: &Value, cmd: &str) -> Result<Option<Tick>> {
+    let num = |key: &str, lo: f64, hi: f64, what: &str| -> Result<Option<f64>> {
+        match p.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v.as_f64().filter(|x| x.is_finite() && (lo..=hi).contains(x)).map(Some).ok_or_else(|| bad(cmd, format!("`{key}` must be {what}"))),
+        }
+    };
+    match (num("fps", 0.01, 120.0, "frames per second, from 0.01 to 120")?, num("step", 1.0 / 120.0, 3600.0, "seconds between frames, from 1/120 to 3600")?) {
+        (Some(_), Some(_)) => Err(bad(cmd, "give `fps` or `step`, not both")),
+        (Some(f), None) => Ok(Some(Tick::from_seconds_f64(1.0 / f))),
+        (None, Some(x)) => Ok(Some(Tick::from_seconds_f64(x))),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Times every `step` from `from` up to `to`, on `rate`'s frames; refused past [`MAX_DENSE`].
+fn dense_times(from: Tick, to: Tick, step: Tick, rate: FrameRate, cmd: &str) -> Result<Vec<Tick>> {
+    let step = step.max(Tick(1));
+    let span = (to - from).0.max(0);
+    let n = (span / step.0 + i64::from(span % step.0 != 0)).max(1);
+    if n > MAX_DENSE {
+        let fit = step.seconds() * MAX_DENSE as f64;
+        return Err(bad(
+            cmd,
+            format!(
+                "{:.2} s at one frame every {:.3} s is {n} frames; a board holds {MAX_DENSE}: pass `fromSeconds`/`toSeconds` at most {fit:.2} s apart, or lower `fps`",
+                (to - from).seconds(),
+                step.seconds()
+            ),
+        ));
+    }
+    let mut v: Vec<Tick> = (0..n).map(|k| rate.snap(from + Tick(step.0.saturating_mul(k)))).filter(|t| *t < to.max(from + Tick(1))).collect();
+    v.dedup();
+    Ok(v)
+}
+
+/// A time to the hundredth of a second, for densely sampled boards.
+fn fine_clock(t: Tick) -> String {
+    let sec = t.seconds().max(0.0);
+    format!("{}:{:05.2}", (sec / 60.0).floor() as u64, sec % 60.0)
+}
+
+/// Program frames every `step` across `fromSeconds`…`toSeconds` of the active sequence.
+fn dense_sequence_cells(s: &Session, p: &Value, width: f64, columns: usize, step: Tick) -> Result<(Vec<Cell>, (u32, u32))> {
+    const CMD: &str = "story.board";
+    let (_, q) = active(s, CMD)?;
+    let rate = q.frame_rate();
+    let end = q.duration();
+    let from = seconds_bound(p, "fromSeconds", CMD)?.unwrap_or(Tick::ZERO).min(end);
+    let to = seconds_bound(p, "toSeconds", CMD)?.unwrap_or(end).min(end);
+    if to <= from {
+        return Err(bad(CMD, "nothing to show between `fromSeconds` and `toSeconds` (the sequence ends at that time)"));
+    }
+    let times = dense_times(from, to, step, rate, CMD)?;
+    let par = filmagic_project::sane_par(q.settings.par);
+    board_budget(times.len(), columns, width, (q.settings.width, q.settings.height), par, CMD)?;
+    let scale = (width / f64::from(q.settings.width.max(1))).clamp(0.01, 1.0) as f32;
+    let mut cells = Vec::new();
+    for (k, t) in times.into_iter().enumerate() {
+        let image = s.try_render_program_at(scale, t)?;
+        cells.push(Cell { image, label: format!("{}  {}", k + 1, fine_clock(t)), info: json!({"index": k + 1, "at": time_json(t, rate)}) });
+    }
     Ok((cells, par))
+}
+
+/// Frames of new media a board may decode to mark the cuts inside an item's source.
+const BOARD_CUT_FRAMES: i64 = 1440;
+
+/// Mark the cells of an item board that follow a cut inside the source; returns the cuts found
+/// and whether the whole span was checked.
+fn mark_source_cuts(s: &mut Session, item: ItemId, span: (Tick, Tick), cells: &mut [Cell]) -> Option<(Vec<Tick>, bool)> {
+    let (cuts, complete) = crate::source_cuts::known_cuts(s, item, span.0, span.1, BOARD_CUT_FRAMES)?;
+    let mut prev = span.0 - Tick(1);
+    let mut shot = 1 + cuts.iter().filter(|c| **c <= span.0).count();
+    for c in cells.iter_mut() {
+        let Some(t) = c.info["at"]["time"].as_i64().map(Tick) else { continue };
+        let before: Vec<f64> = cuts.iter().filter(|x| **x > prev && **x <= t).map(|x| round3(x.seconds())).collect();
+        if !before.is_empty() {
+            shot += before.len();
+            c.label.push_str("  | CUT");
+            c.info["cutBefore"] = json!(before);
+        }
+        c.info["sourceShot"] = json!(shot);
+        prev = t;
+    }
+    Some((cuts, complete))
 }
 
 fn count_p(p: &Value, key: &str, default: usize, range: std::ops::RangeInclusive<u64>, cmd: &str) -> Result<usize> {
@@ -1223,10 +1327,17 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
     let columns = count_p(p, "columns", 4, 1..=12, CMD)?;
     let width = count_p(p, "width", 320, 64..=1280, CMD)? as f64;
     let labels = flag_p(p, "labels", true, CMD)?;
+    let step = dense_step_p(p, CMD)?;
+    let mut source = None;
     let (cells, truncated, par, of) = match item_p(p, "item") {
         Some(item) => {
-            let (c, par) = item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?, columns)?;
+            let (mut c, par, span) = item_cells(s, p, item, width, count_p(p, "count", 12, 1..=96, CMD)?, columns, step)?;
+            source = mark_source_cuts(s, item, span, &mut c).map(|x| (item, x));
             (c, false, par, "item")
+        }
+        None if let Some(st) = step => {
+            let (c, par) = dense_sequence_cells(s, p, width, columns, st)?;
+            (c, false, par, "sequence")
         }
         None => {
             let (c, t, par) = sequence_cells(s, p, width, count_p(p, "max", 48, 1..=96, CMD)?, columns)?;
@@ -1243,7 +1354,7 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
     let img = contact_sheet(&laid, sheet).ok_or_else(|| bad(CMD, "the board would be too large; lower `width`, `max` or `count`"))?;
     let bytes = filmagic_export::still::encode(&img, filmagic_export::still::StillFormat::Png, 8).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    Ok(json!({
+    let mut out = json!({
         "path": path,
         "of": of,
         "width": img.w,
@@ -1252,7 +1363,22 @@ fn board(s: &mut Session, p: &Value) -> Result<Value> {
         "truncated": truncated,
         "cells": info,
         "note": "read it like a page: left to right, top to bottom. Frames that sit far apart in the film sit side by side here",
-    }))
+    });
+    if let Some(step) = step {
+        out["step"] = json!(round3(step.seconds()));
+    }
+    if let Some((item, (cuts, complete))) = source {
+        // cells after a cut inside the source are labelled "| CUT" and carry `cutBefore`
+        out["sourceCuts"] = json!(cuts.iter().map(|c| round3(c.seconds())).collect::<Vec<_>>());
+        out["sourceCutsComplete"] = json!(complete);
+        if !complete {
+            out["notes"] = json!([format!(
+                "cuts inside the source were looked for in part of this span only; run `media.sourceCuts` {{\"item\":{}}} (repeat with its `next`) and draw the board again to mark them all",
+                item.0
+            )]);
+        }
+    }
+    Ok(out)
 }
 
 fn split_edit(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1413,8 +1539,19 @@ fn shadow_cut(s: &mut Session, p: &Value) -> Result<Value> {
 /// The clips of the active sequence, track by track, in a form short enough to read: what an
 /// agent needs to pick a clip id without wading through every effect parameter.
 fn list_clips(s: &mut Session, p: &Value) -> Result<Value> {
+    let (id, _) = active(s, "sequence.clips")?;
+    list_clips_in(s, id, p)
+}
+
+/// [`list_clips`] of sequence `id`, with only the `track` given (a name such as "V1" or an id).
+pub(crate) fn list_clips_of(s: &Session, id: ItemId, track: Option<&Value>) -> Result<Value> {
+    let p = track.map_or_else(|| json!({}), |t| json!({"track": t}));
+    list_clips_in(s, id, &p)
+}
+
+fn list_clips_in(s: &Session, id: ItemId, p: &Value) -> Result<Value> {
     const CMD: &str = "sequence.clips";
-    let (id, q) = active(s, CMD)?;
+    let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
     let rate = q.frame_rate();
     let (from, to) = (seconds_bound(p, "fromSeconds", CMD)?, seconds_bound(p, "toSeconds", CMD)?);
     let only = match p.get("track") {
@@ -1499,6 +1636,17 @@ fn list_clips(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn program_rgba(s: &Session, t: Tick) -> Option<(Vec<u8>, usize, usize)> {
     let q = s.active_sequence()?;
     let img = s.try_render_program_at(analysis_scale(q), t).ok()?;
+    Some((img.over_black_rgba8(), img.w, img.h))
+}
+
+/// [`program_rgba`] of another version of the project (the same sequence id, media from the
+/// session's pool): for "what if this layer were not there" comparisons.
+pub(crate) fn program_rgba_of(s: &Session, project: &std::sync::Arc<Project>, t: Tick, captions: bool) -> Option<Frame> {
+    let seq = s.state.active_sequence?;
+    let q = project.sequence(seq)?;
+    let provider = s.media.provider(project.clone(), s.services.clone());
+    let opts = filmagic_render::RenderOptions { scale: analysis_scale(q), captions, ..Default::default() };
+    let img = filmagic_render::render_sequence(project, seq, q.frame_rate().snap(t.max(Tick::ZERO)), opts, &provider);
     Some((img.over_black_rgba8(), img.w, img.h))
 }
 

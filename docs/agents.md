@@ -193,13 +193,14 @@ returns `{"removed": true}` or `{"removed": false}` (no keyframe sat exactly at 
 | `command_list` | both | every command: id, label, menu, shortcut, params, enabled now (`filter`, `enabled_only`) |
 | `command_run` | both | run a command `{id, params}`; edits are undoable |
 | `command_batch` | both | run several commands in order `{steps: [{id, params}], stop_on_error}` → `{completed, failed, results}` |
-| `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`) |
-| `render_preview` | both | same as `render_frame` |
+| `doc_inspect` | both | the project tree and the active sequence in one call (`project_inspect` + `sequence_inspect`); takes the same filters as `sequence_inspect` |
+| `render_preview` | both | a still: same as `render_frame` |
+| `render_motion` | both | a few seconds of the sequence moving: an animated GIF returned as an image, or (`format: "mp4"`) an MP4 file whose path is returned (`from_seconds`, `to_seconds`, `fps`, `width`; at most 10 s, 30 fps, 640 px). Read-only |
 | `project_inspect` | both | bins and items with ids, types, durations; active sequence |
-| `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection |
+| `sequence_inspect` | both | the active sequence: tracks, clips (`start` / `end` and `sourceIn` / `sourceOut` in ticks, frames, `speed`, `reverse`: the clip plays its `sourceIn` to `sourceOut` stretch backward, `gainDb`), effects, transitions, markers (name and `comment`), playhead, selection. Filters: `clip` (an id or a list), `track` (`"V1"`, `"A2"` or an id), `effect` (id or name: only clips with it, and only it); `compact: true` gives one short entry per clip as `sequence.clips` does, with `changed` listing only parameters that differ from their defaults |
 | `media_import` | both | import files by absolute path (`paths`, an array; optional `bin`, `image_sequence`) |
 | `render_frame` | both | PNG of the program frame at `seconds` (headless renders; bridge screenshots the Program monitor). Read-only: the playhead and selection are left as they were. Parallel bridge calls take turns, so each returns its own frame |
-| `story_board` | both | PNG of one representative frame per shot of the active sequence, or of `count` frames across a project `item`'s rushes, with what each frame is as JSON (`item`, `count`, `max`, `from_seconds`, `to_seconds`, `columns`, `width`, `labels`). Read-only |
+| `story_board` | both | PNG of one representative frame per shot of the active sequence, or of `count` frames across a project `item`'s rushes, with what each frame is as JSON (`item`, `count`, `max`, `from_seconds`, `to_seconds`, `columns`, `width`, `labels`). `fps` or `step` samples `from_seconds`..`to_seconds` densely instead (up to 96 frames: 12 fps for 8 s). An `item` board marks the cells after a cut inside its source (`\| CUT`, `cutBefore`, `sourceShot`). Read-only |
 | `ui_inspect` | bridge | UI state: tool, workspace, panels, zoom, playback, fps |
 | `ui_elements` | bridge | on-screen interactive elements with id, label and rect (`prefix` filter) |
 | `ui_click` | bridge | click by `id` or `x`,`y`; `button`, `count`, `modifiers` |
@@ -224,6 +225,47 @@ Two habits make these reliable. Read `warnings` and `notes` in every result: the
 command could not do. And read `pictureChange` after a command that alters the picture: `subtle`
 means a viewer will not notice it. A region read off a rendered frame takes `"space":"frame"`
 when the clip is moved, zoomed or turned.
+
+### Checking what you made
+
+A still frame cannot show motion, and a rendered frame does not say what covers what. These close
+the gaps:
+
+- **Motion.** `render_motion` returns a short animated GIF (or MP4) of a range: check a transition,
+  a zoom, slow motion or an action in it. `story_board` with `fps` (or `step`) lays out a short
+  range frame by frame: `{"fps": 12, "from_seconds": 31.0, "to_seconds": 33.0}` shows a door closing
+  at 12 frames per second.
+- **Cuts inside a source file.** Long recordings and compilations hold shot changes of their own.
+  `media.sourceCuts {item|clip, fromSeconds?, toSeconds?}` lists them (media seconds, and timeline
+  seconds for a `clip`; up to 7200 frames per call, `next` says where to continue). After
+  `timeline.razor`, `sequence.addEdit`, `sequence.addEditAllTracks`, `clip.speedDuration`,
+  `timeline.rateStretch`, `clip.frameHold`, `clip.frameHoldOptions`, `clip.insertFrameHoldSegment`
+  or a Time Remapping change, the result's `warnings` say when the edit lands within 3 frames of
+  such a cut, or the retimed clip straddles one, with the cut's time; `sourceCuts` has the details.
+  Each edit checks at most 240 new frames; what it could not check is in `notes`. Results are cached
+  per media item, so later checks are instant. The detection is Scene Edit Detection's measure at
+  its default sensitivity.
+- **Layout.** `layout.check {fromSeconds?, toSeconds?, clip?}` measures every graphic, title and
+  caption in the range from the picture (the frame rendered with it alone) and reports overlaps,
+  boxes outside the title-safe or action-safe area or off the frame, and overlays over busy or
+  text-like picture (`under.reads`: `calm`, `busy`, `textLike`). The safe areas are Project
+  Settings ▸ General's: by default title safe 20 % and action safe 10 %, the per cent of the
+  frame's width and height left as a margin, half on each side (on a 1920×1080 frame title safe is
+  192–1728 × 108–972). The busy-picture test is a **heuristic**: the share of strong luma edges
+  under the overlay (`edgeDensity`; busy from 0.06, text-like from 0.10 with a luma spread
+  `contrast` of 0.12 or more). It finds sharp, high-contrast detail such as a burned-in scoreboard,
+  not meaning: a striped shirt reads busy too, and soft text can be missed, so look at the frame.
+- **Placing graphics.** `graphics.anchor {clip, anchor, safe="title", margin=0}` moves a graphic's
+  layers together to `topLeft`, `top`, `topRight`, `left`, `center`, `right`, `bottomLeft`, `bottom`
+  or `bottomRight` of the title-safe area, the action-safe area or the frame.
+  `graphics.template.apply` takes the same `anchor`, `safe` and `margin`.
+- **Does it show?** `graphics.set` returns what it stored (`accepted`, values as you write them),
+  `pictureChange` (how much this call changed the picture) and `layerShows` (the frame with the
+  layer against the frame without it). A black band at 50 % opacity over dark footage reads
+  `subtle` or `none` in `layerShows`: raise its opacity or change its colour.
+- **Reading a sequence.** `sequence_inspect` with `compact: true`, or a `clip`, `track` or `effect`
+  filter, is a fraction of the full answer. `effects.list {"effect": "Gaussian Blur"}` gives one
+  effect's parameters with their ids, types, ranges, units and defaults.
 
 ### Conventions
 

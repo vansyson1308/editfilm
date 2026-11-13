@@ -126,3 +126,44 @@ pub fn psnr(a: &[u8], b: &[u8]) -> f64 {
     }
     if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / (se / n)).log10() }
 }
+
+/// Write a 24 fps ProRes movie of demo scenes played one after the other (`shots` = (scene,
+/// frames)), with no sound: it holds cuts of its own at the running sums of the frame counts.
+pub fn make_shots_movie(path: &Path, shots: &[(DemoScene, i64)], w: u32, h: u32) {
+    let rate = FrameRate::FPS_24;
+    let mut p = Project::new("fixture");
+    let seq = p.new_sequence("s", SequenceSettings { width: w, height: h, frame_rate: rate, ..Default::default() }, 1, 1, None);
+    let mut sources: Vec<(ItemId, filmagic_media::SharedSource)> = Vec::new();
+    let mut at = Tick::ZERO;
+    for (k, (scene, frames)) in shots.iter().enumerate() {
+        let dur = rate.tick_of(*frames);
+        let src = GeneratorSource::new(Generator::Demo(*scene), w, h, rate, rate.tick_of(400));
+        let clip = MediaClip {
+            media: MediaRef::Generator(Generator::Demo(*scene)),
+            info: src.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        let item = p.add_item(&format!("shot{k}"), Label::Iris, ItemKind::Media(Box::new(clip)), None);
+        let mut v = p.make_track_item(item, TrackKind::Video, at, TimeRange::new(rate.tick_of(10 * k as i64), dur), rate).unwrap();
+        for e in &mut v.effects {
+            filmagic_project::resolve_auto_points(e, (w, h), (w, h));
+        }
+        p.sequence_mut(seq).unwrap().video_tracks[0].items.push(v);
+        sources.push((item, Arc::new(src)));
+        at += dur;
+    }
+    let settings = filmagic_export::ExportSettings {
+        format: filmagic_export::Format::ProRes,
+        path: path.to_string_lossy().into_owned(),
+        include_audio: false,
+        ..Default::default()
+    };
+    let provider = move |id: ItemId| sources.iter().find(|(i, _)| *i == id).map(|(_, s)| s.clone());
+    filmagic_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
+}

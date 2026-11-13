@@ -141,7 +141,7 @@ which is where a listener would blink; an actor's own blinks are not looked for.
 
 ### `story.board`
 
-`{"path":str, "item":id?, "count":n=12, "fromSeconds"?, "toSeconds"?, "columns":n=4, "width":px=320, "max":n=48, "labels":bool=true}`.
+`{"path":str, "item":id?, "count":n=12, "fps"?|"step"?, "fromSeconds"?, "toSeconds"?, "columns":n=4, "width":px=320, "max":n=48, "labels":bool=true}`.
 Read-only apart from the PNG it writes to `path`.
 
 Without `item`: one frame per shot of the active sequence, the one of five frames sampled across
@@ -151,7 +151,16 @@ Cells run left to right, top to bottom, labelled with their number and time, and
 each is. Frames are laid out as they are shown: anamorphic footage is not squeezed. `path` must
 end in `.png` and may not be a file the project reads. A board whose sheet (whole rows of cells, with the gaps between them) would exceed
 16 million pixels is refused before anything is rendered, and the message gives the size it would
-have had: lower `width`, `max` or `count`. The MCP tool `story_board` takes the same options
+have had: lower `width`, `max` or `count`.
+
+`fps` (0.01–120) or `step` (seconds) samples densely instead: one frame every step across
+`fromSeconds`…`toSeconds` (of the sequence, or of the item's media), at most 96 frames; a range that
+needs more is refused with the longest one that fits. The labels then show hundredths of a second.
+
+An `item` board also marks the cuts inside the item's source (`media.sourceCuts`): a cell after one
+is labelled `| CUT` and carries `cutBefore` (the cuts' media seconds) and `sourceShot` (which shot
+of the file it shows); `sourceCuts` lists them. A board decodes at most 1440 new frames to look for
+them; past that `sourceCutsComplete` is false and `notes` says to run `media.sourceCuts` first. The MCP tool `story_board` takes the same options
 (snake case, no `path`) and returns the image.
 
 ### `story.splitEdit`

@@ -349,9 +349,25 @@ fn apply_template(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(e);
         }
     }
+    // placed in a corner or at an edge of a safe area, in the same undo step
+    let anchored = match p.get("anchor") {
+        None | Some(Value::Null) => None,
+        Some(_) => match crate::graphics::anchor_clip(s, clip, p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                fold_undo(s, before, "Apply Graphics Template");
+                let _ = s.execute("edit.undo", json!({}));
+                return Err(e);
+            }
+        },
+    };
     fold_undo(s, before, "Apply Graphics Template");
     s.state.graphic_layers.clear();
-    Ok(json!({"clip": clip.0, "template": t.id, "name": t.name, "controls": t.controls.iter().map(control_json).collect::<Vec<_>>()}))
+    let mut out = json!({"clip": clip.0, "template": t.id, "name": t.name, "controls": t.controls.iter().map(control_json).collect::<Vec<_>>()});
+    if let Some(a) = anchored {
+        out["anchored"] = a;
+    }
+    Ok(out)
 }
 
 fn template_controls(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1192,7 +1208,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "graphics.template.apply",
             "Apply Graphics Template",
             &[],
-            r#"{"template":id|name|path,"values":{control id or name: value}?,"time":ticks?,"track":index?}"#,
+            r#"{"template":id|name|path,"values":{control id or name: value}?,"time":ticks?,"track":index?,"anchor":"topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight"? (place it there, as graphics.anchor),"safe":"title|action|frame"="title","margin":px=0}"#,
             has_seq,
             apply_template,
         ),

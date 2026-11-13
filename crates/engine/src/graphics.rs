@@ -322,6 +322,57 @@ pub(crate) fn set_props_keyed(
     Ok(counts)
 }
 
+/// A property value as an agent writes it: numbers, `[x, y]`, `"#rrggbb"` (`"#rrggbbaa"` when
+/// not opaque), text, booleans.
+pub(crate) fn plain_value(v: &ParamValue) -> Value {
+    let byte = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+    match v {
+        ParamValue::Float(f) => json!(f),
+        ParamValue::Bool(b) => json!(b),
+        ParamValue::Text(t) => json!(t),
+        ParamValue::Vec2(p) => json!([p.x, p.y]),
+        ParamValue::Choice(c) => json!(c),
+        ParamValue::Color(c) if c[3] < 1.0 => json!(format!("#{:02x}{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]))),
+        ParamValue::Color(c) => json!(format!("#{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]))),
+        other => serde_json::to_value(other).unwrap_or(Value::Null),
+    }
+}
+
+/// What `graphics.set` stored for each property it was given, read back at time `tl`, and how
+/// visible the layer is (its opacity and fill), so a near-invisible result can be told apart.
+fn accepted_json(s: &Session, clip: ClipId, ei: usize, props: &serde_json::Map<String, Value>, tl: Tick) -> Value {
+    let Some((_, it)) = s.active_sequence().and_then(|q| q.find_item(clip)) else { return json!({"clip": clip.0}) };
+    let mt = it.source_time_at(tl.clamp(it.start, it.end() - Tick(1)));
+    let Some(e) = it.effects.get(ei) else { return json!({"clip": clip.0}) };
+    let accepted: serde_json::Map<String, Value> = props
+        .keys()
+        .map(|k| {
+            let v = if k == "enabled" { json!(e.enabled) } else { e.params.get(param_id(k)).map_or(Value::Null, |p| plain_value(&p.value_at(mt))) };
+            (k.clone(), v)
+        })
+        .collect();
+    let layer = layer_indices(&it.effects).iter().position(|x| *x == ei);
+    json!({"clip": clip.0, "layer": layer, "accepted": accepted})
+}
+
+/// How much one layer shows over the picture under it at `t`: the programme with the layer
+/// against the programme without it, read as `pictureChange` is (`none`, `subtle`, …). A black
+/// band at half opacity over dark footage reads `subtle`: a viewer will hardly see it.
+fn layer_shows(s: &Session, clip: ClipId, ei: usize, t: Tick) -> Value {
+    let Some(seq) = s.state.active_sequence else { return Value::Null };
+    let mut without = (*s.project).clone();
+    let Some(e) = without.sequence_mut(seq).and_then(|q| q.find_item_mut(clip)).and_then(|(_, it)| it.effects.get_mut(ei)) else { return Value::Null };
+    e.enabled = false;
+    let without = std::sync::Arc::new(without);
+    let (a, b) = (crate::story::program_rgba_of(s, &without, t, true), crate::story::program_rgba_of(s, &s.project, t, true));
+    let mut v = crate::story::change_json(&[a], &[b]);
+    if v.is_object() {
+        v["time"] = json!(t.0);
+        v["seconds"] = json!((t.seconds() * 1000.0).round() / 1000.0);
+    }
+    v
+}
+
 /// Turn a text layer into point text (no box; the lines the box wrapped become real lines) or
 /// paragraph text (a box fitted to the text). The text stays where it is: the layer's origin
 /// moves between the first baseline and the box's top-left corner, and the anchor point is
@@ -661,6 +712,66 @@ fn align_layers(s: &mut Session, p: &Value, how: &str, mode: AlignTo) -> Result<
     }
     move_layers(s, clip, moves, "Align Layers")?;
     Ok(json!({"clip": clip.0, "layers": layers}))
+}
+
+/// `anchor` as fractions across and down the area: `topLeft` (0, 0) … `bottomRight` (1, 1).
+fn anchor_xy(name: &str) -> Option<(f64, f64)> {
+    Some(match name.to_ascii_lowercase().replace(['-', '_', ' '], "").as_str() {
+        "topleft" => (0.0, 0.0),
+        "top" | "topcenter" => (0.5, 0.0),
+        "topright" => (1.0, 0.0),
+        "left" | "centerleft" => (0.0, 0.5),
+        "center" | "middle" => (0.5, 0.5),
+        "right" | "centerright" => (1.0, 0.5),
+        "bottomleft" => (0.0, 1.0),
+        "bottom" | "bottomcenter" => (0.5, 1.0),
+        "bottomright" => (1.0, 1.0),
+        _ => return None,
+    })
+}
+
+/// `graphics.anchor`: move all of a graphic's layers together so their box sits at `anchor`
+/// inside the title-safe area (`safe`: `title`, `action` or `frame`), `margin` pixels in.
+pub(crate) fn anchor_clip(s: &mut Session, clip: ClipId, p: &Value) -> Result<Value> {
+    const ID: &str = "graphics.anchor";
+    const NAMES: &str = "topLeft, top, topRight, left, center, right, bottomLeft, bottom or bottomRight";
+    let name = str_p(p, "anchor").ok_or_else(|| bad(ID, format!("need `anchor`: {NAMES}")))?;
+    let (ax, ay) = anchor_xy(name).ok_or_else(|| bad(ID, format!("`anchor` must be {NAMES}")))?;
+    let safe = match p.get("safe") {
+        None | Some(Value::Null) => "title",
+        Some(v) => v.as_str().ok_or_else(|| bad(ID, "`safe` must be \"title\", \"action\" or \"frame\""))?,
+    };
+    let margin = match p.get("margin") {
+        None | Some(Value::Null) => 0.0,
+        Some(v) => v.as_f64().filter(|m| m.is_finite() && (0.0..=10_000.0).contains(m)).ok_or_else(|| bad(ID, "`margin` must be pixels from 0 to 10000"))?,
+    };
+    let n = s.active_sequence().and_then(|q| q.find_item(clip)).map_or(0, |(_, it)| layer_indices(&it.effects).len());
+    if n == 0 {
+        return Err(bad(ID, format!("clip {} has no graphic layers to place", clip.0)));
+    }
+    let (boxes, size) = layer_boxes(s, clip, &(0..n).collect::<Vec<_>>())?;
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    let area = crate::layout_check::named_safe(&s.project.settings, safe, w, h).ok_or_else(|| bad(ID, "`safe` must be \"title\", \"action\" or \"frame\""))?;
+    let r = [area[0] + margin, area[1] + margin, area[2] - margin, area[3] - margin];
+    if r[2] <= r[0] || r[3] <= r[1] {
+        return Err(bad(ID, "`margin` leaves no room inside the area; use a smaller one"));
+    }
+    let u = union_box(&boxes);
+    let (bw, bh) = (u[2] - u[0], u[3] - u[1]);
+    let dx = r[0] + (r[2] - r[0] - bw) * ax - u[0];
+    let dy = r[1] + (r[3] - r[1] - bh) * ay - u[1];
+    let mut warnings = Vec::new();
+    if bw > r[2] - r[0] || bh > r[3] - r[1] {
+        warnings.push(format!(
+            "the graphic ({bw:.0}×{bh:.0} px) is larger than the {safe}-safe area ({:.0}×{:.0} px): it cannot fit; make it smaller",
+            r[2] - r[0],
+            r[3] - r[1]
+        ));
+    }
+    let moves: Vec<(usize, Vec2)> = boxes.iter().map(|(ei, pos, _)| (*ei, Vec2::new(pos.x + dx, pos.y + dy))).collect();
+    move_layers(s, clip, moves, "Anchor Graphic")?;
+    let placed = [u[0] + dx, u[1] + dy, u[2] + dx, u[3] + dy].map(|v| (v * 10.0).round() / 10.0);
+    Ok(json!({"clip": clip.0, "anchor": name, "safe": safe, "area": r, "box": placed, "moved": [dx, dy], "warnings": warnings}))
 }
 
 /// Graphics ▸ Distribute: equal centre spacing, or (`space`) equal gaps between the layers.
@@ -1009,6 +1120,19 @@ fn menu_commands() -> Vec<CommandSpec> {
 pub fn commands() -> Vec<CommandSpec> {
     let mut v = vec![
         spec(
+            "graphics.anchor",
+            "Anchor Graphic",
+            &[],
+            None,
+            r#"{"clip":id?,"anchor":"topLeft|top|topRight|left|center|right|bottomLeft|bottom|bottomRight","safe":"title|action|frame"="title" (the area: Project Settings safe margins),"margin":px=0} (moves all its layers together; `layout.check` reports what overlaps or leaves the safe areas)"#,
+            has_graphic,
+            |s, p| {
+                let clip = target_clip(s, p)
+                    .ok_or_else(|| bad("graphics.anchor", "no graphic clip: pass `clip` (a graphic, title or template clip) or select one"))?;
+                anchor_clip(s, clip, p)
+            },
+        ),
+        spec(
             "graphics.newText",
             "Text",
             &["Graphics and Titles", "New Layer"],
@@ -1112,7 +1236,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Set Graphic Properties",
             &[],
             None,
-            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks? (timeline time, default the playhead: a property that is already animated gets or changes a keyframe there, any other changes its fixed value),"keyframe":bool? (true: every property in `props` gets a keyframe at `time` and becomes animated; the result lists each one's keyframe count),"merge":bool?,"begin":bool?}"##,
+            r##"{"clip":id?,"layer":n|name?,"props":{"font":"Inter","font_style":"Bold","size":120,"align":"center","tracking":50,"leading":0,"fill_color":"#ffcc00","stroke":true,"stroke_width":6,"background":true,"shadow":true,"position":[x,y],"scale":100,"rotation":0,"opacity":100,…},"time":ticks? (timeline time, default the playhead: a property that is already animated gets or changes a keyframe there, any other changes its fixed value),"keyframe":bool? (true: every property in `props` gets a keyframe at `time` and becomes animated; the result lists each one's keyframe count),"merge":bool?,"begin":bool?,"pictureChange":bool=true (false: skip measuring how much the picture changed)} -> {clip,layer,accepted:{prop: stored value},pictureChange:{reads:none|subtle|visible|strong,…},keyframes?}"##,
             has_graphic,
             |s, p| {
                 let clip = target_clip(s, p).ok_or_else(|| bad("graphics.set", "no graphic clip"))?;
@@ -1125,13 +1249,20 @@ pub fn commands() -> Vec<CommandSpec> {
                     s.history.merge_key = None;
                 }
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
+                // how much the picture changed, as `layers.adjust` reports it; not for each step of a drag
+                let span = s.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, it)| (it.start, it.end()));
+                let looks = span.filter(|_| merge.is_none() && bool_p(p, "pictureChange") != Some(false));
+                let before = looks.map(|(a, b)| crate::story::looks_across(s, a, b));
                 let counts = set_props_keyed(s, clip, ei, &props, tl, "Change Graphic Property", merge.as_deref(), keyframe)?;
-                // unchanged for a call without `keyframe`: nothing to report
+                let mut out = accepted_json(s, clip, ei, &props, tl);
                 if keyframe {
-                    Ok(json!({"keyframes": counts.into_iter().map(|(k, n)| (k, json!(n))).collect::<serde_json::Map<_, _>>()}))
-                } else {
-                    Ok(Value::Null)
+                    out["keyframes"] = Value::Object(counts.into_iter().map(|(k, n)| (k, json!(n))).collect());
                 }
+                if let (Some(before), Some((a, b))) = (before, looks) {
+                    out["pictureChange"] = crate::story::change_json(&before, &crate::story::looks_across(s, a, b));
+                    out["layerShows"] = layer_shows(s, clip, ei, tl.clamp(a, b - Tick(1)));
+                }
+                Ok(out)
             },
         ),
         spec(

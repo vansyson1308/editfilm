@@ -593,3 +593,45 @@ async fn story_and_layer_commands_run_over_the_wire() {
     let seq = text(&c.call(9, "sequence_inspect", json!({})).await);
     assert_eq!(seq["video"].as_array().map(Vec::len), Some(3), "the layer's track is gone again");
 }
+
+/// #16: a motion preview comes back as an animated GIF; inspections take filters and a compact
+/// mode; `story_board` samples a range densely.
+#[tokio::test(flavor = "multi_thread")]
+async fn motion_previews_compact_inspections_and_dense_boards() {
+    let mut c = Client::start(demo());
+    c.init().await;
+    let r = c.call(1, "render_motion", json!({"from_seconds": 0.5, "to_seconds": 1.5, "fps": 8, "width": 96})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!(r["result"]["content"][0]["mimeType"], "image/gif", "{r}");
+    let gif = base64::engine::general_purpose::STANDARD.decode(r["result"]["content"][0]["data"].as_str().unwrap()).unwrap();
+    assert!(gif.starts_with(b"GIF89a"));
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((v["frames"].as_u64(), v.get("path")), (Some(8), None), "{v}");
+    // an MP4 stays on disk for the caller
+    let r = c.call(2, "render_motion", json!({"from_seconds": 0.0, "to_seconds": 0.5, "width": 96, "format": "mp4"})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let path = v["path"].as_str().unwrap().to_string();
+    assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0), "{v}");
+    let _ = std::fs::remove_file(&path);
+    for (id, args) in [(3, json!({"format": "webm"})), (4, json!({"from_seconds": 0.0, "to_seconds": 60.0})), (5, json!({"fps": 0.0}))] {
+        let r = c.call(id, "render_motion", args.clone()).await;
+        assert_eq!(r["result"]["isError"], true, "{args}: {r}");
+    }
+    // compact and filtered inspections
+    let full = c.call(6, "sequence_inspect", json!({})).await["result"]["content"][0]["text"].as_str().unwrap().len();
+    let r = c.call(7, "sequence_inspect", json!({"compact": true})).await;
+    let compact = r["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(compact.len() * 3 < full, "{} vs {full}", compact.len());
+    let r = c.call(8, "doc_inspect", json!({"track": "V1", "compact": true})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(v["sequence"]["tracks"].as_array().map(Vec::len), Some(1), "{v}");
+    let r = c.call(9, "sequence_inspect", json!({"track": "Q7"})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let r = c.call(10, "doc_inspect", json!({"compact": "yes"})).await;
+    assert!(r.get("error").is_some() || r["result"]["isError"] == true, "{r}");
+    // a dense board: six frames a second for one second
+    let r = c.call(11, "story_board", json!({"fps": 6.0, "from_seconds": 1.0, "to_seconds": 2.0, "width": 64})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(v["cells"].as_array().map(Vec::len), Some(6), "{v}");
+}

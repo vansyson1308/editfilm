@@ -4190,17 +4190,22 @@ fn build() -> Vec<CommandSpec> {
             ))
         }),
         query!("project.inspect", "Inspect Project", "{}", |s, _| Ok(crate::commands::inspect_project(s))),
-        query!("sequence.inspect", "Inspect Sequence", r#"{"item":id?}"#, |s, p| {
-            let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
-            let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
-            Ok(inspect_sequence(s, id, q))
-        }),
+        query!(
+            "sequence.inspect",
+            "Inspect Sequence",
+            r#"{"item":id?,"clip":id|[id]? (only these clips),"track":"V1"|"A2"|id? (only this track),"effect":id|name? (only clips with this effect, and only it),"compact":bool=false (one short line per clip: seconds, changed effect parameters only)}"#,
+            |s, p| {
+                let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
+                let q = s.project.sequence(id).ok_or(EngineError::NoSequence)?;
+                inspect_filtered(s, id, q, p)
+            }
+        ),
         query!("state.inspect", "Inspect Editor State", "{}", |s, _| Ok(serde_json::to_value(&s.state).unwrap_or_default())),
         query!(
             "effects.list",
             "List Effects",
-            r#"{"kind":"Video"|"Audio"|"VideoTransition"|"AudioTransition"?,"folder":"Video Transitions/Wipe"?,"detail":bool?}"#,
-            |_, p| Ok(list_effects(p))
+            r#"{"kind":"Video"|"Audio"|"VideoTransition"|"AudioTransition"?,"folder":"Video Transitions/Wipe"?,"effect":id|name? (just this one, with detail),"detail":bool? (each parameter's id, label, type, min/max, unit, default, choices)}"#,
+            |_, p| list_effects(p)
         ),
         query!("history.list", "List History", "{}", |s, _| Ok(
             json!({"undo": s.history.undo.iter().map(|h| &h.0).collect::<Vec<_>>(), "redo": s.history.redo.iter().map(|h| &h.0).collect::<Vec<_>>()})
@@ -4221,6 +4226,9 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::story::commands());
+    v.extend(crate::source_cuts::commands());
+    v.extend(crate::layout_check::commands());
+    v.extend(crate::motion_preview::commands());
     v.extend(crate::layers::commands());
     v.extend(crate::relight::commands());
     v.extend(crate::presets::commands());
@@ -4801,14 +4809,19 @@ fn nest(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// `effects.list`: every effect definition with its Effects-panel folder (optionally filtered by
 /// kind or folder prefix); `detail` adds each parameter's label, type, default and choices.
-fn list_effects(p: &Value) -> Value {
+fn list_effects(p: &Value) -> Result<Value> {
     let kind = str_p(p, "kind");
     let folder = str_p(p, "folder");
-    let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(false);
-    let out = filmagic_project::effect_defs()
+    let one = match p.get("effect") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str().map(str::trim).filter(|e| !e.is_empty()).ok_or_else(|| bad("effects.list", "`effect` must be an effect id or name"))?),
+    };
+    let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(one.is_some());
+    let out: Vec<Value> = filmagic_project::effect_defs()
         .iter()
         .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind).eq_ignore_ascii_case(k)))
         .filter(|d| folder.is_none_or(|f| d.category.join("/").starts_with(f)))
+        .filter(|d| one.is_none_or(|e| d.id.eq_ignore_ascii_case(e) || d.name.eq_ignore_ascii_case(e)))
         .map(|d| {
             let mut v = json!({
                 "id": d.id,
@@ -4826,7 +4839,12 @@ fn list_effects(p: &Value) -> Value {
             v
         })
         .collect();
-    Value::Array(out)
+    if let Some(e) = one
+        && out.is_empty()
+    {
+        return Err(bad("effects.list", format!("no effect `{e}`; `effects.list` without `effect` lists every id and name")));
+    }
+    Ok(Value::Array(out))
 }
 
 fn param_info(p: &filmagic_project::ParamDef) -> Value {
@@ -5305,6 +5323,160 @@ pub fn inspect_sequence(s: &Session, id: ItemId, q: &filmagic_project::Sequence)
         "transitionSelection": s.state.transition_selection.iter().map(|t| t.0).collect::<Vec<_>>(),
         "gapSelection": s.state.gap_selection.map(|g| json!({"track": g.track.0, "start": g.range.start.0, "end": g.range.end().0})),
     })
+}
+
+/// What `sequence.inspect` keeps: `clip`, `track`, `effect` filters and `compact`.
+struct InspectFilter {
+    clips: Option<Vec<u64>>,
+    track: Option<String>,
+    effect: Option<String>,
+    compact: bool,
+}
+
+impl InspectFilter {
+    fn parse(p: &Value) -> Result<Self> {
+        const CMD: &str = "sequence.inspect";
+        let clips = match p.get("clip").or_else(|| p.get("clips")) {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(a)) => {
+                Some(a.iter().map(|v| v.as_u64().ok_or_else(|| bad(CMD, "`clip` must be a clip id or a list of clip ids"))).collect::<Result<Vec<_>>>()?)
+            }
+            Some(v) => Some(vec![v.as_u64().ok_or_else(|| bad(CMD, "`clip` must be a clip id or a list of clip ids"))?]),
+        };
+        let track = match p.get("track") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(t)) => Some(t.trim().to_ascii_uppercase()),
+            Some(v) => Some(v.as_u64().map(|n| n.to_string()).ok_or_else(|| bad(CMD, "`track` must be a track name like \"V1\" or \"A2\", or a track id"))?),
+        };
+        let effect = match p.get("effect") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .filter(|e| !e.trim().is_empty())
+                    .ok_or_else(|| bad(CMD, "`effect` must be an effect id or name (`effects.list`)"))?
+                    .trim()
+                    .to_ascii_lowercase(),
+            ),
+        };
+        let compact = match p.get("compact") {
+            None | Some(Value::Null) => false,
+            Some(v) => v.as_bool().ok_or_else(|| bad(CMD, "`compact` must be true or false"))?,
+        };
+        Ok(Self { clips, track, effect, compact })
+    }
+    fn any(&self) -> bool {
+        self.clips.is_some() || self.track.is_some() || self.effect.is_some() || self.compact
+    }
+    fn track_ok(&self, label: &str, t: &filmagic_project::Track) -> bool {
+        self.track.as_ref().is_none_or(|w| *w == label || *w == t.id.0.to_string() || t.name.eq_ignore_ascii_case(w))
+    }
+    fn effect_ok(&self, e: &filmagic_project::EffectInstance) -> bool {
+        self.effect_id_ok(&e.effect)
+    }
+    fn effect_id_ok(&self, id: &str) -> bool {
+        self.effect.as_ref().is_none_or(|w| id.eq_ignore_ascii_case(w) || filmagic_project::find_effect(id).is_some_and(|d| d.name.to_ascii_lowercase() == *w))
+    }
+    fn clip_ok(&self, it: &filmagic_project::TrackItem) -> bool {
+        self.clips.as_ref().is_none_or(|c| c.contains(&it.id.0)) && (self.effect.is_none() || it.effects.iter().any(|e| self.effect_ok(e)))
+    }
+}
+
+/// The parameters of an effect that differ from its defaults or are animated, as plain values.
+fn changed_params(e: &filmagic_project::EffectInstance) -> serde_json::Map<String, Value> {
+    let def = e.def();
+    e.params
+        .iter()
+        .filter(|(k, p)| !p.keyframes.is_empty() || def.and_then(|d| d.param(k)).is_none_or(|d| d.default != p.value))
+        .map(|(k, p)| {
+            let v = crate::graphics::plain_value(&p.value);
+            (k.clone(), if p.keyframes.is_empty() { v } else { json!({"value": v, "keyframes": p.keyframes.len()}) })
+        })
+        .collect()
+}
+
+/// `sequence.inspect` with filters: the full form pruned to what matches, or (`compact`) one
+/// short entry per clip.
+fn inspect_filtered(s: &Session, id: ItemId, q: &filmagic_project::Sequence, p: &Value) -> Result<Value> {
+    let f = InspectFilter::parse(p)?;
+    if !f.any() {
+        return Ok(inspect_sequence(s, id, q));
+    }
+    let tracks = || {
+        q.video_tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (format!("V{}", i + 1), t))
+            .chain(q.audio_tracks.iter().enumerate().map(|(i, t)| (format!("A{}", i + 1), t)))
+    };
+    if let Some(w) = &f.track
+        && !tracks().any(|(l, t)| f.track_ok(&l, t))
+    {
+        return Err(bad("sequence.inspect", format!("no track `{w}` in this sequence; use V1, V2… or A1, A2… or a track id")));
+    }
+    if !f.compact {
+        let mut full = inspect_sequence(s, id, q);
+        for (key, list) in [("video", &q.video_tracks), ("audio", &q.audio_tracks)] {
+            let prefix = if key == "video" { "V" } else { "A" };
+            let Some(arr) = full.get_mut(key).and_then(Value::as_array_mut) else { continue };
+            let mut kept = Vec::new();
+            let shown: Vec<Value> = arr.drain(..).collect();
+            for (i, (j, t)) in shown.into_iter().zip(list.iter()).enumerate() {
+                if !f.track_ok(&format!("{prefix}{}", i + 1), t) {
+                    continue;
+                }
+                let mut j = j;
+                if let Some(items) = j.get_mut("items").and_then(Value::as_array_mut) {
+                    items.retain(|v| v["clip"].as_u64().and_then(|c| t.items.iter().find(|it| it.id.0 == c)).is_some_and(|it| f.clip_ok(it)));
+                    if f.effect.is_some() {
+                        for v in items.iter_mut() {
+                            if let Some(fx) = v.get_mut("effects").and_then(Value::as_array_mut) {
+                                fx.retain(|e| e["effect"].as_str().is_some_and(|id| f.effect_id_ok(id)));
+                            }
+                        }
+                    }
+                }
+                let empty = j["items"].as_array().is_none_or(Vec::is_empty);
+                if f.track.is_some() || !(empty && (f.clips.is_some() || f.effect.is_some())) {
+                    j["track"] = json!(format!("{prefix}{}", i + 1));
+                    kept.push(j);
+                }
+            }
+            *arr = kept;
+        }
+        full["filter"] = json!({"clip": f.clips, "track": f.track, "effect": f.effect});
+        return Ok(full);
+    }
+    // compact: `sequence.clips` (one short entry per clip), filtered, with what was changed
+    let mut brief = crate::story::list_clips_of(s, id, p.get("track").filter(|_| f.track.is_some()))?;
+    let find = |c: u64| q.all_tracks().flat_map(|t| t.items.iter()).find(|it| it.id.0 == c);
+    if let Some(tracks) = brief.get_mut("tracks").and_then(Value::as_array_mut) {
+        for t in tracks.iter_mut() {
+            let Some(clips) = t.get_mut("clips").and_then(Value::as_array_mut) else { continue };
+            clips.retain(|c| c["clip"].as_u64().and_then(find).is_some_and(|it| f.clip_ok(it)));
+            for c in clips.iter_mut() {
+                let Some(it) = c["clip"].as_u64().and_then(find) else { continue };
+                let changed: serde_json::Map<String, Value> = it
+                    .effects
+                    .iter()
+                    .filter(|e| f.effect_ok(e))
+                    .map(|e| (e.effect.clone(), changed_params(e)))
+                    .filter(|(_, m)| !m.is_empty())
+                    .map(|(k, m)| (k, Value::Object(m)))
+                    .collect();
+                if !changed.is_empty() {
+                    c["changed"] = Value::Object(changed);
+                }
+            }
+        }
+        if f.clips.is_some() || f.effect.is_some() {
+            tracks.retain(|t| t["clips"].as_array().is_some_and(|c| !c.is_empty()));
+        }
+    }
+    brief["compact"] = json!(true);
+    brief["note"] = json!(
+        "as `sequence.clips`: times in seconds, video tracks from the top down. `changed` lists only parameters that differ from their defaults; `effects.list {\"effect\":…}` gives every parameter's range and default"
+    );
+    Ok(brief)
 }
 
 /// Seconds → ticks helper for callers.

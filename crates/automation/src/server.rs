@@ -208,12 +208,68 @@ pub struct BoardParams {
     /// Whether each frame carries its number and time (default true).
     #[serde(default)]
     pub labels: Option<bool>,
+    /// Sample densely instead: this many frames per second across `from_seconds`..`to_seconds` (at most 96 frames).
+    #[serde(default)]
+    pub fps: Option<f64>,
+    /// Or one frame every `step` seconds.
+    #[serde(default)]
+    pub step: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct InspectParams {
+    /// Only this clip id, or a list of clip ids.
+    #[serde(default)]
+    pub clip: Option<Value>,
+    /// Only this track: "V1", "A2"… or a track id.
+    #[serde(default)]
+    pub track: Option<Value>,
+    /// Only clips with this effect (id or name), and only that effect.
+    #[serde(default)]
+    pub effect: Option<String>,
+    /// One short entry per clip (times in seconds, only parameters that differ from their defaults).
+    #[serde(default)]
+    pub compact: Option<bool>,
+}
+
+/// `sequence.inspect` params for an inspection call.
+fn inspect_params(p: InspectParams) -> Value {
+    let mut v = json!({});
+    let fields: [(&str, Option<Value>); 4] =
+        [("clip", p.clip), ("track", p.track), ("effect", p.effect.map(Value::from)), ("compact", p.compact.map(Value::from))];
+    for (key, value) in fields {
+        if let Some(value) = value {
+            v[key] = value;
+        }
+    }
+    v
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct MotionParams {
+    /// Start, in seconds of the active sequence (default: the playhead).
+    #[serde(default)]
+    pub from_seconds: Option<f64>,
+    /// End, in seconds (default 3 s after the start; at most 10 s after it).
+    #[serde(default)]
+    pub to_seconds: Option<f64>,
+    /// Frames per second, 1 to 30 (default 12 for GIF).
+    #[serde(default)]
+    pub fps: Option<f64>,
+    /// Width in pixels, 64 to 640 (default 480).
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// `gif` (default: returned as an animated image) or `mp4` (written to a file; the path is returned).
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// `story.board` params for a `story_board` call writing to `path`.
 fn board_params(p: BoardParams, path: &str) -> Value {
     let mut v = json!({"path": path});
-    let fields: [(&str, Option<Value>); 8] = [
+    let fields: [(&str, Option<Value>); 10] = [
+        ("fps", p.fps.map(Value::from)),
+        ("step", p.step.map(Value::from)),
         ("item", p.item.map(Value::from)),
         ("count", p.count.map(Value::from)),
         ("max", p.max.map(Value::from)),
@@ -352,11 +408,23 @@ impl FilmagicMcp {
     /// `project.inspect` just reported keeps the pair consistent: the returned `sequence`, when
     /// not null, always describes the sequence the returned `project.activeSequence` names.
     async fn document(&self) -> Result<Value, AutomationError> {
+        self.document_with(json!({})).await
+    }
+
+    /// [`Self::document`] with `sequence.inspect` filters (`clip`, `track`, `effect`, `compact`).
+    async fn document_with(&self, filters: Value) -> Result<Value, AutomationError> {
         let project = self.run("project.inspect", json!({})).await?;
         // `ItemId` is a u64 (`item_p` parses the `item` param with `u64_p`): read it as one too,
         // not `as_i64`, so an id above `i64::MAX` is still looked up instead of silently going null.
         let active = project.get("activeSequence").and_then(Value::as_u64);
+        let filtered = filters.as_object().is_some_and(|o| !o.is_empty());
         let sequence = match active {
+            Some(id) if filtered => {
+                let mut p = filters;
+                p["item"] = json!(id);
+                // a bad filter is the caller's to fix: say so instead of a null sequence
+                Some(self.run("sequence.inspect", p).await?)
+            }
             Some(id) => self.run("sequence.inspect", json!({"item": id})).await.ok(),
             None => None,
         };
@@ -445,16 +513,77 @@ impl FilmagicMcp {
 
     #[tool(
         title = "Inspect the document",
-        description = "The project as JSON: the tree (as project_inspect) plus the active sequence (as sequence_inspect; null when there is none).",
+        description = "The project as JSON: the tree (as project_inspect) plus the active sequence (as sequence_inspect; null when there is none). The same `clip`/`track`/`effect`/`compact` filters as sequence_inspect apply to the sequence.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn doc_inspect(&self) -> Result<CallToolResult, McpError> {
-        wrap(self.document().await)
+    async fn doc_inspect(&self, Parameters(p): Parameters<InspectParams>) -> Result<CallToolResult, McpError> {
+        wrap(self.document_with(inspect_params(p)).await)
+    }
+
+    #[tool(
+        title = "Preview motion",
+        description = "A few seconds of the active sequence as a small animated GIF (returned as an image) or MP4 (written to a file, path returned): to check a transition, a zoom, slow motion or an action as it moves, which a still cannot show. At most 10 s, 30 fps, 640 px wide.",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn render_motion(&self, Parameters(p): Parameters<MotionParams>) -> Result<CallToolResult, McpError> {
+        let mp4 = match p.format.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            None | Some("gif") => false,
+            Some("mp4") => true,
+            Some(other) => return Ok(fail(format!("render_motion: `format` must be \"gif\" or \"mp4\", not \"{other}\""))),
+        };
+        // a GIF is handed back and removed; an MP4 is kept for the caller to open
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(e) => return Ok(fail(format!("render_motion: {e}"))),
+        };
+        let path = if mp4 {
+            match tempfile::Builder::new().prefix("filmagic-preview-").suffix(".mp4").tempfile().and_then(|f| f.keep().map_err(|e| e.error)) {
+                Ok((_, path)) => path,
+                Err(e) => return Ok(fail(format!("render_motion: {e}"))),
+            }
+        } else {
+            dir.path().join("preview.gif")
+        };
+        let mut params = json!({"path": path.to_string_lossy()});
+        let fields: [(&str, Option<Value>); 4] = [
+            ("fromSeconds", p.from_seconds.map(Value::from)),
+            ("toSeconds", p.to_seconds.map(Value::from)),
+            ("fps", p.fps.map(Value::from)),
+            ("width", p.width.map(Value::from)),
+        ];
+        for (key, value) in fields {
+            if let Some(value) = value {
+                params[key] = value;
+            }
+        }
+        let mut info = match self.run("preview.motion", params).await {
+            Ok(v) => v,
+            Err(e) => {
+                if mp4 {
+                    let _ = std::fs::remove_file(&path);
+                }
+                return Ok(fail(e));
+            }
+        };
+        if mp4 {
+            return Ok(ok_json(&info));
+        }
+        let gif = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) => return Ok(fail(format!("render_motion: {e}"))),
+        };
+        if let Some(o) = info.as_object_mut() {
+            o.remove("path");
+        }
+        Ok(CallToolResult::success(vec![
+            Content::image(base64::engine::general_purpose::STANDARD.encode(gif), "image/gif"),
+            Content::text(serde_json::to_string_pretty(&info).unwrap_or_default()),
+        ]))
     }
 
     #[tool(
         title = "Render a preview",
-        description = "The active sequence's frame at `seconds` (default: the playhead) as PNG, same as render_frame (bridge mode: Program monitor screenshot).",
+        description = "A still: the active sequence's frame at `seconds` (default: the playhead) as PNG, same as render_frame (bridge mode: Program monitor screenshot). For motion use render_motion.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn render_preview(&self, p: Parameters<RenderParams>) -> Result<CallToolResult, McpError> {
@@ -472,11 +601,11 @@ impl FilmagicMcp {
 
     #[tool(
         title = "Inspect the active sequence",
-        description = "The active sequence as JSON: settings, tracks, clips (ids, start/duration in ticks and frames, effects), transitions, markers, in/out, playhead, selection. 254016000000 ticks = 1 second.",
+        description = "The active sequence as JSON: settings, tracks, clips (ids, start/duration in ticks and frames, effects), transitions, markers, in/out, playhead, selection. 254016000000 ticks = 1 second. Large: filter with `clip`, `track` or `effect`, or pass `compact: true` for one short entry per clip.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn sequence_inspect(&self) -> Result<CallToolResult, McpError> {
-        wrap(self.run("sequence.inspect", json!({})).await)
+    async fn sequence_inspect(&self, Parameters(p): Parameters<InspectParams>) -> Result<CallToolResult, McpError> {
+        wrap(self.run("sequence.inspect", inspect_params(p)).await)
     }
 
     #[tool(
@@ -549,7 +678,7 @@ impl FilmagicMcp {
 
     #[tool(
         title = "Story board",
-        description = "See the film at a glance: one representative frame per shot of the active sequence (or `count` frames across a project `item`'s rushes), laid out left to right, top to bottom, each labelled with its number and time. Returns the PNG and, as JSON, what each frame is (shot, times, clip).",
+        description = "See the film at a glance: one representative frame per shot of the active sequence (or `count` frames across a project `item`'s rushes, cells after a cut inside the source marked \"| CUT\"), laid out left to right, top to bottom, each labelled with its number and time. `fps` or `step` samples a short range densely instead (up to 96 frames). Returns the PNG and, as JSON, what each frame is (shot, times, clip).",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn story_board(&self, Parameters(p): Parameters<BoardParams>) -> Result<CallToolResult, McpError> {
@@ -702,7 +831,7 @@ impl FilmagicMcp {
     }
 }
 
-const INSTRUCTIONS: &str = "Filmagic video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`) returns ids you can pass to commands; `render_preview` shows the result. `file.exportMedia` with `wait: true` is stopped, and its partial file deleted, when your client's tool-call timeout ends first: for a whole film, call it without `wait` and poll `jobs.list` until the job is `finished`. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
+const INSTRUCTIONS: &str = "Filmagic video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable; `command_batch` runs several). `doc_inspect` (or `project_inspect`/`sequence_inspect`, both with `compact`/`clip`/`track`/`effect` filters) returns ids you can pass to commands; `render_preview` shows the result. `file.exportMedia` with `wait: true` is stopped, and its partial file deleted, when your client's tool-call timeout ends first: for a whole film, call it without `wait` and poll `jobs.list` until the job is `finished`. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). `sequence.clips` lists the clips of the active sequence in brief (ids, times, what is unusual about each): start there, and use the inspections for detail. To judge an edit rather than only make one: `story_board` shows the film as one frame per shot (or a clip's rushes); `story.blinkPoints` finds where a clip could be cut (where a phrase or a movement completes); `story.rhythm` and `story.cuts` measure the pace and each cut (jump cuts, how far the eye travels, reversed screen direction, straight cuts on a pause) and leave emotion and story, which outweigh everything measured, to you; `story.splitEdit` makes an L- or J-cut; `story.shadowCut` and `story.compare` keep versions and say shot by shot what differs between two. To work on part of a picture: `layers.extract`, `layers.lift`, `layers.cleanPlate`, `layers.retime` and `layers.adjust` take a `region` in fractions of the clip's own picture, or, with `\"space\":\"frame\"`, of the programme frame as you see it rendered (use that when the clip is moved, zoomed or turned); `layers.transform` makes a layer larger or smaller, or shifts it, where it stands (its mask's feet stay put through the shot, which a Motion scale alone does not do); `color.relight` grades a shot toward a time of day. Commands that change the picture report `pictureChange` (`none`, `subtle`, `visible`, `strong`): if what you meant to be seen reads `subtle`, a viewer will not notice it. To check what you made: `render_motion` shows a few seconds moving (a transition, a zoom, slow motion); `layout.check` finds graphics and captions that overlap, leave the safe areas or cover busy picture such as a burned-in score (`graphics.anchor` moves one into a corner); razors, speed changes and frame holds warn when they land near a cut inside the source file (`media.sourceCuts` lists those cuts). Read `warnings` and `notes` in every result. These work from the frames that exist: none of them generates new picture content.";
 
 /// Resources: the project (as `doc_inspect`) and the command catalog (as `command_list`).
 const DOCUMENT_URI: &str = "filmagic://document";
