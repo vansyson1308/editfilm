@@ -43,7 +43,8 @@ pub struct FilmagicMcp {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListParams {
-    /// Only commands whose id or label contains this text (case-insensitive).
+    /// Only commands where every word of this text appears in the id, label, menu path, params or
+    /// keywords (case-insensitive, any order), e.g. "paste attributes" or "many clips".
     #[serde(default)]
     pub filter: Option<String>,
     /// Only commands that can run right now.
@@ -384,24 +385,27 @@ impl FilmagicMcp {
 impl FilmagicMcp {
     #[tool(
         title = "List commands",
-        description = "List every command (id, label, menu path, shortcut, parameter doc, enabled now). Menus, shortcuts, panels and timeline gestures all map to these ids.",
+        description = "List every command (id, label, menu path, shortcut, parameter doc, keywords, enabled now). `filter` matches each of its words against all of those, so describe what you want (\"many clips\", \"colour grade\"). Menus, shortcuts, panels and timeline gestures all map to these ids.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn command_list(&self, Parameters(p): Parameters<ListParams>) -> Result<CallToolResult, McpError> {
-        let r = self.run("command.list", json!({})).await.map(|v| {
-            let f = p.filter.unwrap_or_default().to_ascii_lowercase();
+        // the engine matches every word of the filter against id, label, menu, params and keywords;
+        // the same match runs here too, for a bridged app that predates the engine's filter
+        let filter = p.filter.unwrap_or_default();
+        let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+        let r = self.run("command.list", json!({"filter": filter})).await.map(|v| {
             let only = p.enabled_only.unwrap_or(false);
+            let matches = |c: &Value| {
+                let field = |k: &str| match &c[k] {
+                    Value::String(x) => x.clone(),
+                    Value::Array(a) => a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+                    _ => String::new(),
+                };
+                let hay = ["id", "label", "menu", "params", "keywords"].map(field).join(" ").to_lowercase();
+                words.iter().all(|w| hay.contains(w.as_str()))
+            };
             Value::Array(
-                v.as_array()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|c| {
-                        let id = c["id"].as_str().unwrap_or("").to_ascii_lowercase();
-                        let label = c["label"].as_str().unwrap_or("").to_ascii_lowercase();
-                        (f.is_empty() || id.contains(&f) || label.contains(&f)) && (!only || c["enabled"].as_bool() == Some(true))
-                    })
-                    .collect(),
+                v.as_array().cloned().unwrap_or_default().into_iter().filter(|c| matches(c) && (!only || c["enabled"].as_bool() == Some(true))).collect(),
             )
         });
         wrap(r)

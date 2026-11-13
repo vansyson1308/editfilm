@@ -88,6 +88,38 @@ macro_rules! query {
     };
 }
 
+/// What an agent may search for when it does not know a command's Premiere name (#14): an agent
+/// that wanted "the same colour on 8 clips" set each parameter 63 times, because nothing called
+/// Paste Attributes or Adjustment Layer said it does that. `command.list` matches its filter
+/// against these words too and returns them as `keywords`.
+const KEYWORDS: &[(&str, &str)] = &[
+    (
+        "edit.pasteAttributes",
+        "copy effects colour color grade lumetri motion opacity volume settings from one clip to many clips at once; apply the same look to several clips (after edit.copy)",
+    ),
+    ("edit.removeAttributes", "remove reset clear effects colour color grade motion opacity volume from many clips at once"),
+    ("file.newAdjustmentLayer", "one effect or colour color grade over several clips at once: place the layer on a track above them"),
+    ("effects.setParam", "set change effect parameter value on one clip or many clips at once (clips)"),
+    ("effects.apply", "add effect to many clips at once (clips)"),
+    ("lumetri.applyPreset", "colour color grade look preset on many clips at once (clips)"),
+];
+
+/// The search keywords of command `id`, if it has any.
+pub fn command_keywords(id: &str) -> Option<&'static str> {
+    KEYWORDS.iter().find(|(k, _)| *k == id).map(|(_, v)| *v)
+}
+
+/// Whether every word of `filter` appears (case-insensitively) in the id, label, menu path,
+/// parameter doc or keywords of `c`. An empty filter matches every command.
+pub fn command_matches(c: &CommandSpec, filter: &str) -> bool {
+    let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {} {} {} {}", c.id, c.label, c.menu.join(" "), c.params, command_keywords(c.id).unwrap_or_default()).to_lowercase();
+    words.iter().all(|w| hay.contains(w.as_str()))
+}
+
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
     SPECS.get_or_init(|| {
@@ -453,6 +485,31 @@ fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static fi
     });
     let want = if on_audio { filmagic_project::EffectKind::Audio } else { filmagic_project::EffectKind::Video };
     cands.iter().find(|d| !d.intrinsic && d.kind == want).or_else(|| cands.iter().find(|d| !d.intrinsic)).or(cands.first()).copied()
+}
+
+/// The clips an Effect Controls setter acts on: `clip` (one id) or `clips` (a list, changed as
+/// one undo step). Exactly one of the two; a list holds at least one id, each at most once (#14).
+pub(crate) fn effect_clips_p(p: &Value, cmd: &str) -> Result<Vec<ClipId>> {
+    match (p.get("clip").filter(|v| !v.is_null()), p.get("clips").filter(|v| !v.is_null())) {
+        (Some(_), Some(_)) => Err(bad(cmd, "give either `clip` or `clips`, not both")),
+        (Some(c), None) => Ok(vec![ClipId(c.as_u64().ok_or_else(|| bad(cmd, "`clip` must be a clip id"))?)]),
+        (None, Some(a)) => {
+            let a = a.as_array().ok_or_else(|| bad(cmd, "`clips` must be a list of clip ids"))?;
+            if a.is_empty() {
+                return Err(bad(cmd, "`clips` must name at least one clip id"));
+            }
+            let mut out: Vec<ClipId> = Vec::with_capacity(a.len().min(4096));
+            for v in a {
+                let c = ClipId(v.as_u64().ok_or_else(|| bad(cmd, format!("`clips` holds {v}, which is not a clip id")))?);
+                if out.contains(&c) {
+                    return Err(bad(cmd, format!("`clips` names clip {} twice", c.0)));
+                }
+                out.push(c);
+            }
+            Ok(out)
+        }
+        (None, None) => Err(bad(cmd, "need `clip` (one clip id) or `clips` (a list of clip ids)")),
+    }
 }
 
 pub(crate) fn clips_p(s: &Session, p: &Value) -> Vec<ClipId> {
@@ -1635,10 +1692,15 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"bin":binId?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"place":bool=true (false: take only the settings of `fromItem` and leave the sequence empty),"bin":binId?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
                 let bin = bin_p(s, p, "file.newSequence")?;
+                // `place:false`: the sequence takes the settings of `fromItem` without its clips (#14)
+                let place = match p.get("place") {
+                    None | Some(Value::Null) => true,
+                    Some(v) => v.as_bool().ok_or_else(|| bad("file.newSequence", format!("`place` must be true or false, got {v}")))?,
+                };
                 // `fromItems` is `fromItem` for a list: the first sets the sequence, the rest follow it back to back
                 let mut from_ids: Vec<ItemId> = match p.get("fromItems") {
                     None => Vec::new(),
@@ -1649,6 +1711,18 @@ fn build() -> Vec<CommandSpec> {
                 };
                 if let Some(one) = item_p(p, "fromItem") {
                     from_ids.insert(0, one);
+                }
+                if let Some(&first) = from_ids.first() {
+                    let it = s
+                        .project
+                        .item(first)
+                        .ok_or_else(|| bad("file.newSequence", format!("no project item {} (`fromItem` takes an `item` id from project.inspect)", first.0)))?;
+                    if !place && it.as_media().is_none() {
+                        return Err(bad(
+                            "file.newSequence",
+                            format!("\"{}\" is not a media file, so it has no settings to take; `place:false` needs a video or audio item", it.name),
+                        ));
+                    }
                 }
                 let mut st = SequenceSettings::default();
                 if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
@@ -1701,7 +1775,7 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok(id)
                 })?;
-                if let Some((&from, rest)) = from_ids.split_first() {
+                if let Some((&from, rest)) = from_ids.split_first().filter(|_| place) {
                     let dur = s.project.item(from).map(|i| i.duration()).unwrap_or_default();
                     let tg = s.targeting();
                     let ids = place_item(
@@ -3797,12 +3871,13 @@ fn build() -> Vec<CommandSpec> {
             "Set Effect Parameter",
             [],
             None,
-            r##"{"clip":id,"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"ease":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"? (the easing of the keyframe written at `time`, as `effects.setInterpolation` sets it; needs `keyframe` or an animated parameter),"merge":bool|key?,"begin":bool?}"##,
+            r##"{"clip":id|"clips":[id] (several clips: one undo step; each must have the effect),"effect":"motion"|index,"param":str,"mask":n?,"value":num|[x,y]|"#rrggbb"|bool|path|"option name" (a choice takes its index or its name),"time":ticks? (where the keyframe goes when the parameter is animated, kept there even outside the clip; default: the playhead, pinned to the clip; a parameter that is not animated gets a new static value whatever the time),"keyframe":bool? (true: write a keyframe at `time` and animate the parameter),"ease":"linear|bezier|autoBezier|continuousBezier|hold|easeIn|easeOut"? (the easing of the keyframe written at `time`, as `effects.setInterpolation` sets it; needs `keyframe` or an animated parameter),"merge":bool|key?,"begin":bool?}"##,
             has_seq,
             |s, p| {
-                let c = clip_p(p, "clip").ok_or_else(|| bad("effects.setParam", "need `clip`"))?;
+                let clips = effect_clips_p(p, "effects.setParam")?;
                 let pid = str_p(p, "param").ok_or_else(|| bad("effects.setParam", "need `param`"))?.to_string();
                 let val = p.get("value").cloned().ok_or_else(|| bad("effects.setParam", "need `value`"))?;
+                let key = clips.iter().map(|c| c.0.to_string()).collect::<Vec<_>>().join(",");
                 let eff = p.get("effect").cloned().unwrap_or(json!("motion"));
                 let keyframe = bool_p(p, "keyframe").unwrap_or(false);
                 let ease = ease_p(p, "ease", "effects.setParam")?;
@@ -3814,93 +3889,103 @@ fn build() -> Vec<CommandSpec> {
                 // `merge`: a drag of one parameter is one undo step (#201), and a key makes one of a
                 // drag that changes several (the Program monitor's handles); `begin` starts a new one
                 let merge = match p.get("merge") {
-                    Some(Value::String(key)) => Some(format!("setParam:{}:{key}", c.0)),
-                    _ => bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{}:{eff}:{pid}:{}", c.0, p.get("mask").unwrap_or(&Value::Null))),
+                    Some(Value::String(mk)) => Some(format!("setParam:{key}:{mk}")),
+                    _ => bool_p(p, "merge").unwrap_or(false).then(|| format!("setParam:{key}:{eff}:{pid}:{}", p.get("mask").unwrap_or(&Value::Null))),
                 };
                 if bool_p(p, "begin").unwrap_or(false) {
                     s.history.merge_key = None;
                 }
-                let (keyframes, value, keyed_at) = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
-                    let (_, it) = q.find_item_mut(c).ok_or(filmagic_edit::EditError::NoItem(c))?;
-                    let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
-                    let e = match &eff {
-                        Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
-                        Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
-                        _ => None,
-                    }
-                    .ok_or_else(|| bad("effects.setParam", "no such effect on clip"))?;
-                    // the parameter's definition (a mask's own parameters have none)
-                    let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
-                    // a choice takes its option name as well as its index, as transition parameters do
-                    let val = match (def.map(|d| &d.kind), &val) {
-                        (Some(filmagic_project::ParamKind::Choice(opts)), Value::String(name)) => {
-                            let i = opts
-                                .iter()
-                                .position(|o| o.eq_ignore_ascii_case(name))
-                                .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
-                            json!(i)
+                let results = s.edit_sequence_as("Change Effect Parameter", merge.as_deref(), |q, _, _| {
+                    let mut results: Vec<(ClipId, usize, Value, Option<Tick>)> = Vec::with_capacity(clips.len());
+                    for &c in &clips {
+                        let (_, it) = q.find_item_mut(c).ok_or(filmagic_edit::EditError::NoItem(c))?;
+                        let mt = it.effect_time_at(at.unwrap_or_else(|| ph.clamp(it.start, (it.end() - Tick(1)).max(it.start))));
+                        let e = match &eff {
+                            Value::Number(n) => it.effects.get_mut(n.as_u64().unwrap_or(0) as usize),
+                            Value::String(sid) => it.effects.iter_mut().find(|e| &e.effect == sid),
+                            _ => None,
                         }
-                        _ => val.clone(),
-                    };
-                    if keyframe && def.is_some_and(|d| !d.animatable) {
-                        return Err(bad("effects.setParam", format!("`{pid}` cannot be animated")));
-                    }
-                    if eff == json!("opacity") || eff == json!("motion") {
-                        e.enabled = true;
-                    }
-                    // instances saved before a parameter existed get it from the definition
-                    if !e.params.contains_key(&pid)
-                        && let Some(d) = e.def().and_then(|d| d.param(&pid))
-                    {
-                        e.params.insert(pid.clone(), filmagic_project::Param::new(d.default.clone()));
-                    }
-                    let (keyframes, v) = {
-                        let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
-                        let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
-                        // the parameter's hard range, which `effects.list` publishes: a value outside it
-                        // (a factor where a percentage is meant, #2679) is refused, not saved
-                        if let (Some(filmagic_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) = (def.map(|d| &d.kind), &v)
-                            && !(*min..=*max).contains(x)
-                        {
-                            return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
-                        }
-                        let keyframes = if keyframe {
-                            // the stopwatch and the value in one step
-                            prm.put_keyframe(mt, v.clone());
-                            prm.keyframes.len()
-                        } else {
-                            prm.set_at(mt, v.clone());
-                            prm.keyframes.len()
+                        .ok_or_else(|| {
+                            bad("effects.setParam", format!("clip {} has no effect {eff} (effects.list {{\"clip\":{}}} lists its effects)", c.0, c.0))
+                        })?;
+                        // the parameter's definition (a mask's own parameters have none)
+                        let def = if pq.get("mask").is_none_or(Value::is_null) { e.def().and_then(|d| d.param(&pid)) } else { None };
+                        // a choice takes its option name as well as its index, as transition parameters do
+                        let val = match (def.map(|d| &d.kind), &val) {
+                            (Some(filmagic_project::ParamKind::Choice(opts)), Value::String(name)) => {
+                                let i = opts
+                                    .iter()
+                                    .position(|o| o.eq_ignore_ascii_case(name))
+                                    .ok_or_else(|| bad("effects.setParam", format!("`{pid}` must be one of {opts:?}")))?;
+                                json!(i)
+                            }
+                            _ => val.clone(),
                         };
-                        // the easing of the keyframe just written, in the same undo step (#13)
-                        if let Some(ease) = ease {
-                            let k = prm.keyframes.iter_mut().find(|k| k.time == mt).ok_or_else(|| {
-                                bad("effects.setParam", format!("`ease` needs a keyframe, and `{pid}` is not animated: add \"keyframe\": true"))
-                            })?;
-                            k.interp = ease;
+                        if keyframe && def.is_some_and(|d| !d.animatable) {
+                            return Err(bad("effects.setParam", format!("`{pid}` cannot be animated")));
                         }
-                        (keyframes, v)
-                    };
-                    let accepted_value = param_value_to_json(&v);
-
-                    if e.effect == "ultra_key"
-                        && pid == "setting"
-                        && let ParamValue::Choice(setting) = v
-                        && let Some(rows) = filmagic_project::effect::ultra_key_setting(setting)
-                    {
-                        for (id, value) in rows {
-                            if let Some(p) = e.param_mut(id) {
-                                p.value = ParamValue::Float(*value);
-                                p.keyframes.clear();
+                        if eff == json!("opacity") || eff == json!("motion") {
+                            e.enabled = true;
+                        }
+                        // instances saved before a parameter existed get it from the definition
+                        if !e.params.contains_key(&pid)
+                            && let Some(d) = e.def().and_then(|d| d.param(&pid))
+                        {
+                            e.params.insert(pid.clone(), filmagic_project::Param::new(d.default.clone()));
+                        }
+                        let (keyframes, v) = {
+                            let prm = crate::masks::target_param(e, &pq, &pid).ok_or_else(|| bad("effects.setParam", format!("no param `{pid}`")))?;
+                            let v = json_to_param(&prm.value, &val).ok_or_else(|| bad("effects.setParam", "value has the wrong type"))?;
+                            // the parameter's hard range, which `effects.list` publishes: a value outside it
+                            // (a factor where a percentage is meant, #2679) is refused, not saved
+                            if let (Some(filmagic_project::ParamKind::Float { min, max, .. }), ParamValue::Float(x)) = (def.map(|d| &d.kind), &v)
+                                && !(*min..=*max).contains(x)
+                            {
+                                return Err(bad("effects.setParam", format!("`{pid}` must be between {min} and {max}, got {x}")));
+                            }
+                            let keyframes = if keyframe {
+                                // the stopwatch and the value in one step
+                                prm.put_keyframe(mt, v.clone());
+                                prm.keyframes.len()
                             } else {
-                                e.params.insert((*id).to_string(), filmagic_project::Param::new(ParamValue::Float(*value)));
+                                prm.set_at(mt, v.clone());
+                                prm.keyframes.len()
+                            };
+                            // the easing of the keyframe just written, in the same undo step (#13)
+                            if let Some(ease) = ease {
+                                let k = prm.keyframes.iter_mut().find(|k| k.time == mt).ok_or_else(|| {
+                                    bad("effects.setParam", format!("`ease` needs a keyframe, and `{pid}` is not animated: add \"keyframe\": true"))
+                                })?;
+                                k.interp = ease;
+                            }
+                            (keyframes, v)
+                        };
+                        let accepted_value = param_value_to_json(&v);
+
+                        if e.effect == "ultra_key"
+                            && pid == "setting"
+                            && let ParamValue::Choice(setting) = v
+                            && let Some(rows) = filmagic_project::effect::ultra_key_setting(setting)
+                        {
+                            for (id, value) in rows {
+                                if let Some(p) = e.param_mut(id) {
+                                    p.value = ParamValue::Float(*value);
+                                    p.keyframes.clear();
+                                } else {
+                                    e.params.insert((*id).to_string(), filmagic_project::Param::new(ParamValue::Float(*value)));
+                                }
                             }
                         }
+                        results.push((c, keyframes, accepted_value, (keyframes > 0).then_some(mt)));
                     }
-                    Ok((keyframes, accepted_value, (keyframes > 0).then_some(mt)))
+                    Ok(results)
                 })?;
                 // 0 keyframes: the value is static (`time` was not used)
+                let (_, keyframes, value, keyed_at) = results.first().cloned().ok_or_else(|| bad("effects.setParam", "need `clip` or `clips`"))?;
                 let mut reply = json!({"keyframes": keyframes, "param": pid, "value": value});
+                if p.get("clips").is_some() {
+                    reply["clips"] = json!(results.iter().map(|(c, k, v, _)| json!({"clip": c.0, "keyframes": k, "value": v})).collect::<Vec<_>>());
+                }
                 if let (Some(ease), Some(mt)) = (ease, keyed_at) {
                     reply["mediaTime"] = json!(mt.0);
                     reply["mediaSeconds"] = json!(crate::time_params::secs(mt));
@@ -4198,17 +4283,28 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         // ================= Queries =================
-        query!("command.list", "List Commands", "{}", |s, _| {
-            Ok(Value::Array(
-                command_specs()
-                    .iter()
-                    .map(|c| {
-                        let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
-                        json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()})
-                    })
-                    .collect(),
-            ))
-        }),
+        query!(
+            "command.list",
+            "List Commands",
+            r#"{"filter":str? (words, any order: each must appear in the id, label, menu path, params or keywords; case-insensitive)}"#,
+            |s, p| {
+                let filter = str_p(p, "filter").unwrap_or_default();
+                Ok(Value::Array(
+                    command_specs()
+                        .iter()
+                        .filter(|c| command_matches(c, filter))
+                        .map(|c| {
+                            let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
+                            let mut v = json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()});
+                            if let Some(k) = command_keywords(c.id) {
+                                v["keywords"] = json!(k);
+                            }
+                            v
+                        })
+                        .collect(),
+                ))
+            }
+        ),
         query!("project.inspect", "Inspect Project", "{}", |s, _| Ok(crate::commands::inspect_project(s))),
         query!("sequence.inspect", "Inspect Sequence", r#"{"item":id?}"#, |s, p| {
             let id = item_p(p, "item").or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
