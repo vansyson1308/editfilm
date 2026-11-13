@@ -131,7 +131,36 @@ fn mpeg_details(src: &filmagic_codecs::MpegSource) -> Value {
 }
 
 /// Probe `path`; with `image_sequence`, `path` is the first frame of a numbered still sequence.
+/// Media info as JSON with the duration also in seconds and in frames (#13): `durationSeconds`,
+/// `durationFrames` at the video stream's frame rate (absent without video), and `durationSamples`
+/// on each audio stream, next to the `duration` in ticks.
 pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
+    let mut v = probe_info(path, image_sequence)?;
+    add_duration_units(&mut v);
+    Ok(v)
+}
+
+/// Adds the duration in seconds, video frames and audio samples next to `duration` (ticks).
+pub(crate) fn add_duration_units(v: &mut Value) {
+    let Some(ticks) = v.get("duration").and_then(Value::as_i64) else { return };
+    let d = filmagic_time::Tick(ticks);
+    v["durationSeconds"] = json!((d.seconds() * 1e6).round() / 1e6);
+    let rate =
+        v.get("video").and_then(|x| x.get("frame_rate")).and_then(|r| Some(filmagic_time::FrameRate::new(r.get("num")?.as_i64()?, r.get("den")?.as_i64()?)));
+    if let Some(r) = rate.filter(|r| r.num > 0 && r.den > 0) {
+        // whole frames the media holds (a partial last frame counts)
+        v["durationFrames"] = json!(r.frame_at(filmagic_time::Tick(ticks.saturating_add(r.frame_duration().0).saturating_sub(1))));
+    }
+    if let Some(streams) = v.get_mut("audio_streams").and_then(Value::as_array_mut) {
+        for a in streams {
+            if let Some(sr) = a.get("sample_rate").and_then(Value::as_i64).filter(|r| *r > 0) {
+                a["durationSamples"] = json!(d.to_units_floor(sr));
+            }
+        }
+    }
+}
+
+fn probe_info(path: &str, image_sequence: bool) -> Result<Value, String> {
     if image_sequence {
         use filmagic_media::sequence::{ImageSequenceSource, Numbered, sequence_frames};
         let n = Numbered::parse(path).ok_or_else(|| format!("{path}: not a numbered still image"))?;
@@ -184,4 +213,38 @@ pub fn probe(path: &str, image_sequence: bool) -> Result<Value, String> {
         v["bwf"] = json!({"timeReference": tr});
     }
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// #13: the duration is also in seconds, video frames and audio samples, next to the ticks.
+    #[test]
+    fn duration_is_reported_in_seconds_frames_and_samples() {
+        let ticks = filmagic_time::Tick::from_seconds_f64(907.9).0;
+        let mut v = json!({
+            "duration": ticks,
+            "video": {"frame_rate": {"num": 30000, "den": 1001}},
+            "audio_streams": [{"sample_rate": 48000}, {"sample_rate": 0}],
+        });
+        super::add_duration_units(&mut v);
+        assert_eq!(v["duration"], ticks, "ticks unchanged");
+        assert_eq!(v["durationSeconds"], 907.9);
+        // 907.9 s at 29.97 fps is 27 209.79 frames: the partial last frame counts
+        assert_eq!(v["durationFrames"], 27210);
+        assert_eq!(v["audio_streams"][0]["durationSamples"], 43_579_200);
+        assert!(v["audio_streams"][1].get("durationSamples").is_none(), "no rate, no samples");
+        // audio only: no frames; a zero frame rate: no frames, no crash
+        let mut a = json!({"duration": ticks, "video": null, "audio_streams": []});
+        super::add_duration_units(&mut a);
+        assert!(a.get("durationFrames").is_none() && a["durationSeconds"] == 907.9);
+        let mut z = json!({"duration": ticks, "video": {"frame_rate": {"num": 0, "den": 0}}});
+        super::add_duration_units(&mut z);
+        assert!(z.get("durationFrames").is_none());
+        // no duration: unchanged
+        let mut n = json!({"name": "x"});
+        super::add_duration_units(&mut n);
+        assert_eq!(n, json!({"name": "x"}));
+    }
 }
