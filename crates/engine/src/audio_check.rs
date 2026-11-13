@@ -29,9 +29,8 @@ use crate::{EngineError, Result, Session};
 /// commands, on the thread that called them (the UI thread for a click), so it stays short: a
 /// pause further away is reported as "more than 3 s away".
 const CUT_WINDOW_S: f64 = 3.0;
-/// The rate the cut check renders at: the detector works at about 8 kHz anyway, so the source
-/// produces six times fewer samples than at 48 kHz.
-const CUT_SR: u32 = 8000;
+/// A clip whose Volume is at or under this (dB) at the cut is not heard there: not checked.
+const CUT_SILENT_DB: f64 = -40.0;
 /// A cut this close (seconds) to the edge of a speech segment is at the pause, not inside it.
 const CUT_EDGE_S: f64 = 0.03;
 /// Analysis chunk (samples at the sequence rate) for streaming renders.
@@ -155,9 +154,19 @@ struct SpeechKey {
 #[derive(Default)]
 pub struct SpeechCache(std::collections::VecDeque<(SpeechKey, std::sync::Arc<SpeechAnalysis>)>);
 
+impl SpeechCache {
+    /// Forget every analysis.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// Speech of the source of `item` over source seconds `[w0, w0 + CUT_SPAN_S)`, with segment
-/// times in source seconds: the plain media as recorded (no clip effects, no gain: the threshold
-/// adapts to the level), all channels averaged, rendered at [`CUT_SR`]. Cached.
+/// times in source seconds: the media as recorded (no clip effects, no gain: the threshold adapts
+/// to the level), all channels averaged, read at the stream's own sample rate. Reading it at a
+/// lower rate would alias: the decoders resample without an anti-alias filter, so hiss above the
+/// new Nyquist would fold into the speech band; the detector's own band limit and decimation do
+/// that job instead, at almost the same cost. Cached.
 fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &TrackItem, w0: f64) -> Option<std::sync::Arc<SpeechAnalysis>> {
     let src = provider.source(item.item)?;
     let info = src.info();
@@ -176,7 +185,7 @@ fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &Track
             return Some(a.clone());
         }
     }
-    let sr = CUT_SR;
+    let sr = info.audio_streams.get(item.audio_stream).map(|a| a.sample_rate).filter(|r| (8_000..=192_000).contains(r)).unwrap_or(48_000);
     let start = (w0 * sr as f64).floor().max(0.0) as i64;
     let end = ((w0 + CUT_SPAN_S).min(info.duration.seconds().max(0.0)) * sr as f64).ceil() as i64;
     if end <= start {
@@ -208,6 +217,27 @@ fn source_window_speech(s: &Session, provider: &dyn SourceProvider, item: &Track
     Some(a)
 }
 
+/// Whether `item` is heard at timeline time `t`: the clip is enabled, its track is not muted, no
+/// transition on its track spans `t` (a fade is a deliberate edit), and its Volume there is above
+/// [`CUT_SILENT_DB`]. A cut where the clip is not heard cannot cut a sentence the audience hears.
+fn heard_at(seq: &Sequence, item: &TrackItem, t: Tick) -> bool {
+    if !item.enabled {
+        return false;
+    }
+    let Some(track) = seq.audio_tracks.iter().find(|tr| tr.items.iter().any(|i| i.id == item.id)) else { return true };
+    if track.muted || track.transitions.iter().any(|x| x.start <= t && t < x.start + x.duration) {
+        return false;
+    }
+    let mt = item.effect_time_at(t.clamp(item.start, (item.end() - Tick(1)).max(item.start)));
+    match item.effect("volume").filter(|e| e.enabled) {
+        Some(v) => {
+            let level = v.f64_at("level", mt);
+            !(level.is_nan() || level <= CUT_SILENT_DB)
+        }
+        None => true,
+    }
+}
+
 /// For each `(clip, cut)` (a clip as it is, before a razor or after a trim, and a timeline
 /// time), whether the cut lands inside speech, with the pauses before and after it.
 /// Returns (warnings, speechCuts). Reversed and frame-held clips are not checked.
@@ -220,8 +250,9 @@ pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<Stri
     let mut found = Vec::new();
     // a linked pair (a stereo L/R breakout) is one recording: checked once
     let mut seen: HashSet<(u64, u64, i64)> = HashSet::new();
+    let Some(seq) = s.active_sequence() else { return (warnings, found) };
     for (it, t) in cuts {
-        if !speaks(it) || it.reverse || it.frame_hold.is_some() || !it.speed.is_finite() || it.speed <= 0.0 {
+        if !speaks(it) || !heard_at(seq, it, *t) || it.reverse || it.frame_hold.is_some() || !it.speed.is_finite() || it.speed <= 0.0 {
             continue;
         }
         if !seen.insert((it.link.unwrap_or(u64::MAX - it.id.0), it.item.0, t.0)) {
@@ -261,7 +292,7 @@ pub(crate) fn cut_warnings(s: &Session, cuts: &[(TrackItem, Tick)]) -> (Vec<Stri
         let fmt = |v: Option<f64>| v.map(|x| format!("{x:.2} s")).unwrap_or_else(|| format!("more than {CUT_WINDOW_S:.0} s away"));
         let (seg_a, seg_b) = (to_tl(seg.start_s), to_tl(seg.end_s));
         warnings.push(format!(
-            "the cut at {ts:.2} s on clip {} (\"{}\") lands inside speech ({seg_a:.2}–{seg_b:.2} s): cut in the pause before it at {} or after it at {} instead (edit.undo, then cut there; audio.speechSegments lists every segment)",
+            "the cut at {ts:.2} s on clip {} (\"{}\") lands inside speech ({seg_a:.2}–{seg_b:.2} s, found in the source as recorded): cut in the pause before it at {} or after it at {} instead (edit.undo, then cut there; audio.speechSegments lists every segment)",
             it.id.0,
             it.name,
             fmt(cut_before),

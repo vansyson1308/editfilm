@@ -136,6 +136,8 @@ pub struct SpeechDetector {
     received: u64,
     frames: Vec<Frame>,
     truncated: bool,
+    /// Prefix sums of x² for the frame being analysed (reused, so a frame does not allocate).
+    pre: Vec<f64>,
 }
 
 impl SpeechDetector {
@@ -170,6 +172,7 @@ impl SpeechDetector {
             received: 0,
             frames: Vec::new(),
             truncated: false,
+            pre: Vec::new(),
         }
     }
 
@@ -223,7 +226,14 @@ impl SpeechDetector {
         }
     }
 
-    fn frame(&self, at: usize) -> Frame {
+    fn frame(&mut self, at: usize) -> Frame {
+        let mut pre = std::mem::take(&mut self.pre);
+        let f = self.frame_with(at, &mut pre);
+        self.pre = pre;
+        f
+    }
+
+    fn frame_with(&self, at: usize, pre: &mut Vec<f64>) -> Frame {
         let x = self.buf.get(at..at + self.win + self.lag_max).unwrap_or(&[]);
         let w = self.win.min(x.len());
         let e0: f64 = x.iter().take(w).map(|v| (*v as f64) * (*v as f64)).sum();
@@ -234,7 +244,7 @@ impl SpeechDetector {
             return Frame { db, voicing: 0.0 };
         }
         // prefix sums of x², so the lagged window's energy is O(1) per lag
-        let mut pre = Vec::with_capacity(x.len() + 1);
+        pre.clear();
         pre.push(0.0f64);
         for v in x {
             let last = pre.last().copied().unwrap_or(0.0);
@@ -652,6 +662,21 @@ pub mod test_signals {
             .collect()
     }
 
+    /// Hiss with most of its energy above 4 kHz (first difference of white noise, which rises
+    /// 6 dB per octave): a hissy lavalier, wind or HVAC.
+    pub fn hiss(secs: f64, sr: u32, amp: f32, seed: u64) -> Vec<f32> {
+        let mut rng = Rng(seed.max(1));
+        let mut last = 0.0f32;
+        (0..(secs * sr as f64) as usize)
+            .map(|_| {
+                let v = rng.sample();
+                let d = (v - last) * 0.5 * amp;
+                last = v;
+                d
+            })
+            .collect()
+    }
+
     /// A sine at `f` Hz.
     pub fn tone(secs: f64, sr: u32, f: f64, amp: f32) -> Vec<f32> {
         (0..(secs * sr as f64) as usize).map(|i| (amp as f64 * (2.0 * std::f64::consts::PI * f * i as f64 / sr as f64).sin()) as f32).collect()
@@ -761,6 +786,19 @@ mod tests {
             let g = a.segments[0];
             assert!(g.start_s <= 2.05 && g.end_s >= 4.95, "the speech is inside {g:?}");
             assert!(g.start_s >= 1.0 && g.end_s <= 6.0, "the music is mostly outside {g:?}");
+        }
+    }
+
+    /// High-frequency hiss well above the speech band (a lavalier's hiss, wind, HVAC) does not
+    /// hide the speech, as long as the signal is analysed at its own rate.
+    #[test]
+    fn speech_under_loud_hiss_is_found() {
+        let on = |t: f64| (1.0..3.0).contains(&t) || (4.0..6.0).contains(&t);
+        for hiss_amp in [0.03f32, 0.06, 0.1] {
+            let x = mix(&speech(7.0, SR, 0.3, on), &hiss(7.0, SR, hiss_amp, 9));
+            let a = detect(&x, SR as f64, SpeechParams::default());
+            println!("hiss {hiss_amp}: {:?}", a.segments);
+            near(&a.segments, &[(1.0, 3.0), (4.0, 6.0)], 0.08);
         }
     }
 

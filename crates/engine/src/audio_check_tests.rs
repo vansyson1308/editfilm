@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use filmagic_audio_dsp::speech::test_signals::{bursts, noise, speech, tone};
+use filmagic_audio_dsp::speech::test_signals::{bursts, hiss, noise, speech, tone};
 use filmagic_project::{ClipId, TrackItem};
 use filmagic_time::Tick;
 use serde_json::{Value, json};
@@ -483,4 +483,74 @@ fn auto_match_notes_when_target_did_not_apply() {
     assert!(n.contains(&format!("clip {} (Music)", c[1].0)) && n.contains("`targets`"), "{n}");
     let row = r["clips"].as_array().unwrap().iter().find(|x| x["clip"] == c[1].0).unwrap().clone();
     assert_eq!(row["targetLufs"], -25.0, "the Music preference target: {row}");
+}
+
+/// QC of 2c944bc: hiss above the speech band must not hide the speech from the cut check (it read
+/// the source at 8 kHz, where the decoders' resampling folded the hiss into the speech band).
+#[test]
+fn the_cut_check_hears_speech_under_hiss() {
+    let x = add(&speech(8.0, SR, 0.3, |t| (1.0..4.0).contains(&t) || (5.0..7.0).contains(&t)), &hiss(8.0, SR, 0.1, 4));
+    let (mut s, c, _) = session_with(&[(x, 0.0)]);
+    let r = s.execute("timeline.razor", json!({"seconds": 2.5, "track": "A1"})).unwrap();
+    let cut = &r["speechCuts"][0];
+    assert_eq!(cut["clip"], c[0].0, "{r}");
+    assert!((cut["segment"][0].as_f64().unwrap() - 1.0).abs() < 0.08 && (cut["segment"][1].as_f64().unwrap() - 4.0).abs() < 0.08, "{cut}");
+}
+
+/// A cut where the clip is not heard (disabled, its track muted, its Volume at -inf, inside a
+/// fade) cannot cut a sentence the audience hears: no warning.
+#[test]
+fn the_cut_check_skips_clips_that_are_not_heard_at_the_cut() {
+    let voice = speech(6.0, SR, 0.4, |t| (1.0..5.0).contains(&t));
+    let cut_at = |s: &mut Session| {
+        let r = s.execute("timeline.razor", json!({"seconds": 2.0, "track": "A1"})).unwrap();
+        let warned = r.get("speechCuts").is_some();
+        s.execute("edit.undo", json!({})).unwrap();
+        warned
+    };
+    let (mut s, c, _) = session_with(&[(voice, 0.0)]);
+    assert!(cut_at(&mut s), "heard: warns");
+    s.execute("clip.enable", json!({"clips": [c[0].0]})).unwrap();
+    assert!(!item(&s, c[0]).enabled);
+    assert!(!cut_at(&mut s), "a disabled clip");
+    s.execute("clip.enable", json!({"clips": [c[0].0]})).unwrap();
+    s.execute("timeline.setTrack", json!({"track": "A1", "muted": true})).unwrap();
+    assert!(!cut_at(&mut s), "a muted track");
+    s.execute("timeline.setTrack", json!({"track": "A1", "muted": false})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips": [c[0].0], "type": "dialogue"})).unwrap();
+    s.execute("essentialSound.set", json!({"clips": [c[0].0], "values": {"volume.on": true, "volume.levelDb": -60.0}})).unwrap();
+    let lvl = item(&s, c[0]).effect("volume").map(|e| e.f64_at("level", Tick::from_seconds_f64(2.0)));
+    assert!(lvl.is_some_and(|l| l <= -40.0), "the clip is turned down: {lvl:?}");
+    assert!(!cut_at(&mut s), "Volume at -60 dB");
+}
+
+/// The cut check runs inside the razor, on the thread that called it: it must stay quick (it
+/// once took 130 ms for two clips), and a second cut nearby reuses the analysis. Measured on
+/// files (the demo project's procedural media cost far more per sample than a decoder).
+#[test]
+fn the_cut_check_stays_quick_and_reuses_its_analysis() {
+    let a = speech(10.0, SR, 0.4, |t| (1.0..4.0).contains(&t) || (5.0..9.0).contains(&t));
+    let b = add(&speech(10.0, SR, 0.3, |t| (0.5..6.0).contains(&t)), &noise(10.0, SR, 0.01, 2));
+    let (s, _, _) = session_with(&[(a, 0.0), (b, 0.0)]);
+    let t = Tick::from_seconds_f64(2.0);
+    let clips = crate::audio_check::audio_clips_at(&s, t, None);
+    assert_eq!(clips.len(), 2, "two audio clips under the cut");
+    let pairs: Vec<(TrackItem, Tick)> = clips.iter().cloned().map(|c| (c, t)).collect();
+    // the fastest of three uncached runs: a guard against a slow check, not against a busy machine
+    let mut first = std::time::Duration::MAX;
+    for _ in 0..3 {
+        s.speech_cache.lock().unwrap().clear();
+        let t0 = std::time::Instant::now();
+        let (_, found) = crate::audio_check::cut_warnings(&s, &pairs);
+        first = first.min(t0.elapsed());
+        assert_eq!(found.len(), 2, "both clips speak at 2 s");
+    }
+    let near_t = Tick::from_seconds_f64(2.4);
+    let pairs: Vec<(TrackItem, Tick)> = clips.into_iter().map(|c| (c, near_t)).collect();
+    let t1 = std::time::Instant::now();
+    let _ = crate::audio_check::cut_warnings(&s, &pairs);
+    let second = t1.elapsed();
+    println!("cut check: {first:?} first, {second:?} for a cut 0.4 s away");
+    assert!(first < std::time::Duration::from_millis(100), "{first:?}");
+    assert!(second < std::time::Duration::from_millis(10), "the analysis is reused: {second:?}");
 }

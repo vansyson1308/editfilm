@@ -321,8 +321,9 @@ Times are sequence seconds (source seconds for an `item`), rounded to 1 ms.
   `pauseAfter` (where to cut instead: the middle of the pause, or 0.1 s before or after the speech
   when the pause runs past the 3 s looked at; `null` when the speech runs on beyond that) and
   `pauseBeforeRange` / `pauseAfterRange`. The edit is still made: `edit.undo` and cut there. The
-  check reads the source media, not the clip's effects, and is cached, so it stays quick;
-  `speechCheck: false` skips it. The desktop app skips it for its own clicks and keys, and runs it
+  check reads the source media as recorded (before clip effects), at its own sample rate, and is
+  cached, so it stays quick. It is skipped where the clip is not heard: disabled, on a muted track,
+  inside a transition, or with Volume at or under -40 dB at the cut. `speechCheck: false` skips it. The desktop app skips it for its own clicks and keys, and runs it
   for commands that come over the control channel.
 - **`essentialSound.autoMatch`** matches each clip to the target of its own type. Dialogue clips
   are measured only where they speak (`measuredOver: "speech"`), and a Dialogue clip with no speech
