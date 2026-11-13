@@ -233,7 +233,7 @@ app answers, and otherwise works headless (an in-process session). `--headless`,
 Annotations, argument checking, errors and export progress / cancellation:
 [agents.md § Conventions](agents.md#conventions).
 
-Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.
+Time is in ticks (254 016 000 000 per second), or a time object: `{"seconds": s}`, `{"frame": n}` or `{"timecode": "HH:MM:SS:FF"}` ([agents.md § Time values](agents.md#time-values)).
 
 ## Panel docking commands
 

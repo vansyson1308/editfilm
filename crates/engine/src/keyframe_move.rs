@@ -118,7 +118,7 @@ pub(crate) fn interpolate_many(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(SET, "keyframe count must be between 1 and 4096"));
     }
     let keys: Vec<Key> = serde_json::from_value(Value::Array(raw.clone())).map_err(|_| bad(SET, "invalid keyframe reference"))?;
-    let kind = crate::commands::interpolation_p(p);
+    let kind = crate::commands::interpolation_p(p, SET)?;
     s.edit_sequence("Keyframe Interpolation", |sequence, _, _| {
         for key in &keys {
             let lane = (key.clip, key.effect, key.mask, key.param.clone());

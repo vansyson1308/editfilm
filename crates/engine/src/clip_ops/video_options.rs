@@ -62,11 +62,11 @@ pub(super) fn frame_hold_options(s: &mut Session, p: &Value) -> Result<Value> {
                 "playhead" => unheld(it, ph),
                 "sequenceTime" => unheld(it, seq_t.ok_or_else(|| bad("clip.frameHoldOptions", "sequenceTime needs `time`/`timecode`"))?),
                 "sourceTimecode" => {
-                    let (rate, start_tc) = rates[c];
+                    let (rate, start_tc) = *rates.get(c).ok_or_else(|| bad("clip.frameHoldOptions", "the clip is not a media clip"))?;
                     match (&tc, raw_time) {
                         (Some(tc), _) => {
                             let f = parse_timecode(tc, rate, false, 0).map_err(|e| bad("clip.frameHoldOptions", format!("timecode: {e:?}")))?;
-                            rate.tick_of(f - start_tc)
+                            rate.tick_of(f.saturating_sub(start_tc))
                         }
                         (None, Some(t)) => t,
                         (None, None) => return Err(bad("clip.frameHoldOptions", "sourceTimecode needs `timecode` or `time` (media ticks)")),
