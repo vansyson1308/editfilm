@@ -827,7 +827,7 @@ pub fn commands() -> Vec<CommandSpec> {
             always,
             export_frame,
         ),
-        spec("clip.setPosterFrame", "Set Poster Frame", Some("Cmd+P"), r#"{"item":id?,"time":ticks?}"#, has_poster_target, |s, p| set_poster(s, p, false)),
+        spec("clip.setPosterFrame", "Set Poster Frame", Some("Cmd+P"), r#"{"item":id?,"time":mediaTicks?}"#, has_poster_target, |s, p| set_poster(s, p, false)),
         spec("clip.clearPosterFrame", "Clear Poster Frame", Some("Alt+P"), r#"{"item":id?}"#, has_poster_target, |s, p| set_poster(s, p, true)),
     ];
     v.extend(target_toggles());
