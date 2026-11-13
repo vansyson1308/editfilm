@@ -265,7 +265,14 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
             let c = clip_p(p, "clip").ok_or_else(|| bad(CMD, "`clip` must be a timeline clip id"))?;
             let (_, it) = q.find_item(c).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence (`sequence_inspect` lists them)", c.0)))?;
             if !is_overlay_clip(&s.project, it) {
-                return Err(bad(CMD, format!("clip {} is not a graphic, title or caption; leave out `clip` to check them all", c.0)));
+                // nothing of its own to place: say so, as a result the caller can read on
+                return Ok(json!({
+                    "ok": true,
+                    "items": [],
+                    "overlaps": [],
+                    "warnings": [],
+                    "notes": [format!("clip {} is not a graphic, title or caption, so it has no layout to check; pass a graphic clip, or leave out `clip` to check them all", c.0)],
+                }));
             }
             Some(c)
         }

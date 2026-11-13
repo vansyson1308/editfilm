@@ -120,10 +120,12 @@ fn hostile_parameters_are_refused() {
         json!({"fromSeconds": 3, "toSeconds": 1}),
         json!({"clip": 987_654}),
         json!({"clip": "x"}),
-        json!({"clip": video}),
     ] {
         assert!(s.execute("layout.check", p.clone()).is_err(), "{p}");
     }
+    // footage has no layout of its own: an empty check that says what to pass
+    let r = s.execute("layout.check", json!({"clip": video})).unwrap();
+    assert!(r["items"].as_array().is_some_and(Vec::is_empty) && r["notes"][0].as_str().unwrap().contains("not a graphic"), "{r}");
     for p in [
         json!({"clip": c}),
         json!({"clip": c, "anchor": 3}),
