@@ -149,24 +149,34 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
 
 /// `language`: absent (the setting), `"auto"` / `""` (detect), or a Whisper language code
 /// (`filmagic_speech::LANGUAGES`: `vi`, `en`, `ja`, …). `Some(None)` = detect.
+/// The Whisper code for `l` (`vi`, `vi-VN`, ` VI `), if it names one.
+fn whisper_language(l: &str) -> Option<String> {
+    // a region tag (`vi-VN`) names the same language for Whisper
+    let base = l.trim().to_ascii_lowercase().split(['-', '_']).next().unwrap_or_default().to_string();
+    filmagic_speech::is_language(&base).then_some(base)
+}
+
 fn language_p(p: &Value) -> Result<Option<Option<String>>> {
     let cmd = "transcript.generate";
     match p.get("language") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(l)) => {
-            let l = l.trim().to_ascii_lowercase();
-            if l.is_empty() || l == "auto" {
+            let t = l.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("auto") {
                 return Ok(Some(None));
             }
-            // a region tag (`vi-VN`) names the same language for Whisper
-            let base = l.split(['-', '_']).next().unwrap_or_default().to_string();
-            if filmagic_speech::is_language(&base) {
-                Ok(Some(Some(base)))
-            } else {
-                Err(bad(
-                    cmd,
-                    format!("unknown language `{l}`: use \"auto\" or a Whisper language code such as \"vi\", \"en\" or \"ja\" (transcript.models lists them)"),
-                ))
+            match whisper_language(t) {
+                Some(code) => Ok(Some(Some(code))),
+                None => {
+                    let shown: String = t.chars().take(24).collect();
+                    let more = if t.chars().count() > 24 { "…" } else { "" };
+                    Err(bad(
+                        cmd,
+                        format!(
+                            "unknown language `{shown}{more}`: use \"auto\" or a Whisper language code such as \"vi\", \"en\" or \"ja\" (transcript.models lists them)"
+                        ),
+                    ))
+                }
             }
         }
         Some(_) => Err(bad(cmd, "`language` must be a string: \"auto\" or a language code such as \"vi\"")),
@@ -182,7 +192,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     let t = transcriber(s, p)?;
     // Settings ▸ Media Analysis & Transcription: language (or auto-detect) and speaker labelling
     let ma = &s.prefs.media_analysis;
-    let default_language = if ma.language_auto_detect { None } else { Some(ma.default_language.clone()).filter(|l| filmagic_speech::is_language(l)) };
+    let default_language = if ma.language_auto_detect { None } else { whisper_language(&ma.default_language) };
     let opts = Options {
         language: match language {
             Some(l) => l,

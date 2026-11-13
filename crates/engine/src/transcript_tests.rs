@@ -213,14 +213,17 @@ fn transcription_takes_vietnamese_and_refuses_unknown_languages() {
         s.execute("transcript.generate", json!({"items": [item.0], "language": given})).unwrap_or_else(|e| panic!("{given}: {e}"));
         assert_eq!(probe.seen.lock().unwrap().last().cloned().flatten().as_deref(), want, "{given}");
     }
-    // the setting: Vietnamese as the default language
-    s.prefs.media_analysis.default_language = "vi".into();
-    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
-    assert_eq!(probe.seen.lock().unwrap().last().cloned().flatten().as_deref(), Some("vi"));
+    // the setting: Vietnamese as the default language, written either way
+    for setting in ["vi", "vi-VN"] {
+        s.prefs.media_analysis.default_language = setting.into();
+        s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+        assert_eq!(probe.seen.lock().unwrap().last().cloned().flatten().as_deref(), Some("vi"), "{setting}");
+    }
     let calls = probe.seen.lock().unwrap().len();
     for bad in [json!("xx"), json!("klingon"), json!("vi\u{0}"), json!(5), json!(true), json!(["vi"]), json!({"code": "vi"}), json!("a".repeat(100_000))] {
         let e = s.execute("transcript.generate", json!({"items": [item.0], "language": bad})).unwrap_err().to_string();
         assert!(e.contains("language"), "{e}");
+        assert!(e.len() < 400, "the input is not echoed in full: {} bytes", e.len());
     }
     assert_eq!(probe.seen.lock().unwrap().len(), calls, "refused before transcribing");
 }

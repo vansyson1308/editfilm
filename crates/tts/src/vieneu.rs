@@ -2,22 +2,35 @@
 //! the model weights it downloads, VieNeu-TTS-v3-Turbo and MOSS-Audio-Tokenizer-Nano, are
 //! Apache-2.0 too).
 //!
-//! An optional **external engine**, used like ffmpeg: Filmagic never links, bundles or ships it.
-//! It runs a Python interpreter that has the `vieneu` package installed, as a subprocess, with the
-//! small bridge in `crates/tts/python/vieneu_bridge.py` (written to `<models>/vieneu/bridge/` and
-//! run as a script; it only calls the
-//! package's public API). Requests go in as JSON on stdin; each speech segment comes back as raw
-//! float32 samples in a file. Everything else happens here: pause markers, how long a take may
-//! plausibly be, pace and pitch, headroom.
+//! An optional **external engine**: Filmagic never links, bundles or ships it, and installs it only
+//! when asked (`tts.setupVieneu {"install": true}`). VieNeu exists only as a Python package, so
+//! Filmagic runs a Python interpreter that has `vieneu` installed as a subprocess, with the small
+//! bridge in `crates/tts/python/vieneu_bridge.py`. The owner asked for VieNeu to be integrated this
+//! way (issue #20, "the way srt-whiteboard-animation does"), so this Python bridge is
+//! owner-approved for this optional engine. The bridge calls `vieneu`'s documented methods only
+//! (`Vieneu()`, `list_preset_voices()`, `get_preset_voice()`, `infer()`). Requests go in as JSON
+//! on stdin. Each speech segment comes back as raw float32 samples in a file. Everything else
+//! happens here: pause markers, how long a take may plausibly be, pace and pitch, headroom.
 //!
-//! - **Interpreter**: `FILMAGIC_VIENEU_PYTHON`, else the configured path, else the environment
-//!   [`install`] creates under `<models>/vieneu/venv`, else `py -3` / `python` (Windows) or
-//!   `python3` / `python`. [`detect`] takes the first that can import `vieneu`.
-//! - **Models**: `vieneu` downloads its model from Hugging Face on first use, into
-//!   `<models>/vieneu/cache` (`HF_HOME` and the bridge's download hook point there).
-//! - **Voices**: the preset voices, cached in `<models>/vieneu/voices.json` by [`prepare`], so
-//!   listing them never starts Python. Ids are `vieneu:<name>` ([`VOICE_PREFIX`]).
+//! Two directories ([`Dirs`]):
+//! - **engine** (`<data dir>/vieneu`, `%LOCALAPPDATA%\Filmagic\vieneu` on Windows): what is
+//!   *executed*, meaning the Python environment [`install`] creates (`venv/`) and the bridge
+//!   (`bridge/`), plus scratch files. It is not under the models folder, which an agent can move,
+//!   so no command can point Filmagic at a program to run.
+//! - **models** (`<models>/vieneu`): data only, meaning the model `vieneu` downloads (`cache/`,
+//!   through `HF_HOME`) and the voice list (`voices.json`).
+//!
+//! - **Interpreter**: `FILMAGIC_VIENEU_PYTHON` (set by a person when starting Filmagic), else the
+//!   environment in the engine directory, else `py -3` / `python` (Windows) or `python3` /
+//!   `python`. No setting or command parameter can name one. [`detect`] takes the first that can
+//!   import `vieneu`, and from then on runs the interpreter's own `sys.executable` (so a
+//!   `python.bat` shim is not what gets stopped on cancel).
+//! - The child gets a scrubbed environment (no `FILMAGIC_*` secrets, no `PYTHON*` variables) and
+//!   runs with `-E -s -X utf8` (the bridge) or `-I` (venv and pip) in an empty working directory.
+//! - **Voices**: cached by [`prepare`], so listing them never starts Python. Ids are
+//!   `vieneu:<name>` ([`VOICE_PREFIX`]). Names and text are NFC-normalised.
 //! - **Cloning**: [`Request::reference`] clones the voice of a reference clip instead.
+//! - **Output**: the model's own rate: 48 kHz for `v3turbo` (the default), 24 kHz for `v3nano`.
 //! - **Timing**: VieNeu returns audio only, no word timestamps.
 
 use std::ffi::OsString;
@@ -28,12 +41,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{Audio, MAX_SECONDS, Params, TtsError, check_text, script};
 
 /// The bridge the interpreter runs.
 pub const HELPER: &str = include_str!("../python/vieneu_bridge.py");
-/// Directory under the models directory: `venv/`, `cache/`, `bridge/`, `voices.json`, `tmp/`.
+/// Directory name, both under the models directory (data) and as the engine directory.
 pub const DIR_NAME: &str = "vieneu";
 /// Voice ids are `vieneu:<preset name>`.
 pub const VOICE_PREFIX: &str = "vieneu:";
@@ -43,16 +57,20 @@ pub const CLONE_VOICE: &str = "vieneu-clone";
 pub const LANGUAGE: &str = "vi-VN";
 /// The pip package.
 pub const PACKAGE: &str = "vieneu";
+/// The exact version [`install`] installs (tested with Filmagic's bridge).
+pub const PACKAGE_SPEC: &str = "vieneu==3.8.4";
 pub const LICENSE: &str = "Apache-2.0 (VieNeu-TTS by pnnbao97; models VieNeu-TTS-v3-Turbo and MOSS-Audio-Tokenizer-Nano, Apache-2.0)";
 pub const SOURCE: &str = "https://github.com/pnnbao97/VieNeu-TTS";
-/// Environment variable naming the interpreter (wins over the setting).
+/// Environment variable naming the interpreter. Only a person starting Filmagic can set it.
 pub const PYTHON_ENV: &str = "FILMAGIC_VIENEU_PYTHON";
 /// The sentence "Hear this voice" speaks with a VieNeu voice.
 pub const SAMPLE_SENTENCE: &str = "Xin chào! Đây là giọng của tôi khi đọc kịch bản của bạn.";
 /// The model `vieneu` loads (`VIENEU_MODE=v3nano` picks the smaller one for weak CPUs).
 pub const DEFAULT_MODE: &str = "v3turbo";
+/// What the bridge puts before its one-line JSON reply (library output can't be taken for it).
+const REPLY_PREFIX: &str = "FILMAGIC-REPLY ";
 
-/// Most bytes of stdout read from the bridge (one JSON line).
+/// Most bytes of stdout read from the bridge.
 const MAX_STDOUT: usize = 4 << 20;
 /// Bytes of stderr kept for error messages (the end, where Python puts the exception).
 const STDERR_TAIL: usize = 4096;
@@ -70,12 +88,12 @@ const MAX_SEGMENTS: usize = 4096;
 pub struct Python {
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Where it came from: `env`, `setting`, `venv` or `path`.
+    /// Where it came from: `env`, `host`, `venv` or `path`.
     pub source: &'static str,
 }
 
 impl Python {
-    fn new(program: impl Into<PathBuf>, args: &[&str], source: &'static str) -> Self {
+    pub fn new(program: impl Into<PathBuf>, args: &[&str], source: &'static str) -> Self {
         Python { program: program.into(), args: args.iter().map(|a| a.to_string()).collect(), source }
     }
 
@@ -87,44 +105,68 @@ impl Python {
     }
 }
 
-/// `<models>/vieneu`.
-pub fn dir(models_dir: &Path) -> PathBuf {
-    models_dir.join(DIR_NAME)
+/// Where VieNeu's files go (see the module docs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dirs {
+    /// What is executed: `venv/`, `bridge/`, `work/` (an empty working directory), `tmp/`.
+    pub engine: PathBuf,
+    /// The models directory; VieNeu's data is in its `vieneu/` folder.
+    pub models: PathBuf,
 }
 
-/// The environment [`install`] creates.
-pub fn venv_dir(models_dir: &Path) -> PathBuf {
-    dir(models_dir).join("venv")
+impl Dirs {
+    /// The environment [`install`] creates.
+    pub fn venv(&self) -> PathBuf {
+        self.engine.join("venv")
+    }
+
+    /// Its interpreter.
+    pub fn venv_python(&self) -> PathBuf {
+        if cfg!(windows) { self.venv().join("Scripts").join("python.exe") } else { self.venv().join("bin").join("python") }
+    }
+
+    fn bridge(&self) -> PathBuf {
+        self.engine.join("bridge").join("vieneu_bridge.py")
+    }
+
+    fn work(&self) -> PathBuf {
+        self.engine.join("work")
+    }
+
+    fn tmp(&self) -> PathBuf {
+        self.engine.join("tmp")
+    }
+
+    /// VieNeu's data under the models directory.
+    pub fn data(&self) -> PathBuf {
+        self.models.join(DIR_NAME)
+    }
+
+    /// Where `vieneu` downloads its model.
+    pub fn cache(&self) -> PathBuf {
+        self.data().join("cache")
+    }
+
+    fn voices_file(&self) -> PathBuf {
+        self.data().join("voices.json")
+    }
+
+    /// Written once a setup has loaded the model: later runs need no network.
+    fn ready_marker(&self) -> PathBuf {
+        self.data().join("ready")
+    }
 }
 
-/// Its interpreter.
-pub fn venv_python(models_dir: &Path) -> PathBuf {
-    if cfg!(windows) { venv_dir(models_dir).join("Scripts").join("python.exe") } else { venv_dir(models_dir).join("bin").join("python") }
-}
-
-/// Where `vieneu` downloads its model.
-pub fn cache_dir(models_dir: &Path) -> PathBuf {
-    dir(models_dir).join("cache")
-}
-
-fn voices_file(models_dir: &Path) -> PathBuf {
-    dir(models_dir).join("voices.json")
-}
-
-/// Interpreters to try, in order (see the module docs). `configured` is the setting.
-pub fn candidates(configured: Option<&str>, models_dir: Option<&Path>) -> Vec<Python> {
-    let mut out = Vec::new();
+/// Interpreters to try, in order (see the module docs). `host` is one a host program chose
+/// (tests use it); nothing a command or a setting says ends up here.
+pub fn candidates(dirs: &Dirs, host: Option<&Python>) -> Vec<Python> {
+    let mut out: Vec<Python> = host.cloned().into_iter().collect();
     if let Some(p) = std::env::var_os(PYTHON_ENV).filter(|v| !v.is_empty()) {
         out.push(Python::new(p, &[], "env"));
     }
-    if let Some(p) = configured.map(str::trim).filter(|p| !p.is_empty()) {
-        out.push(Python::new(p, &[], "setting"));
-    }
-    if let Some(m) = models_dir {
-        let v = venv_python(m);
-        if v.is_file() {
-            out.push(Python::new(v, &[], "venv"));
-        }
+    let v = dirs.venv_python();
+    if v.is_file() {
+        out.push(Python::new(v, &[], "venv"));
     }
     if cfg!(windows) {
         out.push(Python::new("py", &["-3"], "path"));
@@ -134,6 +176,11 @@ pub fn candidates(configured: Option<&str>, models_dir: Option<&Path>) -> Vec<Py
         out.push(Python::new("python", &[], "path"));
     }
     out
+}
+
+/// NFC form of `s` (a name typed or pasted in decomposed form matches the preset).
+pub fn nfc(s: &str) -> String {
+    s.nfc().collect()
 }
 
 /// What a subprocess left behind.
@@ -237,29 +284,44 @@ fn run_process(mut cmd: Command, stdin: &[u8], cap: usize, timeout: Duration, ca
     Ok(Output { success: status.success(), code: status.code(), stdout, stderr })
 }
 
-/// Environment for the bridge: downloads into the models directory, UTF-8 text.
-fn bridge_env(models_dir: &Path) -> Vec<(&'static str, OsString)> {
-    let cache = cache_dir(models_dir);
-    vec![
+/// Start `program` with a scrubbed environment: none of Filmagic's own variables (the control
+/// token among them) and none of Python's (`PYTHONPATH`, `PYTHONHOME`, …), then downloads into the
+/// models directory, no telemetry, and offline once a setup has succeeded.
+fn command(program: &Path, dirs: &Dirs, offline: bool) -> Result<Command, String> {
+    let work = dirs.work();
+    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
+    let mut cmd = Command::new(program);
+    for (k, _) in std::env::vars_os() {
+        let key = k.to_string_lossy().to_ascii_uppercase();
+        if key.starts_with("FILMAGIC_") || key.starts_with("PYTHON") || key.starts_with("PIP_") || key == "VIRTUAL_ENV" {
+            cmd.env_remove(&k);
+        }
+    }
+    let cache = dirs.cache();
+    let vars: [(&str, OsString); 4] = [
         ("HF_HOME", cache.join("hf").into_os_string()),
-        ("VIENEU_CACHE", cache.into_os_string()),
         ("HF_HUB_DISABLE_SYMLINKS_WARNING", "1".into()),
         ("HF_HUB_DISABLE_TELEMETRY", "1".into()),
-        ("PYTHONIOENCODING", "utf-8".into()),
-        ("PYTHONUTF8", "1".into()),
         ("PYTHONDONTWRITEBYTECODE", "1".into()),
-    ]
+    ];
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
+    if offline {
+        cmd.env("HF_HUB_OFFLINE", "1");
+    }
+    cmd.current_dir(&work);
+    Ok(cmd)
 }
 
-/// Write the bridge to `<models>/vieneu/bridge/vieneu_bridge.py` (when it differs) and return its
-/// path. A script file rather than `-c`: batch-file shims (pyenv-win's `python.bat`) cannot take a
-/// multi-line argument, and Python puts only the script's own folder on `sys.path`.
-fn bridge_script(models_dir: &Path) -> Result<PathBuf, String> {
-    let folder = dir(models_dir).join("bridge");
-    let path = folder.join("vieneu_bridge.py");
+/// Write the bridge to the engine directory (when it differs) and return its path. A script file
+/// rather than `-c`: batch-file shims (pyenv-win's `python.bat`) cannot take a multi-line argument.
+fn bridge_script(dirs: &Dirs) -> Result<PathBuf, String> {
+    let path = dirs.bridge();
     if std::fs::read(&path).ok().as_deref() == Some(HELPER.as_bytes()) {
         return Ok(path);
     }
+    let folder = path.parent().map(Path::to_path_buf).unwrap_or_else(|| dirs.engine.clone());
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let n = RUN.fetch_add(1, Ordering::Relaxed);
     let tmp = folder.join(format!("vieneu_bridge.{}-{n}.part", std::process::id()));
@@ -279,22 +341,18 @@ fn path_text(path: &Path) -> Result<&str, TtsError> {
     path.to_str().ok_or_else(|| TtsError::Invalid(format!("the path {} is not valid Unicode; choose another models location", path.display())))
 }
 
-fn bridge_command(py: &Python, op: &str, models_dir: &Path) -> Result<Command, String> {
-    let work = dir(models_dir);
-    std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
-    let script = bridge_script(models_dir)?;
-    let mut cmd = Command::new(&py.program);
-    cmd.args(&py.args).arg(script).arg(op).current_dir(&work);
-    for (k, v) in bridge_env(models_dir) {
-        cmd.env(k, v);
-    }
+fn bridge_command(py: &Python, op: &str, dirs: &Dirs, offline: bool) -> Result<Command, String> {
+    let script = bridge_script(dirs)?;
+    let mut cmd = command(&py.program, dirs, offline)?;
+    // -E: ignore PYTHON* variables; -s: no user site-packages; -X utf8: UTF-8 everywhere
+    cmd.args(&py.args).args(["-E", "-s", "-X", "utf8"]).arg(script).arg(op);
     Ok(cmd)
 }
 
-/// The bridge's JSON reply.
+/// The bridge's JSON reply: the last line that starts with [`REPLY_PREFIX`].
 fn reply(out: &Output) -> Result<serde_json::Value, String> {
     let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().rev().find(|l| l.trim_start().starts_with('{')).unwrap_or_default();
+    let line = text.lines().rev().find_map(|l| l.strip_prefix(REPLY_PREFIX)).unwrap_or_default();
     match serde_json::from_str::<serde_json::Value>(line) {
         Ok(v) if v.is_object() => Ok(v),
         _ => {
@@ -308,22 +366,30 @@ fn reply(out: &Output) -> Result<serde_json::Value, String> {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Probe {
+    /// What runs from now on: the interpreter's own `sys.executable` when it reported one.
     pub python: Python,
+    /// What was found (`py -3`, a venv, …).
+    pub found: Python,
     pub python_version: String,
     /// The installed `vieneu` version.
     pub vieneu: Option<String>,
 }
 
-/// Ask `py` for its version and whether `vieneu` is importable (does not import it).
-pub fn probe(py: &Python, models_dir: &Path) -> Result<Probe, String> {
-    let out = run_process(bridge_command(py, "probe", models_dir)?, b"", 64 * 1024, Duration::from_secs(30), None)?;
+/// Ask `py` for its version, its executable and whether `vieneu` is importable (does not import it).
+pub fn probe(py: &Python, dirs: &Dirs) -> Result<Probe, String> {
+    let out = run_process(bridge_command(py, "probe", dirs, true)?, b"", 64 * 1024, Duration::from_secs(30), None)?;
     let v = reply(&out)?;
     let version = v.get("python").and_then(|x| x.as_str()).unwrap_or_default().to_string();
     if !version.split('.').next().and_then(|m| m.parse::<u32>().ok()).is_some_and(|m| m >= 3) {
         return Err(format!("not a Python 3 interpreter (it says {version:?})"));
     }
     let vieneu = v.get("vieneu").and_then(|x| x.as_str()).map(|s| s.chars().take(64).collect());
-    Ok(Probe { python: py.clone(), python_version: version.chars().take(32).collect(), vieneu })
+    let exe = v.get("executable").and_then(|x| x.as_str()).map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file());
+    let python = match exe {
+        Some(e) => Python { program: e, args: Vec::new(), source: py.source },
+        None => py.clone(),
+    };
+    Ok(Probe { python, found: py.clone(), python_version: version.chars().take(32).collect(), vieneu })
 }
 
 /// What [`detect`] found.
@@ -345,10 +411,10 @@ impl Status {
 }
 
 /// Find an interpreter that has `vieneu` ([`candidates`] in order).
-pub fn detect(configured: Option<&str>, models_dir: &Path) -> Status {
+pub fn detect(dirs: &Dirs, host: Option<&Python>) -> Status {
     let mut st = Status::default();
-    for py in candidates(configured, Some(models_dir)) {
-        match probe(&py, models_dir) {
+    for py in candidates(dirs, host) {
+        match probe(&py, dirs) {
             Ok(p) if p.vieneu.is_some() => {
                 if st.python.is_none() {
                     st.python = Some(p.clone());
@@ -369,16 +435,14 @@ pub fn detect(configured: Option<&str>, models_dir: &Path) -> Status {
 }
 
 /// Exact steps to install VieNeu-TTS for this machine.
-pub fn install_steps(st: &Status, models_dir: &Path) -> Vec<String> {
-    let venv = venv_dir(models_dir);
-    let vpy = venv_python(models_dir);
+pub fn install_steps(st: &Status, dirs: &Dirs) -> Vec<String> {
     let q = |p: &Path| {
         let s = p.to_string_lossy();
         if s.contains(' ') { format!("\"{s}\"") } else { s.into_owned() }
     };
     let mut out = Vec::new();
     let py = match &st.python {
-        Some(p) => p.python.display(),
+        Some(p) => p.found.display(),
         None => {
             out.push(if cfg!(windows) {
                 "Install Python 3.10 or newer from python.org (tick \"Add python.exe to PATH\"), then open a new terminal".to_string()
@@ -388,41 +452,33 @@ pub fn install_steps(st: &Status, models_dir: &Path) -> Vec<String> {
             if cfg!(windows) { "py -3".to_string() } else { "python3".to_string() }
         }
     };
-    out.push(format!("{py} -m venv {}", q(&venv)));
-    out.push(format!("{} -m pip install {PACKAGE}", q(&vpy)));
+    out.push(format!("{py} -I -m venv {}", q(&dirs.venv())));
+    out.push(format!("{} -I -m pip install {PACKAGE_SPEC}", q(&dirs.venv_python())));
     out.push("Then run tts.setupVieneu (it downloads the voice model, about 0.6 GB, into the models directory and lists the voices)".to_string());
     out
 }
 
-/// Create `<models>/vieneu/venv` with `python` and `pip install vieneu` into it. `log` gets
-/// progress lines; `cancel` stops it.
-pub fn install(python: &Python, models_dir: &Path, cancel: Option<&AtomicBool>, log: &mut dyn FnMut(&str)) -> Result<Python, String> {
-    let venv = venv_dir(models_dir);
-    let vpy = venv_python(models_dir);
-    let env_for = |cmd: &mut Command| {
-        for (k, v) in bridge_env(models_dir) {
-            cmd.env(k, v);
-        }
-        cmd.current_dir(models_dir);
-    };
-    std::fs::create_dir_all(models_dir).map_err(|e| format!("{}: {e}", models_dir.display()))?;
+/// Create the environment in the engine directory with `python` (when it is not there yet) and
+/// `pip install vieneu==<pinned>` into it, every time: a cancelled install is finished, and a
+/// complete one is a quick no-op. `log` gets progress lines; `cancel` stops it.
+pub fn install(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>, log: &mut dyn FnMut(&str)) -> Result<Python, String> {
+    let vpy = dirs.venv_python();
+    std::fs::create_dir_all(&dirs.engine).map_err(|e| format!("{}: {e}", dirs.engine.display()))?;
     if !vpy.is_file() {
-        log(&format!("Creating a Python environment in {}", venv.display()));
-        let mut cmd = Command::new(&python.program);
-        cmd.args(&python.args).arg("-m").arg("venv").arg(&venv);
-        env_for(&mut cmd);
+        log(&format!("Creating a Python environment in {}", dirs.venv().display()));
+        let mut cmd = command(&python.program, dirs, false)?;
+        cmd.args(&python.args).args(["-I", "-m", "venv"]).arg(dirs.venv());
         let out = run_process(cmd, b"", MAX_STDOUT, Duration::from_secs(600), cancel)?;
         if !out.success || !vpy.is_file() {
             return Err(format!("{} -m venv failed: {}", python.display(), out.stderr));
         }
     }
-    log("Installing vieneu with pip (this can take several minutes)");
-    let mut cmd = Command::new(&vpy);
-    cmd.args(["-m", "pip", "install", "--disable-pip-version-check", PACKAGE]);
-    env_for(&mut cmd);
+    log(&format!("Installing {PACKAGE_SPEC} with pip (this can take several minutes)"));
+    let mut cmd = command(&vpy, dirs, false)?;
+    cmd.args(["-I", "-m", "pip", "install", "--disable-pip-version-check", PACKAGE_SPEC]);
     let out = run_process(cmd, b"", MAX_STDOUT, Duration::from_secs(3600), cancel)?;
     if !out.success {
-        return Err(format!("pip install {PACKAGE} failed: {}", out.stderr));
+        return Err(format!("pip install {PACKAGE_SPEC} failed: {}", out.stderr));
     }
     Ok(Python::new(vpy, &[], "venv"))
 }
@@ -463,7 +519,7 @@ impl VieneuVoice {
 }
 
 fn clean(s: Option<String>, max: usize) -> Option<String> {
-    s.map(|s| s.chars().filter(|c| !c.is_control()).take(max).collect::<String>()).filter(|s| !s.trim().is_empty())
+    s.map(|s| nfc(&s).chars().filter(|c| !c.is_control()).take(max).collect::<String>()).filter(|s| !s.trim().is_empty())
 }
 
 fn sanitize_voices(list: Vec<VieneuVoice>) -> Vec<VieneuVoice> {
@@ -480,7 +536,7 @@ fn sanitize_voices(list: Vec<VieneuVoice>) -> Vec<VieneuVoice> {
 
 /// The voices [`prepare`] cached, if any.
 pub fn cached_voices(models_dir: &Path) -> Option<Vec<VieneuVoice>> {
-    let f = voices_file(models_dir);
+    let f = models_dir.join(DIR_NAME).join("voices.json");
     if std::fs::metadata(&f).ok()?.len() > 4 << 20 {
         return None;
     }
@@ -496,11 +552,13 @@ fn engine_err(e: String) -> TtsError {
     TtsError::Engine(e)
 }
 
-/// Load the model with `python` (downloading it the first time) and cache the voice list.
-pub fn prepare(python: &Python, models_dir: &Path, cancel: Option<&AtomicBool>) -> Result<Vec<VieneuVoice>, TtsError> {
-    let cache = cache_dir(models_dir);
-    let req = serde_json::json!({"mode": mode(), "cache": path_text(&cache)?});
-    let cmd = bridge_command(python, "voices", models_dir).map_err(engine_err)?;
+/// Load the model with `python` (downloading it the first time), cache the voice list and mark
+/// the setup done (later runs are offline).
+pub fn prepare(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>) -> Result<Vec<VieneuVoice>, TtsError> {
+    let req = serde_json::json!({"mode": mode()});
+    std::fs::create_dir_all(dirs.data()).map_err(|e| engine_err(format!("{}: {e}", dirs.data().display())))?;
+    path_text(&dirs.cache())?;
+    let cmd = bridge_command(python, "voices", dirs, false).map_err(engine_err)?;
     let out = run_process(cmd, req.to_string().as_bytes(), MAX_STDOUT, Duration::from_secs(3 * 3600), cancel).map_err(engine_err)?;
     let v = reply(&out).map_err(engine_err)?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
@@ -511,10 +569,11 @@ pub fn prepare(python: &Python, models_dir: &Path, cancel: Option<&AtomicBool>) 
     if list.is_empty() {
         return Err(engine_err("VieNeu-TTS reported no voices".into()));
     }
-    let f = voices_file(models_dir);
+    let f = dirs.voices_file();
     let json = serde_json::to_vec_pretty(&list).map_err(|e| engine_err(e.to_string()))?;
     let tmp = f.with_extension("json.part");
     std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &f)).map_err(|e| engine_err(format!("{}: {e}", f.display())))?;
+    std::fs::write(dirs.ready_marker(), PACKAGE_SPEC).map_err(|e| engine_err(format!("{}: {e}", dirs.ready_marker().display())))?;
     Ok(list)
 }
 
@@ -614,15 +673,17 @@ pub fn check_reference(path: &Path) -> Result<(), TtsError> {
 
 /// Speak `req` with VieNeu-TTS through `python`. Pause markers become exact silence; pace and pitch
 /// are applied afterwards (VieNeu has neither). `cancel` stops the subprocess.
-pub fn synthesize(python: &Python, models_dir: &Path, req: &Request, cancel: Option<&AtomicBool>) -> Result<Audio, TtsError> {
+pub fn synthesize(python: &Python, dirs: &Dirs, req: &Request, cancel: Option<&AtomicBool>) -> Result<Audio, TtsError> {
     check_text(req.text)?;
     req.params.check()?;
+    let voice = req.voice.map(|v| nfc(v.trim()));
     if let Some(r) = req.reference {
         check_reference(r)?;
-    } else if req.voice.is_none_or(|v| v.trim().is_empty()) {
+    } else if voice.as_deref().is_none_or(str::is_empty) {
         return Err(TtsError::UnknownVoice(format!("{VOICE_PREFIX} needs a voice name (tts.voices lists them)")));
     }
-    let pieces = script::parse(req.text);
+    let text = nfc(req.text);
+    let pieces = script::parse(&text);
     let speech: Vec<&str> = pieces
         .iter()
         .filter_map(|p| match p {
@@ -641,13 +702,13 @@ pub fn synthesize(python: &Python, models_dir: &Path, req: &Request, cancel: Opt
         })
         .collect();
     let n = RUN.fetch_add(1, Ordering::Relaxed);
-    let tmp = TempDir(dir(models_dir).join("tmp").join(format!("{}-{n}", std::process::id())));
+    let tmp = TempDir(dirs.tmp().join(format!("{}-{n}", std::process::id())));
     let _ = std::fs::remove_dir_all(&tmp.0);
     std::fs::create_dir_all(&tmp.0).map_err(|e| engine_err(format!("{}: {e}", tmp.0.display())))?;
+    path_text(&dirs.cache())?;
     let request = serde_json::json!({
         "mode": mode(),
-        "cache": path_text(&cache_dir(models_dir))?,
-        "voice": req.voice.map(str::trim),
+        "voice": voice,
         "reference": req.reference.map(path_text).transpose()?,
         "segments": segments,
         "takes": TAKES,
@@ -655,9 +716,10 @@ pub fn synthesize(python: &Python, models_dir: &Path, req: &Request, cancel: Opt
     });
     let chars = req.text.chars().count() as u64;
     let timeout = Duration::from_secs((900 + chars / 2).min(6 * 3600));
-    let cmd = bridge_command(python, "synth", models_dir).map_err(engine_err)?;
+    let offline = dirs.ready_marker().is_file();
+    let cmd = bridge_command(python, "synth", dirs, offline).map_err(engine_err)?;
     let out = run_process(cmd, request.to_string().as_bytes(), MAX_STDOUT, timeout, cancel).map_err(engine_err)?;
-    let v = reply(&out).map_err(engine_err)?;
+    let v = reply(&out).map_err(|e| engine_err(if offline { format!("{e} (it ran offline: tts.setupVieneu downloads what is missing)") } else { e }))?;
     if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
         return Err(bridge_error(&v));
     }
@@ -696,6 +758,10 @@ pub fn synthesize(python: &Python, models_dir: &Path, req: &Request, cancel: Opt
     }
     if (req.params.pace - 1.0).abs() > 1e-6 {
         audio = crate::dsp::stretch(&audio, req.params.pace, rate);
+        // a slower pace makes it longer
+        if audio.len() as u64 > max {
+            return Err(TtsError::AudioTooLong);
+        }
     }
     if req.params.semitones.abs() > 1e-6 {
         audio = crate::dsp::pitch_shift(audio, req.params.semitones, rate);
@@ -707,6 +773,10 @@ pub fn synthesize(python: &Python, models_dir: &Path, req: &Request, cancel: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dirs(root: &Path) -> Dirs {
+        Dirs { engine: root.join("engine"), models: root.join("models") }
+    }
 
     #[test]
     fn expected_lengths_are_sane() {
@@ -722,46 +792,54 @@ mod tests {
     }
 
     #[test]
-    fn voice_cache_is_sanitized() {
+    fn voice_cache_is_sanitized_and_normalised() {
         let list = vec![
             VieneuVoice { name: "Hải Đăng".into(), gender: Some("male".into()), description: None, region: None },
-            VieneuVoice { name: "Hải Đăng".into(), gender: None, description: None, region: None },
+            // the same name, decomposed (NFD)
+            VieneuVoice { name: "Ha\u{309}i \u{110}a\u{306}ng".into(), gender: None, description: None, region: None },
             VieneuVoice { name: "  ".into(), gender: None, description: None, region: None },
             VieneuVoice { name: "a\u{0}b\nc".into(), gender: Some("x".repeat(100)), description: Some("d".repeat(1000)), region: None },
         ];
         let out = sanitize_voices(list);
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 2, "{out:?}");
         assert_eq!(out[1].name, "abc");
         assert!(out[1].description.as_ref().unwrap().len() <= 300);
         assert_eq!(out[0].info_json()["gender"], "male");
         assert_eq!(out[1].info_json()["gender"], serde_json::Value::Null);
         assert_eq!(out[0].id(), "vieneu:Hải Đăng");
+        assert_eq!(nfc("Ha\u{309}i"), "Hải");
     }
 
     #[test]
-    fn candidates_end_with_the_path_interpreters() {
-        let c = candidates(Some("  "), None);
-        assert!(c.iter().all(|p| p.source != "setting"), "blank setting ignored");
-        let c = candidates(Some("/opt/py/bin/python3"), None);
-        assert!(c.iter().any(|p| p.source == "setting"));
+    fn only_a_host_or_a_person_names_the_interpreter() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        let c = candidates(&d, None);
+        assert!(c.iter().all(|p| matches!(p.source, "env" | "venv" | "path")), "{c:?}");
         assert_eq!(c.last().map(|p| p.source), Some("path"));
-        assert_eq!(Python::new("C:/Program Files/Python/python.exe", &[], "setting").display(), "\"C:/Program Files/Python/python.exe\"");
+        let host = Python::new("/opt/py/bin/python3", &[], "host");
+        assert_eq!(candidates(&d, Some(&host)).first(), Some(&host));
+        // the environment lives in the engine directory, never in the models directory
+        assert!(d.venv().starts_with(&d.engine) && d.bridge().starts_with(&d.engine));
+        assert!(d.cache().starts_with(&d.models) && !d.cache().starts_with(&d.engine));
+        assert_eq!(Python::new("C:/Program Files/Python/python.exe", &[], "host").display(), "\"C:/Program Files/Python/python.exe\"");
     }
 
     #[test]
     fn a_missing_interpreter_is_reported_not_fatal() {
-        let dir = std::env::temp_dir().join(format!("filmagic-vieneu-missing-{}", std::process::id()));
-        let py = Python::new(dir.join("no-such-python"), &[], "setting");
-        assert!(probe(&py, &dir).is_err());
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        let py = Python::new(root.path().join("no-such-python"), &[], "host");
+        assert!(probe(&py, &d).is_err());
         let req = Request { text: "Xin chào.", voice: Some("Hải Đăng"), reference: None, params: Params::default() };
-        assert!(matches!(synthesize(&py, &dir, &req, None), Err(TtsError::Engine(_))));
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(synthesize(&py, &d, &req, None), Err(TtsError::Engine(_))));
     }
 
     /// A stand-in for a Python with `vieneu`: a shell script that speaks the bridge's protocol
-    /// (`sh fake.sh <bridge.py> <op>`, request on stdin). `synth` writes `samples` zero samples
-    /// per segment at 48 kHz; `body` replaces the synth reply for hostile cases. It keeps the
-    /// last request in `last-request.json` (in its working directory, `<models>/vieneu`).
+    /// (`sh fake.sh -E -s -X utf8 <bridge.py> <op>`, request on stdin, a prefixed reply line).
+    /// `synth` writes `samples` zero samples per segment at 48 kHz; `body` replaces the synth reply
+    /// for hostile cases (`R '<json>'` prints a reply). It keeps the last request, its arguments
+    /// and its environment in its working directory.
     #[cfg(unix)]
     fn fake(root: &Path, samples: usize, body: Option<&str>) -> Python {
         let script = root.join("fake-python.sh");
@@ -775,32 +853,41 @@ while [ "$i" -lt "$n" ]; do
   segs="$segs${{segs:+,}}{{\"samples\":{samples},\"takes\":1}}"
   i=$((i+1))
 done
-echo "{{\"ok\":true,\"sampleRate\":48000,\"segments\":[$segs]}}""#,
+echo '{{"ok":true,"note":"a library printing JSON is not the reply"}}'
+R "{{\"ok\":true,\"sampleRate\":48000,\"segments\":[$segs]}}""#,
                 bytes = samples * 4
             )
         });
         let text = format!(
             r#"#!/bin/sh
+R() {{ printf 'FILMAGIC-REPLY %s\n' "$1"; }}
 for a in "$@"; do op="$a"; done
-if [ "$op" = probe ]; then echo '{{"ok":true,"python":"3.12.1","vieneu":"3.8.4"}}'; exit 0; fi
+echo "$@" > args.txt
+env > env.txt
+if [ "$op" = probe ]; then R '{{"ok":true,"python":"3.12.1","vieneu":"3.8.4"}}'; exit 0; fi
 req=$(cat)
 printf '%s' "$req" > last-request.json
-if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"name":"Hải Đăng","label":"x","gender":"male","description":"Nam"}},{{"name":"Mai Anh","gender":"female"}}]}}'; exit 0; fi
+if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name":"Hải Đăng","label":"x","gender":"male","description":"Nam"}},{{"name":"Mai Anh","gender":"female"}}]}}'; exit 0; fi
 {synth}
 "#
         );
         std::fs::write(&script, text).unwrap();
-        Python { program: "sh".into(), args: vec![script.to_string_lossy().into_owned()], source: "setting" }
+        Python { program: "sh".into(), args: vec![script.to_string_lossy().into_owned()], source: "host" }
+    }
+
+    #[cfg(unix)]
+    fn last(root: &Path, file: &str) -> String {
+        std::fs::read_to_string(dirs(root).work().join(file)).unwrap()
     }
 
     #[cfg(unix)]
     fn last_request(root: &Path) -> serde_json::Value {
-        serde_json::from_slice(&std::fs::read(dir(root).join("last-request.json")).unwrap()).unwrap()
+        serde_json::from_str(&last(root, "last-request.json")).unwrap()
     }
 
     #[cfg(unix)]
     fn say(py: &Python, root: &Path, text: &str, voice: Option<&str>, pace: f64) -> Result<Audio, TtsError> {
-        synthesize(py, root, &Request { text, voice, reference: None, params: Params { pace, semitones: 0.0 } }, None)
+        synthesize(py, &dirs(root), &Request { text, voice, reference: None, params: Params { pace, semitones: 0.0 } }, None)
     }
 
     #[cfg(unix)]
@@ -808,7 +895,7 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
     fn speaks_through_the_bridge_with_exact_pauses() {
         let root = tempfile::tempdir().unwrap();
         let py = fake(root.path(), 24_000, None);
-        let p = probe(&py, root.path()).unwrap();
+        let p = probe(&py, &dirs(root.path())).unwrap();
         assert_eq!((p.python_version.as_str(), p.vieneu.as_deref()), ("3.12.1", Some("3.8.4")));
         let a = say(&py, root.path(), "Xin chào các bạn. [pause 500ms] Hôm nay trời đẹp.", Some("Hải Đăng"), 1.0).unwrap();
         assert_eq!(a.sample_rate, 48_000);
@@ -818,11 +905,54 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         assert_eq!(req["segments"][0]["text"], "Xin chào các bạn.");
         assert_eq!(req["segments"][1]["text"], "Hôm nay trời đẹp.");
         assert!(req["segments"][0]["minSeconds"].as_f64().unwrap() < req["segments"][0]["maxSeconds"].as_f64().unwrap());
-        assert!(req["cache"].as_str().unwrap().ends_with("cache"), "downloads stay in the models directory");
         // pace is applied afterwards: twice as fast, half as long
         let fast = say(&py, root.path(), "Xin chào các bạn.", Some("Hải Đăng"), 2.0).unwrap();
         assert_eq!(fast.samples.len(), 12_000);
-        assert!(!dir(root.path()).join("tmp").read_dir().unwrap().any(|_| true), "temporary files are removed");
+        assert!(!dirs(root.path()).tmp().read_dir().unwrap().any(|_| true), "temporary files are removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_engine_runs_isolated_and_offline_once_set_up() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        let py = fake(root.path(), 480, None);
+        say(&py, root.path(), "Xin chào.", Some("Hải Đăng"), 1.0).unwrap();
+        assert!(last(root.path(), "args.txt").starts_with("-E -s -X utf8 "), "{}", last(root.path(), "args.txt"));
+        let env = last(root.path(), "env.txt");
+        for line in env.lines() {
+            assert!(!line.starts_with("FILMAGIC_"), "Filmagic's variables (the control token) stay out: {line}");
+            assert!(!line.starts_with("PYTHON") || line.starts_with("PYTHONDONTWRITEBYTECODE="), "{line}");
+        }
+        assert!(env.contains(&format!("HF_HOME={}", d.cache().join("hf").display())), "downloads go to the models directory");
+        assert!(!env.contains("HF_HUB_OFFLINE"), "online until a setup has succeeded");
+        prepare(&py, &d, None).unwrap();
+        say(&py, root.path(), "Xin chào.", Some("Hải Đăng"), 1.0).unwrap();
+        assert!(last(root.path(), "env.txt").contains("HF_HUB_OFFLINE=1"));
+        assert!(last(root.path(), "args.txt").ends_with(" synth\n"));
+        // the working directory is empty but for what the stand-in wrote itself
+        let names: Vec<String> = std::fs::read_dir(d.work()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(names.iter().all(|n| ["args.txt", "env.txt", "last-request.json"].contains(&n.as_str())), "{names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_interpreter_s_own_executable_runs_afterwards() {
+        let root = tempfile::tempdir().unwrap();
+        let exe = root.path().join("python3.12");
+        std::fs::write(&exe, b"").unwrap();
+        let body = r#"R '{"ok":true}'"#.to_string();
+        let py = fake(root.path(), 0, Some(&body));
+        // the stand-in reports an executable: a real path is taken, anything else is ignored
+        let script =
+            std::fs::read_to_string(&py.args[0]).unwrap().replace(r#""vieneu":"3.8.4"}'"#, &format!(r#""vieneu":"3.8.4","executable":"{}"}}'"#, exe.display()));
+        std::fs::write(&py.args[0], script).unwrap();
+        let p = probe(&py, &dirs(root.path())).unwrap();
+        assert_eq!(p.python.program, exe);
+        assert!(p.python.args.is_empty());
+        assert_eq!(p.found, py);
+        std::fs::remove_file(&exe).unwrap();
+        assert_eq!(probe(&py, &dirs(root.path())).unwrap().python, py, "a path that is not there is not used");
     }
 
     #[cfg(unix)]
@@ -834,19 +964,22 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         say(&py, root.path(), nasty, Some("Hải Đăng"), 1.0).unwrap();
         assert_eq!(last_request(root.path())["segments"][0]["text"], nasty.trim());
         assert!(!Path::new("/etc/seg-0.f32").exists());
-        // a voice name is data too
+        // a voice name is data too, sent in NFC
         say(&py, root.path(), "Một hai ba.", Some("\"; rm -rf / #"), 1.0).unwrap();
         assert_eq!(last_request(root.path())["voice"], "\"; rm -rf / #");
+        say(&py, root.path(), "Ha\u{309}i.", Some("Ha\u{309}i \u{110}a\u{306}ng"), 1.0).unwrap();
+        assert_eq!(last_request(root.path())["voice"], "Hải Đăng");
+        assert_eq!(last_request(root.path())["segments"][0]["text"], "Hải.");
         // a long script: many pause markers, the 64 KB limit, never a spawn past it
         let long = "Một hai ba bốn năm. [pause 10ms] ".repeat(1_500);
         assert!(long.len() < crate::MAX_TEXT_BYTES, "{}", long.len());
         let a = say(&py, root.path(), &long, Some("Hải Đăng"), 1.0).unwrap();
         assert_eq!(last_request(root.path())["segments"].as_array().unwrap().len(), 1_500);
         assert!(a.samples.len() > 1_500 * 4_800);
-        let _ = std::fs::remove_file(dir(root.path()).join("last-request.json"));
+        let _ = std::fs::remove_file(dirs(root.path()).work().join("last-request.json"));
         assert_eq!(say(&py, root.path(), &"a ".repeat(40_000), Some("Hải Đăng"), 1.0).err(), Some(TtsError::TextTooLong));
         assert_eq!(say(&py, root.path(), " [pause 1s] … ", Some("Hải Đăng"), 1.0).err(), Some(TtsError::Empty));
-        assert!(!dir(root.path()).join("last-request.json").exists(), "refused before Python ran");
+        assert!(!dirs(root.path()).work().join("last-request.json").exists(), "refused before Python ran");
         assert!(matches!(say(&py, root.path(), "Chào.", Some("  "), 1.0), Err(TtsError::UnknownVoice(_))));
         assert!(matches!(say(&py, root.path(), "Chào.", None, 1.0), Err(TtsError::UnknownVoice(_))));
         for pace in [f64::NAN, 0.0, -1.0, 9.0] {
@@ -856,32 +989,43 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
 
     #[cfg(unix)]
     #[test]
+    fn a_slower_pace_cannot_pass_the_length_limit() {
+        let root = tempfile::tempdir().unwrap();
+        // 20 minutes at 48 kHz: under the 30-minute limit, over it at half speed
+        let py = fake(root.path(), 48_000 * 60 * 20, None);
+        assert_eq!(say(&py, root.path(), "Xin chào.", Some("Hải Đăng"), 0.5).err(), Some(TtsError::AudioTooLong));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn bridge_failures_become_errors() {
         let cases: &[(&str, fn(&TtsError) -> bool)] = &[
             (
-                r#"echo '{"ok":false,"kind":"unknownVoice","error":"unknown VieNeu voice","voices":["Hải Đăng","Mai Anh"]}'; exit 1"#,
+                r#"R '{"ok":false,"kind":"unknownVoice","error":"unknown VieNeu voice","voices":["Hải Đăng","Mai Anh"]}'; exit 1"#,
                 |e| matches!(e, TtsError::UnknownVoice(m) if m.contains("vieneu:Mai Anh")),
             ),
-            (r#"echo '{"ok":false,"kind":"missing","error":"no module named vieneu"}'; exit 1"#, |e| matches!(e, TtsError::EngineMissing(_))),
+            (r#"R '{"ok":false,"kind":"missing","error":"no module named vieneu"}'; exit 1"#, |e| matches!(e, TtsError::EngineMissing(_))),
             ("echo 'Traceback: boom' >&2; exit 3", |e| matches!(e, TtsError::Engine(m) if m.contains("boom") && m.contains('3'))),
-            ("echo 'not json at all'", |e| matches!(e, TtsError::Engine(_))),
-            (r#"echo '{"ok":true,"sampleRate":48000,"segments":[]}'"#, |e| matches!(e, TtsError::Engine(m) if m.contains("segments"))),
-            (r#"echo '{"ok":true,"sampleRate":0,"segments":[{"samples":1}]}'"#, |e| matches!(e, TtsError::Engine(m) if m.contains("sample rate"))),
-            (r#"echo '{"ok":true,"sampleRate":"48000","segments":[{"samples":1}]}'"#, |e| matches!(e, TtsError::Engine(_))),
+            ("R 'not json at all'", |e| matches!(e, TtsError::Engine(_))),
+            // JSON a library printed, without the prefix, is never the reply
+            (r#"echo '{"ok":true,"sampleRate":48000,"segments":[{"samples":0}]}'"#, |e| matches!(e, TtsError::Engine(m) if m.contains("no reply"))),
+            (r#"R '{"ok":true,"sampleRate":48000,"segments":[]}'"#, |e| matches!(e, TtsError::Engine(m) if m.contains("segments"))),
+            (r#"R '{"ok":true,"sampleRate":0,"segments":[{"samples":1}]}'"#, |e| matches!(e, TtsError::Engine(m) if m.contains("sample rate"))),
+            (r#"R '{"ok":true,"sampleRate":"48000","segments":[{"samples":1}]}'"#, |e| matches!(e, TtsError::Engine(_))),
             // the file is shorter than reported
             (
-                r#"out=$(printf '%s' "$req" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p'); head -c 10 /dev/zero > "$out/seg-0.f32"; echo '{"ok":true,"sampleRate":48000,"segments":[{"samples":100}]}'"#,
+                r#"out=$(printf '%s' "$req" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p'); head -c 10 /dev/zero > "$out/seg-0.f32"; R '{"ok":true,"sampleRate":48000,"segments":[{"samples":100}]}'"#,
                 |e| matches!(e, TtsError::Engine(m) if m.contains("bytes")),
             ),
             // NaN samples
             (
-                r#"out=$(printf '%s' "$req" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p'); printf '\000\000\300\177' > "$out/seg-0.f32"; echo '{"ok":true,"sampleRate":48000,"segments":[{"samples":1}]}'"#,
+                r#"out=$(printf '%s' "$req" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p'); printf '\000\000\300\177' > "$out/seg-0.f32"; R '{"ok":true,"sampleRate":48000,"segments":[{"samples":1}]}'"#,
                 |e| matches!(e, TtsError::Model(_)),
             ),
             // an absurd length is refused before anything is read
-            (r#"echo '{"ok":true,"sampleRate":48000,"segments":[{"samples":18446744073709551615}]}'"#, |e| *e == TtsError::AudioTooLong),
+            (r#"R '{"ok":true,"sampleRate":48000,"segments":[{"samples":18446744073709551615}]}'"#, |e| *e == TtsError::AudioTooLong),
             // a missing file
-            (r#"echo '{"ok":true,"sampleRate":48000,"segments":[{"samples":5}]}'"#, |e| matches!(e, TtsError::Engine(_))),
+            (r#"R '{"ok":true,"sampleRate":48000,"segments":[{"samples":5}]}'"#, |e| matches!(e, TtsError::Engine(_))),
         ];
         for (body, ok) in cases {
             let root = tempfile::tempdir().unwrap();
@@ -895,16 +1039,19 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
     #[test]
     fn prepare_caches_the_voices_and_detect_finds_the_interpreter() {
         let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
         let py = fake(root.path(), 0, None);
-        assert!(cached_voices(root.path()).is_none());
-        let v = prepare(&py, root.path(), None).unwrap();
+        assert!(cached_voices(&d.models).is_none());
+        let st = detect(&d, Some(&py));
+        assert_eq!(st.ready.as_ref().map(|p| &p.found), Some(&py));
+        let v = prepare(&py, &d, None).unwrap();
         assert_eq!(v.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Hải Đăng", "Mai Anh"]);
-        assert_eq!(cached_voices(root.path()), Some(v));
+        assert_eq!(cached_voices(&d.models), Some(v));
         // a corrupt cache is ignored, not trusted
-        std::fs::write(voices_file(root.path()), b"{not json").unwrap();
-        assert!(cached_voices(root.path()).is_none());
-        std::fs::write(voices_file(root.path()), b"[]").unwrap();
-        assert!(cached_voices(root.path()).is_none());
+        std::fs::write(d.voices_file(), b"{not json").unwrap();
+        assert!(cached_voices(&d.models).is_none());
+        std::fs::write(d.voices_file(), b"[]").unwrap();
+        assert!(cached_voices(&d.models).is_none());
     }
 
     #[cfg(unix)]
@@ -920,7 +1067,7 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         });
         let t0 = Instant::now();
         let req = Request { text: "Xin chào.", voice: Some("Hải Đăng"), reference: None, params: Params::default() };
-        let e = synthesize(&py, root.path(), &req, Some(&cancel)).unwrap_err();
+        let e = synthesize(&py, &dirs(root.path()), &req, Some(&cancel)).unwrap_err();
         assert!(matches!(&e, TtsError::Engine(m) if m == "stopped"), "{e:?}");
         assert!(t0.elapsed() < Duration::from_secs(10));
         t.join().unwrap();
@@ -933,8 +1080,9 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         use std::os::unix::ffi::OsStrExt;
         let root = tempfile::tempdir().unwrap();
         let py = fake(root.path(), 480, None);
-        let odd = root.path().join(std::ffi::OsStr::from_bytes(b"models-\xff"));
-        let r = std::panic::catch_unwind(|| say(&py, &odd, "Xin chào.", Some("Hải Đăng"), 1.0));
+        let odd = Dirs { engine: root.path().join("engine"), models: root.path().join(std::ffi::OsStr::from_bytes(b"models-\xff")) };
+        let req = Request { text: "Xin chào.", voice: Some("Hải Đăng"), reference: None, params: Params::default() };
+        let r = std::panic::catch_unwind(|| synthesize(&py, &odd, &req, None));
         assert!(matches!(r, Ok(Err(TtsError::Invalid(_)))), "{r:?}");
         let r = std::panic::catch_unwind(|| prepare(&py, &odd, None));
         assert!(matches!(r, Ok(Err(TtsError::Invalid(_)))), "{r:?}");
@@ -944,10 +1092,12 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
     #[test]
     fn the_bridge_file_is_written_once_and_kept_current() {
         let root = tempfile::tempdir().unwrap();
-        let p = bridge_script(root.path()).unwrap();
+        let d = dirs(root.path());
+        let p = bridge_script(&d).unwrap();
+        assert!(p.starts_with(&d.engine));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), HELPER);
         std::fs::write(&p, "tampered").unwrap();
-        assert_eq!(std::fs::read_to_string(bridge_script(root.path()).unwrap()).unwrap(), HELPER, "rewritten when it differs");
+        assert_eq!(std::fs::read_to_string(bridge_script(&d).unwrap()).unwrap(), HELPER, "rewritten when it differs");
         assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1, "no part files left");
     }
 
@@ -959,27 +1109,26 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         let clip = root.path().join("speaker.wav");
         std::fs::write(&clip, b"RIFF").unwrap();
         let req = Request { text: "Xin chào.", voice: None, reference: Some(&clip), params: Params::default() };
-        synthesize(&py, root.path(), &req, None).unwrap();
+        synthesize(&py, &dirs(root.path()), &req, None).unwrap();
         let r = last_request(root.path());
         assert_eq!(r["reference"], clip.to_string_lossy().as_ref());
         assert_eq!(r["voice"], serde_json::Value::Null);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn install_steps_name_the_venv() {
+    fn install_steps_pin_the_package_and_name_the_venv() {
         let root = tempfile::tempdir().unwrap();
-        let st = Status::default();
-        let steps = install_steps(&st, root.path());
-        assert!(steps.iter().any(|s| s.contains("-m venv") && s.contains("venv")), "{steps:?}");
-        assert!(steps.iter().any(|s| s.contains("pip install vieneu")), "{steps:?}");
+        let d = dirs(root.path());
+        let steps = install_steps(&Status::default(), &d);
+        assert!(steps.iter().any(|s| s.contains("-I -m venv") && s.contains(&*d.venv().to_string_lossy())), "{steps:?}");
+        assert!(steps.iter().any(|s| s.contains("-I -m pip install vieneu==3.8.4")), "{steps:?}");
         assert!(steps.first().is_some_and(|s| s.contains("Python 3.10")), "no Python found: install it first");
     }
 
     #[test]
     fn references_are_checked() {
-        let dir = std::env::temp_dir().join(format!("filmagic-vieneu-ref-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
         assert!(check_reference(&dir.join("x.txt")).is_err());
         assert!(check_reference(&dir.join("missing.wav")).is_err());
         let empty = dir.join("empty.wav");
@@ -987,7 +1136,8 @@ if [ "$op" = voices ]; then echo '{{"ok":true,"sampleRate":48000,"voices":[{{"na
         assert!(check_reference(&empty).is_err());
         std::fs::write(&empty, b"RIFF....").unwrap();
         assert!(check_reference(&empty).is_ok());
-        assert!(check_reference(&dir).is_err(), "a folder named like a clip");
-        let _ = std::fs::remove_dir_all(&dir);
+        let folder = dir.join("folder.wav");
+        std::fs::create_dir_all(&folder).unwrap();
+        assert!(check_reference(&folder).is_err(), "a folder named like a clip");
     }
 }

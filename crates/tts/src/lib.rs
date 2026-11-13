@@ -7,10 +7,13 @@
 //!   no download and work everywhere (also in the web build); they sound robotic. The neural voices
 //!   (Kokoro-82M, downloaded on first use) are added behind a feature in a later milestone.
 //! - [`vieneu`]: Vietnamese voices from VieNeu-TTS, an optional external engine run through a
-//!   Python interpreter (like ffmpeg: never linked or bundled). Generative, so not deterministic.
+//!   Python interpreter (never linked or bundled; the owner approved the Python bridge in #20).
+//!   Generative, so not deterministic.
 //!
 //! The built-in and neural voices are deterministic: the same script and settings give the same
 //! samples.
+
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod catalog;
 pub mod dsp;
@@ -92,7 +95,8 @@ impl Params {
     }
 }
 
-/// Mono audio at [`SAMPLE_RATE`].
+/// Mono audio at `sample_rate`: [`SAMPLE_RATE`] for the built-in and natural voices, the model's
+/// own rate for VieNeu (48 kHz, or 24 kHz with `v3nano`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Audio {
     pub samples: Vec<f32>,

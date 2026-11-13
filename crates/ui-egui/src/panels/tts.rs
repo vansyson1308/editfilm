@@ -85,6 +85,22 @@ fn natural_installed() -> bool {
     filmagic_tts::catalog::find("kokoro-heart").is_some_and(|v| dir.as_deref().is_some_and(|d| filmagic_tts::catalog::voice_installed(d, v)))
 }
 
+/// The VieNeu voices `tts.setupVieneu` cached in `models`, read from disk at most every few
+/// seconds (the panel draws every frame).
+fn vieneu_voices(models: &std::path::Path) -> Vec<filmagic_tts::vieneu::VieneuVoice> {
+    type Cached = Option<(std::path::PathBuf, web_time::Instant, Vec<filmagic_tts::vieneu::VieneuVoice>)>;
+    static CACHE: std::sync::Mutex<Cached> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match &*c {
+        Some((dir, at, list)) if dir == models && at.elapsed() < std::time::Duration::from_secs(3) => list.clone(),
+        _ => {
+            let list = filmagic_tts::vieneu::cached_voices(models).unwrap_or_default();
+            *c = Some((models.to_path_buf(), web_time::Instant::now(), list.clone()));
+            list
+        }
+    }
+}
+
 /// This build can download and run the natural voices (`neural-voices` on the engine).
 fn natural_voices_available() -> bool {
     filmagic_engine::narration::natural_voices_available()
@@ -222,7 +238,7 @@ pub fn show(app: &mut FilmagicApp, ui: &mut egui::Ui, rect: Rect) {
     let models = app.session.models_dir();
     let available = natural_voices_available();
     let voices = filmagic_tts::voices_in(models.as_deref());
-    let vieneu = models.as_deref().and_then(filmagic_tts::vieneu::cached_voices).unwrap_or_default();
+    let vieneu = models.as_deref().map(vieneu_voices).unwrap_or_default();
     // the chosen natural voice can speak (the shared model and its own voice file are here)
     let selected = filmagic_tts::catalog::find(&app.ui.tts.voice);
     let installed = selected.is_none_or(|v| models.as_deref().is_some_and(|d| filmagic_tts::catalog::voice_installed(d, v)));

@@ -495,7 +495,6 @@ pub(super) static CATEGORIES: &[Category] = &[
                     Row::Note(
                         "Speech models, natural voices and VieNeu-TTS are stored here. Changing the location does not move models already downloaded: use Move Models (models.setLocation) to move them.",
                     ),
-                    f("mediaAnalysis.vieneuPython", "Python for VieNeu-TTS", Kind::Text, true),
                 ],
             ),
         ],
@@ -646,12 +645,6 @@ pub fn validate(key: &str, v: &Value) -> std::result::Result<(), String> {
     }
     if key == "mediaAnalysis.modelsLocation" {
         return crate::models_store::validate_setting(v);
-    }
-    if key == "mediaAnalysis.vieneuPython" {
-        return match v.as_str() {
-            Some(s) if s.len() <= 4096 && !s.contains('\0') => Ok(()),
-            _ => Err("`mediaAnalysis.vieneuPython` must be a path to a Python interpreter (or \"\" to find one)".into()),
-        };
     }
     let kind = match field(key) {
         Some(f) => f.kind,

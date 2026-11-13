@@ -1,16 +1,22 @@
-//! Where downloaded models live: the Whisper speech models, the natural (Kokoro) voices and the
-//! VieNeu-TTS engine (its Python environment and model cache).
+//! Where downloaded models live: the Whisper speech models, the natural (Kokoro) voices and
+//! VieNeu-TTS's model cache and voice list. (VieNeu's Python environment and bridge, which are
+//! executed, live in its engine directory instead: [`crate::narration::vieneu_engine_dir`].)
 //!
 //! One directory holds them all. It is, in order:
-//! 1. `FILMAGIC_MODELS_DIR` (an environment variable; it wins so a launcher or an agent can point a
-//!    session somewhere else without touching the settings),
+//! 1. `FILMAGIC_MODELS_DIR` (an environment variable; it wins so a launcher can point a session
+//!    somewhere else without touching the settings),
 //! 2. Settings ▸ Media Analysis & Transcription ▸ Models location (`mediaAnalysis.modelsLocation`),
 //! 3. `<data dir>/models` (the default).
 //!
 //! | command | does |
 //! |---|---|
 //! | `models.info` | the directory, why it is the one used, what it holds and how big it is, and models left in another location |
-//! | `models.setLocation` | choose another directory and move what the current one holds there (or leave it, with a warning) |
+//! | `models.setLocation` | choose another directory and move the models the current one holds there (or leave them, with a warning) |
+//!
+//! Only folders Filmagic itself puts there are ever moved or deleted: a Whisper model (`whisper-*`),
+//! the natural voices (`kokoro-82m`) and `vieneu`. A models folder that holds anything else is not
+//! moved. `models.setLocation` needs a session that saves its settings (the desktop app);
+//! `filmagic-cli` and headless MCP sessions set `FILMAGIC_MODELS_DIR` instead.
 //!
 //! Changing `mediaAnalysis.modelsLocation` with `prefs.set` or the Settings dialog does not move
 //! anything; `models.info`, `transcript.models` and `tts.voices` then warn about models left at
@@ -78,11 +84,18 @@ fn resolve(env: Option<&str>, setting: &str, default: Option<PathBuf>) -> Option
     default.map(|d| (d, Source::Default))
 }
 
+fn env_set() -> bool {
+    std::env::var(ENV).ok().is_some_and(|v| !v.trim().is_empty())
+}
+
 /// Check a `mediaAnalysis.modelsLocation` value: empty (the default) or an absolute folder.
 pub fn validate_setting(v: &Value) -> std::result::Result<(), String> {
     let s = v.as_str().ok_or("`mediaAnalysis.modelsLocation` must be a string (a folder path, or \"\" for the default)")?;
     if !s.trim().is_empty() && !Path::new(s.trim()).is_absolute() {
-        return Err(format!("`mediaAnalysis.modelsLocation` must be an absolute folder path (got `{s}`), or \"\" for the default"));
+        return Err(format!(
+            "`mediaAnalysis.modelsLocation` must be an absolute folder path (got `{}`), or \"\" for the default",
+            s.chars().take(200).collect::<String>()
+        ));
     }
     Ok(())
 }
@@ -94,16 +107,16 @@ impl Session {
     }
 }
 
-/// What a models directory entry is.
-fn describe(name: &str) -> &'static str {
+/// What a models directory entry is, when Filmagic put it there (only those are ever moved).
+fn known(name: &str) -> Option<&'static str> {
     if filmagic_speech::models::find(name).is_some() {
-        "speech model (Whisper)"
+        Some("speech model (Whisper)")
     } else if name == filmagic_tts::catalog::PACKAGE_ID {
-        "natural voices (Kokoro-82M)"
+        Some("natural voices (Kokoro-82M)")
     } else if name == filmagic_tts::vieneu::DIR_NAME {
-        "VieNeu-TTS (Python environment and model cache)"
+        Some("VieNeu-TTS (model cache and voice list)")
     } else {
-        "other"
+        None
     }
 }
 
@@ -131,13 +144,18 @@ fn size_of(p: &Path) -> u64 {
     walk(p, 0, &mut 0)
 }
 
-/// The entries of a models directory (sorted by name), skipping partial downloads' leftovers.
+/// The entries of a directory (sorted by name), skipping hidden ones.
 fn entries(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| rd.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).filter(|n| !n.starts_with('.')).collect())
         .unwrap_or_default();
     out.sort();
     out
+}
+
+/// The entries Filmagic put there.
+fn model_entries(dir: &Path) -> Vec<String> {
+    entries(dir).into_iter().filter(|n| known(n).is_some()).collect()
 }
 
 fn entries_json(dir: &Path) -> (Vec<Value>, u64) {
@@ -147,7 +165,7 @@ fn entries_json(dir: &Path) -> (Vec<Value>, u64) {
         .map(|name| {
             let bytes = size_of(&dir.join(&name));
             total = total.saturating_add(bytes);
-            json!({"name": name, "what": describe(&name), "bytes": bytes})
+            json!({"name": name, "what": known(&name).unwrap_or("not Filmagic's (never moved)"), "bytes": bytes})
         })
         .collect();
     (list, total)
@@ -165,7 +183,7 @@ pub fn elsewhere_warnings(s: &Session) -> Vec<String> {
         others.push(p.clone());
     }
     for d in others.into_iter().filter(|d| *d != current) {
-        let names = entries(&d);
+        let names = model_entries(&d);
         if !names.is_empty() {
             let back = if Some(&d) == default_dir().as_ref() { String::new() } else { d.to_string_lossy().into_owned() };
             out.push(format!(
@@ -194,6 +212,7 @@ fn info(s: &mut Session, _: &Value) -> Result<Value> {
         "exists": dir.is_dir(),
         "entries": list,
         "bytes": total,
+        "savesSettings": s.prefs_path.is_some(),
         "warnings": elsewhere_warnings(s),
     }))
 }
@@ -204,7 +223,7 @@ enum Moved {
     Copied(PathBuf, PathBuf),
 }
 
-/// Copy `from` to `to` (a file, a directory tree, or on Unix a symbolic link), bounded.
+/// Copy `from` to `to` (a file, a directory tree or a symbolic link), bounded.
 fn copy_tree(from: &Path, to: &Path, depth: usize, seen: &mut usize) -> std::io::Result<()> {
     *seen += 1;
     if depth >= MAX_DEPTH || *seen > MAX_ENTRIES {
@@ -212,12 +231,20 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, seen: &mut usize) -> std::io:
     }
     let meta = std::fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(from)?;
         #[cfg(unix)]
         {
-            return std::os::unix::fs::symlink(std::fs::read_link(from)?, to);
+            return std::os::unix::fs::symlink(target, to);
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
+            // a link to a folder needs a folder link; one to a file (or to nothing) a file link
+            let to_dir = from.parent().map(|p| p.join(&target)).is_some_and(|t| t.is_dir());
+            return if to_dir { std::os::windows::fs::symlink_dir(target, to) } else { std::os::windows::fs::symlink_file(target, to) };
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = target;
             return Err(std::io::Error::other(format!("{} is a symbolic link; move it by hand", from.display())));
         }
     }
@@ -245,10 +272,20 @@ fn remove_any(p: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Move every entry of `from` into `to`. Nothing is overwritten: an entry that exists in both
-/// stops the move before anything changes. When a step fails, what was moved goes back.
-pub fn move_contents(from: &Path, to: &Path) -> std::result::Result<Vec<String>, String> {
-    let names = entries(from);
+/// What [`move_contents`] did.
+#[derive(Debug, Default)]
+pub struct MoveReport {
+    pub moved: Vec<String>,
+    /// Originals left behind after a complete copy (they could not be deleted).
+    pub warnings: Vec<String>,
+}
+
+/// Move the models Filmagic put in `from` ([`known`] entries only) into `to`. Nothing is
+/// overwritten: an entry that exists in both stops the move before anything changes. When a step
+/// fails, what was moved goes back, and anything that could not be put back is named. Once every
+/// copy is complete the move counts as done: originals that cannot be deleted become warnings.
+pub fn move_contents(from: &Path, to: &Path) -> std::result::Result<MoveReport, String> {
+    let names = model_entries(from);
     let clashes: Vec<&String> = names.iter().filter(|n| std::fs::symlink_metadata(to.join(n)).is_ok()).collect();
     if !clashes.is_empty() {
         return Err(format!(
@@ -258,7 +295,7 @@ pub fn move_contents(from: &Path, to: &Path) -> std::result::Result<Vec<String>,
         ));
     }
     if names.is_empty() {
-        return Ok(names);
+        return Ok(MoveReport::default());
     }
     std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
     let mut done: Vec<Moved> = Vec::new();
@@ -280,36 +317,50 @@ pub fn move_contents(from: &Path, to: &Path) -> std::result::Result<Vec<String>,
         }
     }
     if let Some(e) = failure {
+        let mut stuck = Vec::new();
         for m in done.into_iter().rev() {
             match m {
                 Moved::Renamed(src, dst) => {
-                    let _ = std::fs::rename(&dst, &src);
+                    if let Err(err) = std::fs::rename(&dst, &src) {
+                        stuck.push(format!("{} (could not be put back: {err})", dst.display()));
+                    }
                 }
                 Moved::Copied(_, dst) => {
-                    let _ = remove_any(&dst);
+                    if let Err(err) = remove_any(&dst) {
+                        stuck.push(format!("the partial copy {} (could not be deleted: {err})", dst.display()));
+                    }
                 }
             }
         }
-        return Err(format!("{e} (nothing was moved; the models stay in {})", from.display()));
+        return Err(if stuck.is_empty() {
+            format!("{e} (nothing was moved; the models stay in {})", from.display())
+        } else {
+            format!("{e}. The move was undone except for: {}. The models location is unchanged ({})", stuck.join("; "), from.display())
+        });
     }
-    let mut leftovers = Vec::new();
+    let mut report = MoveReport { moved: names, warnings: Vec::new() };
     for m in &done {
         if let Moved::Copied(src, _) = m
             && let Err(e) = remove_any(src)
         {
-            leftovers.push(format!("{}: {e}", src.display()));
+            report.warnings.push(format!("the models were copied, but the original {} could not be deleted ({e}): delete it to free the space", src.display()));
         }
     }
-    if !leftovers.is_empty() {
-        return Err(format!("the models were copied to {} but some originals could not be deleted: {}", to.display(), leftovers.join("; ")));
-    }
-    Ok(names)
+    Ok(report)
 }
 
 fn set_location(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "models.setLocation";
-    if std::env::var(ENV).ok().is_some_and(|v| !v.trim().is_empty()) {
+    if env_set() {
         return Err(bad(cmd, format!("the models location is set by the environment variable {ENV}; change or unset it instead")));
+    }
+    if s.prefs_path.is_none() {
+        return Err(bad(
+            cmd,
+            format!(
+                "this session does not save settings (filmagic-cli and headless MCP don't), so the new location would be lost: start it with {ENV} set to the folder instead, or change the location in the desktop app"
+            ),
+        ));
     }
     let raw = match p.get("dir") {
         Some(Value::String(d)) => d.trim().to_string(),
@@ -338,12 +389,25 @@ fn set_location(s: &mut Session, p: &Value) -> Result<Value> {
     if s.jobs.iter().any(|j| !j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
         return Err(bad(cmd, "a background job is running (a download or a synthesis may be using the models): wait for it (jobs.list) and try again"));
     }
+    let others: Vec<String> = entries(&current).into_iter().filter(|n| known(n).is_none()).collect();
+    if move_models && !others.is_empty() {
+        return Err(bad(
+            cmd,
+            format!(
+                "{} holds things Filmagic did not put there ({}), so it is not a models folder Filmagic can move: move them out first, or pass \"move\": false to switch without moving (nothing was moved)",
+                current.display(),
+                others.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+            ),
+        ));
+    }
     let mut warnings = Vec::new();
     let moved = if move_models {
-        move_contents(&current, &target).map_err(|e| bad(cmd, e))?
+        let r = move_contents(&current, &target).map_err(|e| bad(cmd, e))?;
+        warnings.extend(r.warnings);
+        r.moved
     } else {
         std::fs::create_dir_all(&target).map_err(|e| bad(cmd, format!("{}: {e}", target.display())))?;
-        let left = entries(&current);
+        let left = model_entries(&current);
         if !left.is_empty() {
             warnings.push(format!("{} still holds {}; they are not used from the new location", current.display(), left.join(", ")));
         }
@@ -352,7 +416,7 @@ fn set_location(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = size_of(&target);
     let mut next = s.prefs.clone();
     next.media_analysis.models_location = raw;
-    s.set_prefs(next).map_err(|e| EngineError::Other(format!("saving preferences: {e}")))?;
+    s.set_prefs(next).map_err(|e| EngineError::Other(format!("the models are in {} but saving the setting failed: {e}", target.display())))?;
     s.previous_models_dir = Some(current.clone());
     Ok(json!({"dir": target.to_string_lossy(), "previous": current.to_string_lossy(), "moved": moved, "bytes": bytes, "warnings": warnings}))
 }
@@ -372,10 +436,6 @@ pub fn commands() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
 
-    fn env_set() -> bool {
-        std::env::var(ENV).ok().is_some_and(|v| !v.trim().is_empty())
-    }
-
     fn fill(dir: &Path) {
         let w = dir.join("whisper-tiny");
         std::fs::create_dir_all(&w).unwrap();
@@ -385,6 +445,11 @@ mod tests {
         std::fs::write(v.join("weights.onnx"), vec![1u8; 500]).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink("../cache", dir.join("vieneu").join("link")).unwrap();
+    }
+
+    /// A session that saves its settings (as the desktop app does) in `root`.
+    fn saving_session(root: &Path) -> Session {
+        Session { prefs_path: Some(root.join("preferences.json")), ..Default::default() }
     }
 
     #[test]
@@ -409,7 +474,8 @@ mod tests {
         let mut s = Session::default();
         assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.modelsLocation", "value": "relative/dir"})).is_err());
         assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.modelsLocation", "value": 42})).is_err());
-        assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.vieneuPython", "value": 42})).is_err());
+        // there is no setting that names a program to run
+        assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.vieneuPython", "value": "/bin/sh"})).is_err());
         let root = tempfile::tempdir().unwrap();
         s.execute("prefs.set", json!({"key": "mediaAnalysis.modelsLocation", "value": root.path().to_string_lossy()})).unwrap();
         if !env_set() {
@@ -424,8 +490,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (a, b) = (root.path().join("a"), root.path().join("b"));
         fill(&a);
-        let moved = move_contents(&a, &b).unwrap();
-        assert_eq!(moved, ["vieneu", "whisper-tiny"]);
+        let r = move_contents(&a, &b).unwrap();
+        assert_eq!(r.moved, ["vieneu", "whisper-tiny"]);
+        assert!(r.warnings.is_empty());
         assert_eq!(std::fs::read(b.join("whisper-tiny/model.safetensors")).unwrap().len(), 1000);
         assert_eq!(size_of(&b), 1500);
         assert!(entries(&a).is_empty());
@@ -441,7 +508,37 @@ mod tests {
         let c = root.path().join("c");
         copy_tree(&a, &c, 0, &mut 0).unwrap();
         assert_eq!(size_of(&c), 1500);
-        assert!(move_contents(&root.path().join("empty-nothing"), &root.path().join("d")).unwrap().is_empty());
+        assert!(move_contents(&root.path().join("empty-nothing"), &root.path().join("d")).unwrap().moved.is_empty());
+    }
+
+    #[test]
+    fn only_filmagic_s_own_folders_are_ever_moved() {
+        let root = tempfile::tempdir().unwrap();
+        let (home, to) = (root.path().join("home"), root.path().join("to"));
+        // a folder that is not a models folder: someone's documents, and one Whisper model
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
+        std::fs::write(home.join("Documents").join("thesis.txt"), b"years of work").unwrap();
+        std::fs::write(home.join("notes.txt"), b"x").unwrap();
+        std::fs::create_dir_all(home.join("whisper-base")).unwrap();
+        let r = move_contents(&home, &to).unwrap();
+        assert_eq!(r.moved, ["whisper-base"]);
+        assert_eq!(std::fs::read(home.join("Documents").join("thesis.txt")).unwrap(), b"years of work");
+        assert!(home.join("notes.txt").exists() && !to.join("Documents").exists());
+        if env_set() {
+            return;
+        }
+        // and models.setLocation refuses to move from such a folder at all
+        let mut s = saving_session(root.path());
+        s.prefs.media_analysis.models_location = home.to_string_lossy().into_owned();
+        std::fs::create_dir_all(home.join("whisper-tiny")).unwrap();
+        let e = s.execute("models.setLocation", json!({"dir": root.path().join("x").to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("did not put there") && e.contains("Documents") && e.contains("nothing was moved"), "{e}");
+        assert!(home.join("whisper-tiny").exists() && home.join("Documents").join("thesis.txt").exists());
+        assert_eq!(s.models_dir().as_deref(), Some(home.as_path()), "unchanged");
+        // switching without moving is allowed (and warns about the models left behind)
+        let r = s.execute("models.setLocation", json!({"dir": root.path().join("x").to_string_lossy(), "move": false})).unwrap();
+        assert!(r["warnings"][0].as_str().unwrap().contains("whisper-tiny"), "{r}");
+        assert!(home.join("Documents").join("thesis.txt").exists());
     }
 
     #[test]
@@ -451,7 +548,7 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let (a, b, c) = (root.path().join("a"), root.path().join("b"), root.path().join("c"));
-        let mut s = Session::default();
+        let mut s = saving_session(root.path());
         s.prefs.media_analysis.models_location = a.to_string_lossy().into_owned();
         fill(&a);
         let r = s.execute("models.info", json!({})).unwrap();
@@ -462,6 +559,7 @@ mod tests {
         assert_eq!(r["moved"], json!(["vieneu", "whisper-tiny"]));
         assert_eq!(s.models_dir().as_deref(), Some(b.as_path()));
         assert_eq!(s.prefs.media_analysis.models_location, b.to_string_lossy());
+        assert!(std::fs::read_to_string(root.path().join("preferences.json")).unwrap().contains(&*b.to_string_lossy()), "saved");
         assert_eq!(size_of(&b), 1500);
         assert!(elsewhere_warnings(&s).is_empty(), "nothing left behind");
 
@@ -479,13 +577,30 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_does_not_save_settings_cannot_move_models() {
+        if env_set() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a");
+        fill(&a);
+        let mut s = Session::default();
+        assert!(s.prefs_path.is_none(), "like filmagic-cli and headless MCP");
+        s.prefs.media_analysis.models_location = a.to_string_lossy().into_owned();
+        let e = s.execute("models.setLocation", json!({"dir": root.path().join("b").to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("does not save settings") && e.contains(ENV), "{e}");
+        assert_eq!(entries(&a), ["vieneu", "whisper-tiny"], "nothing moved");
+        assert_eq!(s.execute("models.info", json!({})).unwrap()["savesSettings"], false);
+    }
+
+    #[test]
     fn set_location_refuses_hostile_parameters() {
         if env_set() {
             return;
         }
         let root = tempfile::tempdir().unwrap();
         let a = root.path().join("a");
-        let mut s = Session::default();
+        let mut s = saving_session(root.path());
         s.prefs.media_analysis.models_location = a.to_string_lossy().into_owned();
         fill(&a);
         let file = root.path().join("a-file");
@@ -498,6 +613,7 @@ mod tests {
             json!({"dir": root.path().to_string_lossy()}),
             json!({"dir": file.to_string_lossy()}),
             json!({"dir": root.path().join("b").to_string_lossy(), "move": "yes"}),
+            json!({"dir": format!("/{}", "x".repeat(100_000))}),
         ] {
             assert!(s.execute("models.setLocation", p.clone()).is_err(), "{p}");
         }

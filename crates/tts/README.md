@@ -24,16 +24,27 @@ clip behaviour: `crates/engine/src/narration.rs`.
   model card, CMUdict; 336 MB), every file pinned to a revision and SHA-256. Downloaded by the
   engine (`tts.downloadVoices`) after the user confirms; never bundled or committed. The model and
   dictionary (331 MB) are shared; each voice is its own 0.5 MB file, so voices download one by one.
-- `vieneu`: **Vietnamese voices from VieNeu-TTS** (Apache-2.0), an optional external engine. A
-  Python interpreter with the `vieneu` package runs as a subprocess, like ffmpeg; it is never
-  linked, bundled or installed without the user asking (`tts.setupVieneu {"install": true}`).
-  Interpreter discovery, a subprocess runner with a timeout and cancellation, the install steps,
-  the cached voice list, plausible-length retakes, pauses, pace (WSOLA) and pitch are Rust. The
-  interpreter runs `python/vieneu_bridge.py` (embedded, written to `<models>/vieneu/bridge/`). It is the only Python in the
-  repository. It holds no project logic: it reads a JSON request on stdin, calls `vieneu`'s public
-  API (`Vieneu()`, `list_preset_voices()`, `get_preset_voice()`, `infer()`) and writes raw float32
-  samples. A bridge is needed because VieNeu exists only as a Python package. Downloads go to
-  `<models>/vieneu/cache`. Output is 48 kHz. VieNeu gives no word timings.
+- `vieneu`: **Vietnamese voices from VieNeu-TTS** (Apache-2.0), an optional external engine. It is
+  never linked or bundled, and installed (`vieneu==3.8.4`, into Filmagic's own environment) only
+  when the user asks (`tts.setupVieneu {"install": true}`).
+  - **Why Python.** VieNeu exists only as a Python package, so a Python interpreter with `vieneu`
+    runs as a subprocess. The owner asked for exactly this integration in #20 ("the way
+    srt-whiteboard-animation does"), so this Python bridge is owner-approved for this optional
+    engine.
+  - **The bridge.** `python/vieneu_bridge.py` is the only Python in the repository. It is embedded,
+    written to the engine directory and run as a script. It holds no project logic: it reads a JSON
+    request on stdin, calls `vieneu`'s documented methods (`Vieneu()`, `list_preset_voices()`,
+    `get_preset_voice()`, `infer()`), writes raw float32 samples and prints one prefixed reply line.
+  - **The rest is Rust:** interpreter discovery (`FILMAGIC_VIENEU_PYTHON`, the engine directory's
+    venv, the PATH, never a setting or a command parameter), a scrubbed environment, a subprocess
+    runner with a timeout and cancellation, the install steps, the cached voice list, NFC
+    normalisation, plausible-length retakes, pauses, pace (WSOLA) and pitch.
+  - **Two directories:**
+    - the engine directory (`venv/`, `bridge/`), which is executed, so it lives under the data
+      directory (`%LOCALAPPDATA%` on Windows);
+    - `<models>/vieneu` (`cache/`, `voices.json`), which is data only.
+  - **Output** is the model's rate: 48 kHz for `v3turbo`, 24 kHz for `v3nano`. VieNeu gives no word
+    timings.
 - `dsp`: time stretch (WSOLA from `filmagic-audio-dsp`), pitch shift and headroom for voices
   without their own pace or pitch control.
 

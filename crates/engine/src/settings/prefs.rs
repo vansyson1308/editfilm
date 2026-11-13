@@ -277,8 +277,6 @@ pub struct MediaAnalysisPrefs {
     /// Where downloaded models live (speech models, natural voices, VieNeu-TTS); empty = the
     /// default `<data dir>/models`. `FILMAGIC_MODELS_DIR` overrides it (`crate::models_store`).
     pub models_location: String,
-    /// The Python interpreter that runs VieNeu-TTS; empty = find one (`tts.engines`).
-    pub vieneu_python: String,
 }
 
 impl Default for MediaAnalysisPrefs {
@@ -293,7 +291,6 @@ impl Default for MediaAnalysisPrefs {
             default_language: "en".into(),
             whisper_model: filmagic_speech::models::DEFAULT_MODEL.into(),
             models_location: String::new(),
-            vieneu_python: String::new(),
         }
     }
 }

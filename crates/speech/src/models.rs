@@ -328,9 +328,16 @@ pub fn download_files(dir: &Path, files: &[ModelFile], progress: DownloadProgres
             if n == 0 {
                 break;
             }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n])?;
-            got += n as u64;
+            got = got.saturating_add(n as u64);
+            // never more than the pinned size: a server that sends more is not sending this file
+            if got > f.size {
+                drop(out);
+                let _ = std::fs::remove_file(&part);
+                return Err(SpeechError::Download(format!("{}: the server sent more than the expected {} bytes", f.name, f.size)));
+            }
+            let chunk = buf.get(..n).unwrap_or_default();
+            hasher.update(chunk);
+            out.write_all(chunk)?;
             if !progress(done + got, total, f.name) {
                 drop(out);
                 let _ = std::fs::remove_file(&part);
@@ -386,6 +393,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A server that sends more than the pinned size: the download stops there, keeps nothing, and
+    /// does not read the rest.
+    #[cfg(feature = "download")]
+    #[test]
+    fn a_download_stops_at_the_pinned_size() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut req = [0u8; 1024];
+            let _ = c.read(&mut req);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n");
+            let _ = c.write_all(&vec![0u8; 1 << 20]);
+        });
+        let url: &'static str = Box::leak(format!("http://127.0.0.1:{port}/big.bin").into_boxed_str());
+        let files = [ModelFile { name: "big.bin", url, sha256: "0000000000000000000000000000000000000000000000000000000000000000", size: 10 }];
+        let root = tempfile::tempdir().unwrap();
+        let e = download_files(root.path(), &files, &mut |_, _, _| true).unwrap_err();
+        assert!(e.to_string().contains("more than the expected 10 bytes"), "{e}");
+        assert!(!root.path().join("big.bin").exists() && !root.path().join("big.bin.part").exists());
+        let _ = server.join();
     }
 
     #[test]

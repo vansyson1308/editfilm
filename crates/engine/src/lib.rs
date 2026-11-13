@@ -490,6 +490,8 @@ pub struct Session {
     pub tts_cache: narration::SynthCache,
     /// The models directory before the last `models.setLocation` (its leftovers are reported).
     pub previous_models_dir: Option<std::path::PathBuf>,
+    /// What a host program (or a test) chose for VieNeu-TTS; no command or setting reaches it.
+    pub vieneu_host: narration::VieneuHost,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -606,6 +608,7 @@ impl Session {
             tts_preview: None,
             tts_cache: Default::default(),
             previous_models_dir: None,
+            vieneu_host: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
