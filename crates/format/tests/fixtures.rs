@@ -381,6 +381,7 @@ fn next_id_is_raised_past_every_id_in_the_file() {
                     pitch: Default::default(),
                     pace: 1.0,
                     speech_duration: Tick(1),
+                    reference_audio: None,
                 };
                 p.narrations.insert(ItemId(BIG), narration);
             }),

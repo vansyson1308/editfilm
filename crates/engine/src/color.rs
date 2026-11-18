@@ -162,6 +162,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         LutFormat::Cube => lut.to_cube(),
         LutFormat::ThreeDl => lut.to_3dl().map_err(|e| bad("lut.export", e))?,
     };
+    crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), std::path::Path::new(path)).map_err(|e| bad("lut.export", e))?;
     std::fs::write(path, &text).map_err(|e| bad("lut.export", format!("{path}: {e}")))?;
     Ok(json!({"path": path, "bytes": text.len()}))
 }

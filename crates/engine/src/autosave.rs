@@ -1100,7 +1100,10 @@ impl Worker {
                 if self.prefs.save_current_project
                     && let Some(p) = &s.path
                 {
-                    match filmagic_format::atomic_write(Path::new(p), &bytes) {
+                    match crate::narration::refuse_inside_engine(crate::narration::vieneu_engine_dir().as_deref(), Path::new(p))
+                        .map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))
+                        .and_then(|()| filmagic_format::atomic_write(Path::new(p), &bytes))
+                    {
                         Ok(()) => {
                             let _ = self.events.send(WorkerEvent::SavedProject { path: p.clone(), revision: s.revision });
                         }

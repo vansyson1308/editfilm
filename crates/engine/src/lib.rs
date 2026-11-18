@@ -41,6 +41,7 @@ pub mod media_pool;
 mod media_queue;
 pub mod media_watch;
 pub mod mixer;
+pub mod models_store;
 pub mod motion_preview;
 pub mod multicam;
 pub mod narration;
@@ -175,6 +176,14 @@ pub trait Services: Send + Sync {
     }
 }
 
+/// Refuse a write into VieNeu's engine directory (its Python environment and bridge): a file an
+/// agent names there (a `.pth` file in the environment's `site-packages`) would run with the next
+/// VieNeu call. Filmagic writes the engine's own files without these services.
+fn outside_vieneu_engine(path: &str) -> std::io::Result<()> {
+    narration::refuse_inside_engine(narration::vieneu_engine_dir().as_deref(), std::path::Path::new(path))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
+}
+
 /// Native filesystem services.
 pub struct FsServices;
 impl Services for FsServices {
@@ -182,10 +191,12 @@ impl Services for FsServices {
         filmagic_media::reader::read_regular_file(std::path::Path::new(path))
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        outside_vieneu_engine(path)?;
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmagic_format::atomic_write(std::path::Path::new(path), data)
     }
     fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        outside_vieneu_engine(path)?;
         let path = std::path::Path::new(path);
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(dir).map_err(|error| {
@@ -497,6 +508,10 @@ pub struct Session {
     pub tts_preview: Option<Arc<filmagic_tts::Audio>>,
     /// Synthesized narrations (`tts.render` fills it from a background job).
     pub tts_cache: narration::SynthCache,
+    /// The models directory before the last `models.setLocation` (its leftovers are reported).
+    pub previous_models_dir: Option<std::path::PathBuf>,
+    /// What a host program (or a test) chose for VieNeu-TTS; no command or setting reaches it.
+    pub vieneu_host: narration::VieneuHost,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -646,6 +661,8 @@ impl Session {
             voiceover: Default::default(),
             tts_preview: None,
             tts_cache: Default::default(),
+            previous_models_dir: None,
+            vieneu_host: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
