@@ -635,6 +635,19 @@ fn mix_check(s: &mut Session, p: &Value) -> Result<Value> {
     if seq.settings.audio_master == filmagic_project::AudioChannels::Surround51 {
         notes.push("the 5.1 mix is measured as its ITU-R BS.775 stereo downmix".into());
     }
+    // a sound clip that carries a speed ramp plays nothing (sound does not follow Time Remapping)
+    let ramped: Vec<u64> = seq
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter(|i| i.enabled && i.has_speed_ramp() && i.start.seconds() < b && i.end().seconds() > a)
+        .map(|i| i.id.0)
+        .collect();
+    if !ramped.is_empty() {
+        warnings.push(format!(
+            "sound clip(s) {ramped:?} carry a speed ramp and are silent: sound does not follow Time Remapping; remove it with clip.speedRamp clear:true on the picture, or replace the sound"
+        ));
+    }
     let mix = measure(s, &filtered(&seq, |_, _| true), a, b, &provider);
     // tracks: each track's own items, through the whole mixer (its fader, mute, the master)
     let mut tracks = Vec::new();

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use filmagic_media::DemoScene;
 use filmagic_project::{ClipId, ItemId};
+use filmagic_time::Tick;
 use serde_json::{Value, json};
 
 use super::cached;
@@ -165,12 +166,40 @@ fn time_remapping_a_clip_across_a_source_cut_warns_and_100_percent_does_not() {
     // a keyframe at a constant 100 % is no retiming
     let r = s.execute("effects.addKeyframe", json!({"clip": clip.0, "effect": "time_remap", "param": "speed", "time": 0})).unwrap();
     assert!(warnings(&r).is_empty(), "{r}");
+    // slowed to half speed from the start: frames 0..15 show, all of the first shot (cut at 20)
     let r = s.execute("effects.setParam", json!({"clip": clip.0, "effect": "time_remap", "param": "speed", "value": 50.0, "time": 0})).unwrap();
-    assert!(warnings(&r).iter().any(|w| w.contains("straddles a cut in its source at 0.833 s") && w.contains("about")), "{r}");
-    assert_eq!(r["sourceCuts"][0]["timelineApproximate"], true);
-    // another effect change on the same clip does not repeat it
+    assert!(warnings(&r).is_empty(), "{r}");
+    // another effect change on the same clip does not warn
     let r = s.execute("effects.setParam", json!({"clip": clip.0, "effect": "opacity", "param": "opacity", "value": 80.0})).unwrap();
     assert!(r.get("warnings").is_none(), "{r}");
+}
+
+#[test]
+fn a_ramped_clip_across_a_source_cut_warns_where_the_ramp_plays_it() {
+    let (mut s, _, clip) = known_shots("srccuts-ramp");
+    s.execute("timeline.razor", json!({"clip": clip.0, "frame": 30})).unwrap();
+    // 100 % to frame 10, easing linearly to 50 % by frame 20, then 50 %; rippled, so all 30
+    // frames show. Media frame 20 (the cut, 0.833 s): 10 frames at 100 %, 7.5 over the ramp
+    // (the mean of 100 % and 50 % over 10 frames), the last 2.5 at 50 % in 5: timeline frame 25.
+    let r = s
+        .execute(
+            "clip.speedRamp",
+            json!({"clip": clip.0, "from": 100, "to": 50, "at": {"frame": 10}, "duration": {"frame": 10}, "ease": "linear", "ripple": true}),
+        )
+        .unwrap();
+    assert!(warnings(&r).iter().any(|w| w.contains("straddles a cut in its source at 0.833 s")), "{r}");
+    let cut = r["sourceCuts"].as_array().unwrap().iter().find(|c| c["kind"] == "inside").unwrap();
+    let t = cut["timelineSeconds"].as_f64().unwrap();
+    assert!((t - 25.0 / 24.0).abs() < 0.6 / 24.0, "{r}");
+    assert!(cut.get("timelineApproximate").is_none(), "{r}");
+    // the frame the timeline shows there is the cut's
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let rate = s.sequence_rate();
+    assert_eq!(rate.frame_at(it.source_time_at(Tick::from_seconds_f64(t))), 20);
+    // slowed, the same range of media is listed with the clip
+    let listed = s.execute("media.sourceCuts", json!({"clip": clip.0})).unwrap();
+    let c = listed["cuts"].as_array().unwrap().iter().find(|c| c["frame"] == 20).unwrap();
+    assert!((c["timelineSeconds"].as_f64().unwrap() - t).abs() < 1e-6, "{listed}");
 }
 
 #[test]

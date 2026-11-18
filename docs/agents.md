@@ -502,6 +502,12 @@ where each clip could be cut → build the sequence (`sequence.clips` lists its 
 `story.rhythm` and `story.cuts` → look at the cuts they call out → `story.shadowCut` before trying
 another version, and `story.compare` to see shot by shot what the new one changed.
 
+For sports and event footage, see [highlights-and-speed-ramps.md](highlights-and-speed-ramps.md).
+`story.highlights` finds rallies, cheering, bursts of motion and scoreboard changes in long
+single-camera footage, where scene detection finds nothing. It runs as a job, and lists every
+impact it heard. `clip.speedRamp` makes a smooth speed change (100 % easing to 40 %) in one
+command, as Time Remapping keyframes that the renderer plays.
+
 Two habits make these reliable. Read `warnings` and `notes` in every result: they say what a
 command could not do. And read `pictureChange` after a command that alters the picture: `subtle`
 means a viewer will not notice it. A region read off a rendered frame takes `"space":"frame"`
@@ -529,10 +535,10 @@ the gaps:
   (the web build has no background checker and needs it). A call checks at most 7200 frames; `next`
   says where to continue. The status bar shows the checker only when no export or other job runs. After `timeline.razor`, `sequence.addEdit`,
   `sequence.addEditAllTracks`, `clip.speedDuration`, `timeline.rateStretch`, `clip.frameHold`,
-  `clip.frameHoldOptions`, `clip.insertFrameHoldSegment` or a Time Remapping change, the result's
+  `clip.frameHoldOptions`, `clip.insertFrameHoldSegment`, `clip.speedRamp` or a Time Remapping change, the result's
   `warnings` say when the edit lands within 3 frames of a known cut, or the retimed clip straddles
-  one, with the cut's time (`sourceCuts` has the details; with an animated Time Remapping curve the
-  timeline time is approximate). An edit never waits for a decode: where the cuts are not known
+  one, with the cut's time (`sourceCuts` has the details; on a ramped clip the timeline time is
+  where the ramp plays the cut). An edit never waits for a decode: where the cuts are not known
   yet, `notes` says a background check started, and the next edit, or `media.sourceCuts`, reports
   them. A file that is relinked or changes on disk is looked at afresh. The detection is Scene Edit
   Detection's measure at its default sensitivity. A good habit: run `media.sourceCuts {item}` on
