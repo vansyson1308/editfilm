@@ -496,7 +496,11 @@ pub fn handle(app: &mut FilmagicApp, ctx: &egui::Context, req: &ControlRequest) 
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
-            match invoke(app, ctx, id, params) {
+            // an agent's razor and trim get the speech check the app skips for clicks (#15)
+            let before = std::mem::replace(&mut app.session.cut_speech_check, true);
+            let r = invoke(app, ctx, id, params);
+            app.session.cut_speech_check = before;
+            match r {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
