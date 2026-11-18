@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod audio_check;
 pub mod autosave;
 pub mod captions;
 pub mod clip_ops;
@@ -515,6 +516,13 @@ pub struct Session {
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
     pub browser: media_browser::BrowserState,
+    /// Whether razor, Add Edit and trim check for a cut inside speech (#15). On for agents
+    /// (headless, MCP, CLI); the desktop app turns it off for its own clicks and keys, which
+    /// discard the warnings, and on again around control-channel requests. A command's
+    /// `speechCheck` parameter overrides it.
+    pub cut_speech_check: bool,
+    /// Recent speech analyses of source media for the cut check ([`audio_check`]).
+    pub(crate) speech_cache: std::sync::Mutex<audio_check::SpeechCache>,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
     /// Id of the outermost command [`Session::execute`] is running, stored with each undo step
@@ -559,7 +567,19 @@ impl Job {
             "total": self.progress.total.load(Ordering::Relaxed),
             "status": self.progress.status.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "finished": res.is_some(),
-            "result": match res { Some(Ok(r)) => serde_json::to_value(r).unwrap_or_default(), Some(Err(e)) => serde_json::json!({"error": e}), None => Value::Null },
+            "result": match res {
+                Some(Ok(r)) => {
+                    let mut v = serde_json::to_value(r).unwrap_or_default();
+                    // the written audio's true peak and limiter, with warnings above -1 dBTP (#15)
+                    if let Some(a) = self.progress.audio.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                        v["warnings"] = serde_json::json!(a.warnings);
+                        v["audio"] = serde_json::to_value(a).unwrap_or_default();
+                    }
+                    v
+                }
+                Some(Err(e)) => serde_json::json!({"error": e}),
+                None => Value::Null,
+            },
         })
     }
 }
@@ -616,6 +636,8 @@ impl Session {
             transcriber: None,
             log: Default::default(),
             browser: Default::default(),
+            cut_speech_check: true,
+            speech_cache: Default::default(),
             exec_depth: 0,
             command_origin: None,
             media_stamps: Default::default(),
@@ -1359,6 +1381,8 @@ const MAX_SUBCLIP_CHAIN: usize = 16;
 mod aaf_omf_tests;
 #[cfg(test)]
 mod animated_image_tests;
+#[cfg(test)]
+mod audio_check_tests;
 #[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]

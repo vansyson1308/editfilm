@@ -2944,6 +2944,10 @@
 	Luma Min / Max	輝度の最小 / 最大
 	Loudness Normalization	ラウドネスのノーマライズ
 	True Peak Limit	トゥルーピークの上限
+	True-Peak Limiter	トゥルーピークリミッター
+	Ceiling	上限
+	Find Speech Segments	音声区間を検出
+	Check Mix Loudness	ミックスのラウドネスを確認
 	Audio only	オーディオのみ
 	Scaling	拡大・縮小
 	Scale To Fit	収まるように拡大・縮小
