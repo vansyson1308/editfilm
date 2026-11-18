@@ -12,7 +12,7 @@ use crate::Session;
 const RATE: FrameRate = FrameRate::FPS_24;
 
 /// What moves: centre (clip pixels) and radius at frame `k`, or nothing.
-type Mover = fn(f64) -> Option<(f64, f64, f64)>;
+type Mover = Arc<dyn Fn(f64) -> Option<(f64, f64, f64)> + Send + Sync>;
 
 struct Scene {
     info: filmagic_media::MediaInfo,
@@ -25,6 +25,12 @@ struct Scene {
     noise: f64,
     /// sleep per frame, for the background-job tests
     slow: Option<std::time::Duration>,
+    /// a flat green court and a flat white object (the fast-ball repro), not the grainy floor
+    flat: bool,
+    /// a second mover drawn as an orange box `r` wide and `2r` tall: a player
+    player: Option<Mover>,
+    /// a static white vertical court line: centre x and width, clip pixels
+    line: Option<(f64, f64)>,
 }
 
 fn hash(x: u64) -> f64 {
@@ -48,17 +54,29 @@ impl filmagic_media::MediaSource for Scene {
         let (w, h) = ((f64::from(self.w) * scale).round() as usize, (f64::from(self.h) * scale).round() as usize);
         let per = w as f64 / f64::from(self.w);
         let m = (self.mover)(k);
+        let player = self.player.as_ref().and_then(|p| p(k));
         let mut px = vec![255u8; w * h * 4];
         for (i, o) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, y) = (((i % w) as f64 + 0.5) / per, ((i / w) as f64 + 0.5) / per);
             let grain = 0.03 * ((x * 0.31).sin() * (y * 0.17).cos());
             let noise = if self.noise > 0.0 { self.noise * (hash((frame as u64) << 32 | i as u64) - 0.5) } else { 0.0 };
-            let mut v = [0.18 + grain + noise, 0.2 + grain + noise, 0.22 + grain + noise];
+            let mut v = if self.flat { [0.16, 0.5, 0.22] } else { [0.18 + grain + noise, 0.2 + grain + noise, 0.22 + grain + noise] };
+            if let Some((lx, lw)) = self.line
+                && (x - lx).abs() <= lw / 2.0
+            {
+                v = [0.95, 0.95, 0.95];
+            }
+            if let Some((cx, cy, r)) = player
+                && (x - cx).abs() <= r / 2.0
+                && (y - cy).abs() <= r
+            {
+                v = [0.9, 0.45, 0.1];
+            }
             if let Some((cx, cy, r)) = m {
                 let inside = if self.square { (x - cx).abs() <= r && (y - cy).abs() <= r } else { (x - cx).powi(2) + (y - cy).powi(2) <= r * r };
                 if inside {
                     // a little pattern of its own, so a box around it has detail
-                    let t = 0.85 + 0.1 * ((x - cx) * 0.9).sin() * ((y - cy) * 0.7).cos();
+                    let t = if self.flat { 1.0 } else { 0.85 + 0.1 * ((x - cx) * 0.9).sin() * ((y - cy) * 0.7).cos() };
                     v = [t, t, t * 0.95];
                 }
             }
@@ -82,17 +100,20 @@ struct Setup {
     square: bool,
     noise: f64,
     slow: Option<std::time::Duration>,
+    flat: bool,
+    player: Option<Mover>,
+    line: Option<(f64, f64)>,
 }
 
 impl Setup {
-    fn new(w: u32, h: u32, frames: i64, mover: Mover) -> Setup {
-        Setup { w, h, seq: (w, h), frames, mover, square: false, noise: 0.0, slow: None }
+    fn new(w: u32, h: u32, frames: i64, mover: impl Fn(f64) -> Option<(f64, f64, f64)> + Send + Sync + 'static) -> Setup {
+        Setup { w, h, seq: (w, h), frames, mover: Arc::new(mover), square: false, noise: 0.0, slow: None, flat: false, player: None, line: None }
     }
 
     /// A session with the scene as one clip alone on V1 of a sequence `seq` big, selected.
     fn session(self) -> (Session, ClipId, ItemId) {
         use filmagic_media::MediaSource;
-        let Setup { w, h, seq, frames, mover, square, noise, slow } = self;
+        let Setup { w, h, seq, frames, mover, square, noise, slow, flat, player, line } = self;
         let g = filmagic_media::generators::GeneratorSource::new(
             filmagic_media::Generator::ColorMatte { color: [0.5, 0.5, 0.5, 1.0] },
             w,
@@ -131,7 +152,7 @@ impl Setup {
         let mut s = Session { project: Arc::new(p), ..Default::default() };
         s.state.active_sequence = Some(sid);
         s.state.selection = vec![clip];
-        s.media.insert(item, Arc::new(Scene { info, w, h, mover, square, noise, slow }));
+        s.media.insert(item, Arc::new(Scene { info, w, h, mover, square, noise, slow, flat, player, line }));
         (s, clip, sid)
     }
 }
@@ -254,7 +275,7 @@ fn reframe_with_nothing_moving_stays_centred_and_says_so() {
     let r = s.execute("clip.autoReframe", json!({"output": "sequence", "aspect": "1:1", "wait": true})).unwrap();
     assert_eq!((r["sequence"]["width"].as_u64(), r["sequence"]["height"].as_u64()), (Some(360), Some(360)));
     let notes = r["clips"][0]["notes"].to_string();
-    assert!(notes.contains("centred"), "{r}");
+    assert!(notes.contains("centred") && notes.contains("seed it"), "{r}");
 }
 
 #[test]
@@ -627,4 +648,114 @@ fn tracking_follows_the_frames_a_speed_ramp_shows() {
     let (a, b) = (lob(shown_frame(&s, seq, clip, k - 2)).unwrap(), lob(shown_frame(&s, seq, clip, k - 3)).unwrap());
     let mid = pixel(&img, (a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
     assert!(mid[0] > 0.6 && mid[1] < 0.1 && mid[2] < 0.1, "trail pixel {mid:?}");
+}
+
+/// QC's fast-ball repro: a 16 px white square on a flat green 1280×720 court, swinging
+/// `x = 640 + 500·sin(2πt/P)` and bouncing `y = 360 − 200·|sin(2πt/P)|`, t = frame / 30.
+fn swing(period: f64) -> impl Fn(f64) -> Option<(f64, f64, f64)> + Send + Sync + 'static {
+    move |k| {
+        let a = (std::f64::consts::TAU * (k / 30.0) / period).sin();
+        Some((648.0 + 500.0 * a, 368.0 - 200.0 * a.abs(), 8.0))
+    }
+}
+
+/// Fraction of the first `n` frames tracked within `tol` clip pixels of where the ball is.
+fn coverage_within(r: &Value, n: usize, at: &dyn Fn(f64) -> Option<(f64, f64, f64)>, tol: f64) -> f64 {
+    let pts = r["points"].as_array().cloned().unwrap_or_default();
+    let mut good = 0;
+    for p in &pts {
+        let (Some(t), Some(x), Some(y)) = (p["seconds"].as_f64(), p["x"].as_f64(), p["y"].as_f64()) else { continue };
+        if let Some((bx, by, _)) = at((t * 24.0).round())
+            && (x - bx).hypot(y - by) <= tol
+        {
+            good += 1;
+        }
+    }
+    good as f64 / n as f64
+}
+
+fn fast_session(period: f64, edit: impl FnOnce(&mut Setup)) -> Session {
+    let mut setup = Setup::new(1280, 720, 90, swing(period));
+    setup.square = true;
+    setup.flat = true;
+    edit(&mut setup);
+    setup.session().0
+}
+
+/// The period of [`swing`] whose ball starts at `speed` clip pixels a frame.
+fn period_for(speed: f64) -> f64 {
+    500.0 * std::f64::consts::TAU / (30.0 * speed)
+}
+
+fn track_swing(s: &mut Session, frames: i64) -> Value {
+    s.execute("sports.trackPoint", json!({"point": [648, 368], "size": 16, "at": 0, "end": {"frame": frames}, "wait": true})).unwrap()
+}
+
+#[test]
+fn a_fast_bouncing_ball_is_followed_from_the_first_frame() {
+    // 90 frames take each of these through a bounce, where the velocity reverses
+    for speed in [20.0, 40.0, 65.0] {
+        let mut s = fast_session(period_for(speed), |_| {});
+        let r = track_swing(&mut s, 90);
+        let c = coverage_within(&r, 90, &swing(period_for(speed)), 3.0);
+        assert!(c >= 0.9, "{speed} px/frame: {c} of the frames within 3 px; {}", r["lost"]);
+    }
+}
+
+#[test]
+fn a_hidden_ball_is_found_again_when_it_comes_back() {
+    let period = period_for(20.0);
+    let path = swing(period);
+    let mut s = fast_session(period, |s| s.mover = Arc::new(move |k| if (30.0..40.0).contains(&k) { None } else { swing(period)(k) }));
+    let r = track_swing(&mut s, 90);
+    let lost = r["lost"].as_array().cloned().unwrap_or_default();
+    assert_eq!(lost.len(), 1, "one gap, while it was hidden: {}", r["lost"]);
+    // found again within two frames of coming back, and followed to the end
+    let pts = r["points"].as_array().unwrap();
+    for k in 42..90 {
+        let p = &pts[k];
+        let (bx, by, _) = path(k as f64).unwrap();
+        let (x, y) = (p["x"].as_f64().unwrap_or(f64::NAN), p["y"].as_f64().unwrap_or(f64::NAN));
+        assert!((x - bx).hypot(y - by) <= 3.0, "frame {k}: ({x:.1}, {y:.1}) vs ({bx:.1}, {by:.1})");
+    }
+    assert!(coverage_within(&r, 90, &path, 3.0) >= 0.85, "{r}");
+}
+
+#[test]
+fn a_fast_ball_is_not_lost_to_a_court_line_or_a_moving_player() {
+    let period = period_for(40.0);
+    // a court line the ball crosses, and a player-sized box running under the ball's path
+    let mut s = fast_session(period, |s| {
+        s.line = Some((900.0, 6.0));
+        s.player = Some(Arc::new(|k| Some((640.0 + 300.0 * (k / 30.0 * 1.3).sin(), 420.0, 70.0))));
+    });
+    let r = track_swing(&mut s, 90);
+    let c = coverage_within(&r, 90, &swing(period), 3.0);
+    assert!(c >= 0.9, "{c} of the frames within 3 px; {}", r["lost"]);
+}
+
+#[test]
+fn a_ball_trail_on_a_fast_ball_lands_behind_it() {
+    let period = period_for(40.0);
+    let path = swing(period);
+    let mut s = fast_session(period, |_| {});
+    let seq = s.state.active_sequence.unwrap();
+    let r = s
+        .execute("sports.ballTrail", json!({"point": [648, 368], "size": 16, "at": 0, "end": {"frame": 30}, "length": 6, "width": 12, "glow": false, "color": "#FF2020", "opacity": 100, "fade": 0, "taper": 0, "wait": true}))
+        .unwrap();
+    assert!(r["coverage"].as_f64().unwrap() >= 0.95, "{r}");
+    let g = ClipId(r["clip"].as_u64().unwrap());
+    assert!(s.project.sequence(seq).unwrap().find_item(g).is_some());
+    // early in the swing, before the ball turns back at its far end
+    let k = 8;
+    s.set_playhead(RATE.tick_of(k));
+    let img = s.render_program(1.0).unwrap();
+    // between where the ball was 2 and 3 frames ago (≈ 40 px apart): the trail's red
+    let (a, b) = (path((k - 2) as f64).unwrap(), path((k - 3) as f64).unwrap());
+    let mid = pixel(&img, (a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    assert!(mid[0] > 0.6 && mid[1] < 0.1 && mid[2] < 0.1, "trail pixel {mid:?}");
+    // where the ball will be in 3 frames: still the court
+    let n = path((k + 3) as f64).unwrap();
+    let ahead = pixel(&img, n.0, n.1);
+    assert!(ahead[1] > ahead[0], "ahead of the ball {ahead:?}");
 }

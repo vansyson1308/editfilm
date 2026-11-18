@@ -752,7 +752,11 @@ bounded (at most 20 000 samples for a reframe, 7 200 frames for a track).
 - `sports.trackPoint` follows a small object (`point` + `size`) or a player (`box`) from `at` over
   `start`–`end` (default: to the clip's end, at most 10 s) with a template tracker, and answers
   `points` (`{time, seconds, x, y, found, score}` per frame), `coverage` and `lost`. It changes
-  nothing. A plain area is refused: give a box around the object.
+  nothing. A plain area is refused: give a box around the object. A fast ball is followed from
+  the first frame: no speed is known there, so the search spans 12 % of the frame width, and the
+  frame difference proposes where the ball went, which also covers a bounce. A lost ball is
+  searched for over a region that doubles each frame, up to the whole frame, and taken back only
+  on a close template match. In tests it holds a 16 px ball at 65 px a frame in 720p.
 - `sports.ballTrail` draws a fading, tapering trail behind the followed object: a graphic clip of
   `length` rounded-rectangle shape layers keyframed per frame (`color`, `width`, `length` frames,
   `fade`, `taper`, `opacity`, `glow`).
