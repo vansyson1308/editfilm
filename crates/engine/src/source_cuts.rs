@@ -398,7 +398,7 @@ fn work(cache: Cache, progress: Arc<filmagic_export::Progress>, result: Arc<Mute
     let out = if stopped {
         Err("stopped".to_string())
     } else {
-        Ok(filmagic_export::Report { path: String::new(), frames: n, seconds: secs, bytes: 0, render_fps: n as f64 / secs.max(1e-6), extra_files: Vec::new() })
+        Ok(filmagic_export::Report { path: String::new(), frames: n, seconds: secs, bytes: 0, render_fps: n as f64 / secs.max(1e-6), ..Default::default() })
     };
     *result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(out);
     progress.finished.store(true, Ordering::Relaxed);
