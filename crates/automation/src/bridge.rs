@@ -55,8 +55,9 @@ impl BridgeClient {
         hello(&self.addr, self.token.as_deref(), timeout).await
     }
 
-    /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
-    /// `wait: true`, see [`crate::long_job::LONG_COMMANDS`]) is started as an app job and polled
+    /// Run engine command `id` in the app. A blocking export or asset download (`file.exportMedia`,
+    /// `assets.install`, `assets.fetch` with `wait: true`, see [`crate::long_job::LONG_COMMANDS`])
+    /// is started as an app job and polled
     /// here until it finishes, so the app keeps repainting (its status bar shows the progress) and
     /// answering other requests, and no request waits on the control server's 60 s reply limit
     /// (#91, #92). The reply is the same as a blocking export's: `{job, path, result}`, or the
@@ -70,18 +71,18 @@ impl BridgeClient {
         }
         let mut start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
         let Some(job) = start.get("job").and_then(Value::as_u64) else { return Ok(start) };
-        let (result, offline) = loop {
+        let (result, offline, status) = loop {
             tokio::time::sleep(JOB_POLL).await;
             let jobs = self.call("engine.execute", json!({"command": "jobs.list", "params": {}})).await?;
             let Some(j) = jobs.as_array().and_then(|a| a.iter().find(|j| j["id"].as_u64() == Some(job))).cloned() else {
-                break (Value::Null, None);
+                break (Value::Null, None, None);
             };
             if j["finished"].as_bool() == Some(true) {
-                break (j["result"].clone(), j.get("offlineMedia").cloned());
+                break (j["result"].clone(), j.get("offlineMedia").cloned(), j.get("status").cloned());
             }
         };
         if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("{} failed: {e}", if id == "file.exportMedia" { "export" } else { id })));
+            return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
         }
         if let Some((cmd, p)) = crate::long_job::result_command(&start) {
             let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
@@ -92,6 +93,9 @@ impl BridgeClient {
         }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);
+            if let Some(st) = status.filter(|v| id != "file.exportMedia" && v.as_str().is_some_and(|s| !s.is_empty())) {
+                o.insert("status".into(), st);
+            }
             if let Some(off) = offline {
                 o.insert("offlineMedia".into(), off);
             }
@@ -283,10 +287,11 @@ mod tests {
                     Some("story.highlights") => {
                         json!({"job": 7, "status": "running", "resultCommand": {"command": "story.highlights", "params": {"job": 7}}})
                     }
+                    Some("assets.install") => json!({"job": 7, "poll": "jobs.list"}),
                     Some("jobs.list") => {
                         polls += 1;
                         let finished = polls >= 3;
-                        let mut j = json!({"id": 7, "finished": finished, "result": if finished { result.clone() } else { Value::Null }});
+                        let mut j = json!({"id": 7, "finished": finished, "status": if finished { "Installed the pack `p` (3 items)" } else { "" }, "result": if finished { result.clone() } else { Value::Null }});
                         if let Some(o) = offline.clone().filter(|_| finished) {
                             j["offlineMedia"] = o;
                         }
@@ -329,6 +334,29 @@ mod tests {
         assert!(seen.iter().all(|q| q["params"]["params"]["wait"] != json!(true)));
         assert_eq!(seen.iter().filter(|q| q["params"]["command"] == "file.exportMedia").count(), 1, "started once");
         assert_eq!(seen.iter().filter(|q| q["params"]["command"] == "jobs.list").count(), 3);
+    }
+
+    /// An asset download asked to wait is polled the same way (#19): the app's UI thread, which
+    /// answers control requests, never runs a download, and the reply says what was installed.
+    #[tokio::test]
+    async fn a_waiting_asset_install_is_polled_as_a_job() {
+        let (addr, seen) = fake_app(json!({"frames": 0})).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let r = b.execute("assets.install", json!({"catalog": "kenney-sci-fi-sounds", "wait": true})).await.unwrap();
+        assert_eq!(r["job"], 7, "{r}");
+        assert_eq!(r["status"], "Installed the pack `p` (3 items)", "{r}");
+        let seen = seen.lock().await;
+        assert_eq!(seen[0]["params"]["command"], "assets.install");
+        assert_eq!(seen[0]["params"]["params"]["wait"], json!(false), "the app never sees wait:true");
+        assert_eq!(seen.iter().filter(|q| q["params"]["command"] == "jobs.list").count(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_failed_asset_download_names_what_failed() {
+        let (addr, _) = fake_app(json!({"error": "checksum mismatch"})).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let e = b.execute("assets.install", json!({"catalog": "x", "wait": true})).await.unwrap_err().to_string();
+        assert!(e.contains("asset pack install failed: checksum mismatch") && !e.contains("export"), "{e}");
     }
 
     /// The offline media a polled export drew comes back as in a blocking export's reply (#1054).

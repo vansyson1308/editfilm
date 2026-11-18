@@ -15,8 +15,21 @@ use serde_json::{Value, json};
 
 use crate::server::FilmagicMcp;
 
-/// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "story.highlights"];
+/// Engine commands that block until their job is done when called with `wait: true`: a render
+/// is written, or an asset pack is downloaded (`assets.install` from a URL or the catalogue,
+/// `assets.fetch`), or footage is analysed (`story.highlights`). Over MCP and the bridge they run as jobs that are polled, so a waiting call
+/// never holds up the app's UI thread or the session.
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch", "story.highlights"];
+
+/// What a failed long command was doing, for its error: `export failed: …`.
+pub fn what(id: &str) -> &str {
+    match id {
+        "file.exportMedia" => "export",
+        "assets.install" => "asset pack install",
+        "assets.fetch" => "asset download",
+        other => other,
+    }
+}
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
@@ -74,8 +87,9 @@ impl FilmagicMcp {
             Ok(v) => v,
             Err(e) => return CallToolResult::error(vec![Content::text(e.to_string())]),
         };
+        // a command that finished at once (an asset pack installed from a local folder) started no job
         let Some(job) = start.get("job").and_then(Value::as_u64) else {
-            return CallToolResult::error(vec![Content::text(format!("{id} started no job: {start}"))]);
+            return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&start).unwrap_or_default())]);
         };
         let out = partial_output(&start);
         let mut rep = Reporter { peer: context.peer.clone(), token: context.meta.get_progress_token(), last: 0.0 };
@@ -88,9 +102,10 @@ impl FilmagicMcp {
             }
             if finished {
                 let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
+                let status = state.as_ref().and_then(|j| j.get("status").cloned()).filter(|v| v.as_str().is_some_and(|s| !s.is_empty()));
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
-                    return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", if id == "file.exportMedia" { "export" } else { id }))]);
+                    return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", what(id)))]);
                 }
                 // a job whose answer is not its report says which command reads it (story.highlights)
                 if let Some((cmd, p)) = result_command(&start) {
@@ -105,6 +120,9 @@ impl FilmagicMcp {
                 let mut out = start;
                 if let Some(o) = out.as_object_mut() {
                     o.insert("result".into(), result);
+                    if let Some(st) = status.filter(|_| id != "file.exportMedia") {
+                        o.insert("status".into(), st);
+                    }
                     if let Some(off) = offline {
                         o.insert("offlineMedia".into(), off);
                     }
