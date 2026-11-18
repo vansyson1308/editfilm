@@ -53,7 +53,8 @@ pub struct FilmagicMcp {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListParams {
-    /// Only commands whose id or label contains this text (case-insensitive).
+    /// Only commands where every word of this text appears in the id, label, menu path, params or
+    /// keywords (case-insensitive, any order), e.g. "paste attributes" or "many clips".
     #[serde(default)]
     pub filter: Option<String>,
     /// Only commands that can run right now.
@@ -648,25 +649,25 @@ impl FilmagicMcp {
 impl FilmagicMcp {
     #[tool(
         title = "List commands",
-        description = "List every command (id, label, menu path, shortcut, parameter doc, enabled now). Menus, shortcuts, panels and timeline gestures all map to these ids.",
+        description = "List every command (id, label, menu path, shortcut, parameter doc, keywords, enabled now). `filter` matches each of its words against all of those, so describe what you want (\"many clips\", \"colour grade\"). Menus, shortcuts, panels and timeline gestures all map to these ids.",
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn command_list(&self, Parameters(p): Parameters<ListParams>) -> Result<CallToolResult, McpError> {
-        let r = self.run("command.list", json!({})).await.map(|v| {
-            let f = p.filter.unwrap_or_default().to_ascii_lowercase();
+        // the engine matches and ranks every word of the filter against id, label, menu, params and
+        // keywords; the same match runs here too, for a bridged app that predates the engine's filter
+        let filter = p.filter.unwrap_or_default();
+        let r = self.run("command.list", json!({"filter": filter})).await.map(|v| {
             let only = p.enabled_only.unwrap_or(false);
-            Value::Array(
-                v.as_array()
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|c| {
-                        let id = c["id"].as_str().unwrap_or("").to_ascii_lowercase();
-                        let label = c["label"].as_str().unwrap_or("").to_ascii_lowercase();
-                        (f.is_empty() || id.contains(&f) || label.contains(&f)) && (!only || c["enabled"].as_bool() == Some(true))
-                    })
-                    .collect(),
-            )
+            let mut hits: Vec<(u8, Value)> = v
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| !only || c["enabled"].as_bool() == Some(true))
+                .filter_map(|c| filmagic_engine::commands::command_json_rank(&c, &filter).map(|r| (r, c)))
+                .collect();
+            hits.sort_by_key(|(r, _)| *r);
+            Value::Array(hits.into_iter().map(|(_, c)| c).collect())
         });
         wrap(r)
     }
