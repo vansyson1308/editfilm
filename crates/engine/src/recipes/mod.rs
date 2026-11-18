@@ -650,18 +650,21 @@ pub(crate) fn find_asset(s: &mut Session, steps: &mut Steps, kind: Value, querie
 pub(crate) fn reframe(s: &mut Session, steps: &mut Steps, reel: ItemId, aspect: &str, name: &str, rate: FrameRate) -> Result<Option<ItemId>> {
     let (w, h) = aspect_size(aspect);
     if crate::commands::find("clip.autoReframe").is_some() {
-        let before = s.state.active_sequence;
-        if steps
-            .may(
-                s,
-                "a copy in the new shape that follows the subject",
+        let made = steps.may(
+            s,
+            "a copy in the new shape that follows the subject",
+            "clip.autoReframe",
+            json!({"output": "sequence", "aspect": aspect, "name": name, "wait": true}),
+        );
+        if let Some(id) = made.as_ref().and_then(|v| v["sequence"]["id"].as_u64()) {
+            // open the copy: it is the draft's new shape
+            steps.must(s, "open the copy", "sequence.open", json!({"item": id}))?;
+            steps.next(
                 "clip.autoReframe",
-                json!({"output": "sequence", "aspect": aspect, "name": name, "wait": true}),
-            )
-            .is_some()
-            && s.state.active_sequence != before
-        {
-            return Ok(s.state.active_sequence);
+                json!({"output": "sequence", "aspect": aspect, "subject": {"box": [0, 0, 100, 100], "at": 0}, "wait": true}),
+                "follow one player instead (a box around them at `at`, the reel's pixels): run it on the reel",
+            );
+            return Ok(Some(ItemId(id)));
         }
         // fall back to the centre crop below, back in the reel
         if s.state.active_sequence != Some(reel) {

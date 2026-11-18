@@ -22,7 +22,7 @@ pub(super) const RECIPE: Recipe = Recipe {
     id: "sports-highlight",
     title: "Sports highlight reel",
     summary: "From a long rally recording, a short highlight reel: the best rallies by sound and picture, in order, with slow motion on the best, soft cuts, markers, a title, and music when a pack is installed",
-    params: r#"{"item":id|"clip":id (the recording: a project item, or a timeline clip),"fromSeconds":f64?,"toSeconds":f64? (the part to look in),"targetSeconds":5..300=30 (reel length aimed at),"maxClips":1..20=6,"order":"time|score"="time","mode":"rally|peaks|auto"="rally","cadence":[min,max]?,"minHits":n?,"picture":bool=true,"fps":n? (story.highlights' own),"name":str? (the reel's name),"title":str|false="HIGHLIGHTS","slowMo":bool=true (the best moment ends at 50 %),"transitionFrames":0..60=8 (0: straight cuts),"markers":bool=true,"music":true|false|"pack/item"=true (true: the first music in the installed packs, ducked),"aspect":"source|9:16|1:1|4:5"="source" (also a copy in that shape),"ball":{"point":[x,y],"at":seconds,"size":px=24}? (the ball at `at` in the recording, in its pixels: a trail behind it),"wait":bool=false,"job":id?}"#,
+    params: r#"{"item":id|"clip":id (the recording: a project item, or a timeline clip),"fromSeconds":f64?,"toSeconds":f64? (the part to look in),"targetSeconds":5..300=30 (reel length aimed at),"maxClips":1..20=6,"order":"time|score"="time","mode":"rally|peaks|auto"="rally","cadence":[min,max]?,"minHits":n?,"picture":bool=true,"fps":n? (story.highlights' own),"name":str? (the reel's name),"title":str|false="HIGHLIGHTS","slowMo":bool=true (the best moment ends at 50 %),"transitionFrames":0..60=8 (0: straight cuts),"markers":bool=true,"music":true|false|"pack/item"=true (true: the first music in the installed packs, ducked),"aspect":"source|9:16|1:1|4:5"="source" (also a copy in that shape, made last: it follows the action with clip.autoReframe, and the title and ball trail follow into it),"vertical":bool=false (the same as "aspect":"9:16"),"ball":{"point":[x,y],"at":seconds,"size":px=24}? (the ball at `at` in the recording, in its pixels: a trail behind it),"wait":bool=false,"job":id?}"#,
     steps: &[
         ("story.highlights", "find and score the moments (a job)"),
         ("file.newSequence", "the reel, with the recording's frame size and rate"),
@@ -61,6 +61,7 @@ pub(super) const RECIPE: Recipe = Recipe {
         "markers",
         "music",
         "aspect",
+        "vertical",
         "ball",
     ],
     analyses: true,
@@ -183,7 +184,11 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
     let frames = whole(p, "transitionFrames", 0, 60, 8, RUN)?;
     let markers = flag(p, "markers", true, RUN)?;
     let music = pick_p(p, "music", Pick::Auto, RUN)?;
-    let aspect = aspect_p(p, "aspect", None, RUN)?;
+    let aspect = match (aspect_p(p, "aspect", None, RUN)?, flag(p, "vertical", false, RUN)?) {
+        (Some(a), true) if a != "9:16" => return Err(bad(RUN, "`vertical` is 9:16 and `aspect` names another: pass one of them")),
+        (_, true) => Some("9:16"),
+        (a, false) => a,
+    };
     let ball = ball_p(p)?;
     // story.highlights checks its own parameters before it starts
     let mut hp = Map::new();

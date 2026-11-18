@@ -424,7 +424,7 @@ fn a_sports_reel_with_music_and_a_vertical_copy() {
     let undo = s.history.undo.len();
     let r = recipe(
         &mut s,
-        json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "aspect": "9:16", "ball": {"point": [20, 18], "at": 5.0}, "wait": true}),
+        json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "vertical": true, "ball": {"point": [46, 18], "size": 12, "at": 5.0}, "wait": true}),
     );
     assert_eq!(r["status"], "done", "{r}");
     let music = steps_of(&r, "assets.place");
@@ -432,17 +432,32 @@ fn a_sports_reel_with_music_and_a_vertical_copy() {
     assert_eq!(music[0]["status"], "done", "{r}");
     assert_eq!(music[0]["params"]["asset"], "mine/music-upbeat-bed");
     assert_eq!(music[0]["params"]["duck"], true);
-    // the 9:16 copy is the active sequence, holding the reel
+    // the 9:16 copy is the active sequence: copies of the reel's clips that follow the action
+    // (auto-reframe, at the recording's resolution), or else the reel nested at 1080×1920
     let shaped = r["shaped"]["sequence"].as_u64().unwrap();
     assert_eq!(s.state.active_sequence.map(|x| x.0), Some(shaped));
     let q = s.active_sequence().unwrap();
-    assert_eq!((q.settings.width, q.settings.height), (1080, 1920));
-    assert_eq!(q.video_tracks[0].items[0].item.0, r["reel"].as_u64().unwrap());
-    // the steps a later build adds are skipped with a note until then
+    let (w, h) = (q.settings.width, q.settings.height);
+    assert!((f64::from(w) / f64::from(h) - 9.0 / 16.0).abs() < 0.02, "{w}×{h}");
+    if !exists("clip.autoReframe") {
+        assert_eq!((w, h), (1080, 1920));
+        assert_eq!(q.video_tracks[0].items[0].item.0, r["reel"].as_u64().unwrap());
+    }
+    // the sports steps run (or are skipped with a note in a build without them)
     for c in ["clip.autoReframe", "sports.ballTrail"] {
         let st = steps_of(&r, c);
         assert_eq!(st.len(), 1, "{c}: {r}");
         assert_eq!(st[0]["status"], if exists(c) { "done" } else { "skipped" }, "{c}: {r}");
+    }
+    if exists("clip.autoReframe") {
+        // the copy follows the action, and the title and ball trail follow into it
+        let q = s.active_sequence().unwrap();
+        let pictures = q.video_tracks.iter().flat_map(|t| t.items.iter()).count();
+        assert!(pictures >= 4, "two moments, the title and the trail: {pictures} {r}");
+        assert!(steps_of(&r, "clip.autoReframe")[0]["result"]["clips"].as_array().is_some_and(|c| !c.is_empty()), "{r}");
+        // ramp first, then the trail, then the reframe
+        let at = |c: &str| r["steps"].as_array().unwrap().iter().position(|x| x["command"] == c).unwrap();
+        assert!(at("clip.speedRamp") < at("sports.ballTrail") && at("sports.ballTrail") < at("clip.autoReframe"), "{r}");
     }
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step, with the copy");
     s.execute("edit.undo", json!({})).unwrap();
@@ -601,6 +616,8 @@ fn hostile_parameters_are_refused_and_change_nothing() {
         json!({"recipe": "sports-highlight", "item": item, "music": "nope"}),
         json!({"recipe": "sports-highlight", "item": item, "music": 3}),
         json!({"recipe": "sports-highlight", "item": item, "aspect": "2:1"}),
+        json!({"recipe": "sports-highlight", "item": item, "aspect": "1:1", "vertical": true}),
+        json!({"recipe": "sports-highlight", "item": item, "vertical": "yes"}),
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [1]}}),
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [1, 2], "at": -1}}),
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [f64::MAX, 2], "at": 1}}),

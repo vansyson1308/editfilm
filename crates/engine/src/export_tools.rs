@@ -775,6 +775,9 @@ pub(crate) fn job_json(s: &Session, j: &crate::Job) -> Value {
     if s.export_offline.contains_key(&j.id) {
         v["offlineMedia"] = offline_media_json(s, j.id);
     }
+    if let Some(r) = crate::sports::report(s, j.id) {
+        v["report"] = r.clone();
+    }
     v
 }
 
