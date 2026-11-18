@@ -59,7 +59,10 @@ fn update(
     f: impl Fn(&TrackItem, &mut Option<EssentialSound>) -> std::result::Result<(), String>,
 ) -> Result<usize> {
     if clips.is_empty() {
-        return Err(bad(cmd, "select one or more audio clips"));
+        return Err(bad(
+            cmd,
+            "no audio clip to change: select one or more audio clips, or pass their ids in `clips` (a video clip stands for its linked audio while Linked Selection is on)",
+        ));
     }
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let ph = s.playhead();

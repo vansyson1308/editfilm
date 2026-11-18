@@ -916,19 +916,38 @@ pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let (video, audio) = s.project.source_streams(item);
     let is_new = |k: &str| p.get(k).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case("new"));
     let enabled = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(true);
+    // `track` names the picture's track; for an item with sound only, `"track":"new"` follows the
+    // media and means a new audio track, unless `audioTrack` says where the sound goes (#14)
+    let sound_only = !video && audio && p.get("audioTrack").is_none_or(Value::is_null);
+    let new_audio_key = |k: &str| is_new(k) || (k == "audioTrack" && sound_only && is_new("track"));
     let new_v = is_new("track") && video && enabled("video");
-    let new_a = is_new("audioTrack") && audio && enabled("audio");
-    if !new_v && !new_a {
-        return Err(bad(cmd, "no new track to add: the item has no picture or sound for it"));
-    }
+    let new_a = new_audio_key("audioTrack") && audio && enabled("audio");
     let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
+    // sound only, `"track":"new"` and an existing `audioTrack`: there is no picture to put on a
+    // new track, so the sound goes where `audioTrack` says (#14)
+    if !new_v && !new_a && !video && audio && is_new("track") && !is_new("audioTrack") {
+        let mut q = p.clone();
+        if let Some(o) = q.as_object_mut() {
+            o.remove("track");
+        }
+        return place(s, &q);
+    }
+    if !new_v && !new_a {
+        let has = match (video, audio) {
+            (true, true) => "picture and sound",
+            (true, false) => "a picture only",
+            (false, true) => "sound only",
+            (false, false) => "neither picture nor sound",
+        };
+        return Err(bad(cmd, format!("no new track to add: the item has {has}, and `video`/`audio` or `audioTrack` leave nothing to place on a new track")));
+    }
     // one undo step for the tracks and the clip; when the placement fails the project, its undo
     // and its redo history are put back as they were
     s.edit_group("Place Clip", |s| {
         let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
         let mut q = p.clone();
         for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
-            if is_new(key) {
+            if new_audio_key(key) {
                 q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
             }
         }
