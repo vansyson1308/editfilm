@@ -55,8 +55,18 @@ pub fn result_command(start: &Value) -> Option<(String, Value)> {
     Some((rc.get("command")?.as_str()?.to_string(), rc.get("params").cloned().unwrap_or(Value::Null)))
 }
 
-/// Most jobs one waiting call follows, one after another, through resultCommands.
-pub const MAX_HOPS: usize = 4;
+/// Most jobs one waiting call follows, one after another, through resultCommands (a recipe:
+/// its analysis, a voice-over, a ball trail, a reframe).
+pub const MAX_HOPS: usize = 6;
+
+/// The error of a waiting call whose jobs went on past [`MAX_HOPS`]: it names the job still running.
+pub fn too_many_hops(id: &str, answer: &Value) -> String {
+    format!(
+        "{id}: still running after {MAX_HOPS} follow-on jobs (job {}): poll jobs.list and run its resultCommand {}",
+        answer.get("job").and_then(Value::as_u64).unwrap_or(0),
+        answer.get("resultCommand").map(Value::to_string).unwrap_or_default()
+    )
+}
 
 /// The job a resultCommand's answer started, when it says to wait for that one in turn
 /// (`"status": "running"` with a `job` and another `resultCommand`).
@@ -131,14 +141,21 @@ impl FilmagicMcp {
                 let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
                 let status = state.as_ref().and_then(|j| j.get("status").cloned()).filter(|v| v.as_str().is_some_and(|s| !s.is_empty()));
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
-                if let Some(e) = result.get("error").and_then(Value::as_str) {
+                // a followed job (hops > 0) is the command's own follow-on: its resultCommand says
+                // what its failure means (a recipe skips a voice-over that could not be spoken)
+                if hops == 0
+                    && let Some(e) = result.get("error").and_then(Value::as_str)
+                {
                     return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", what(id)))]);
                 }
                 // a job whose answer is not its report says which command reads it (story.highlights)
                 if let Some((cmd, p)) = result_command(&start) {
                     return match self.run(&cmd, p).await {
                         // its answer started the next job (a recipe's voice-over after its analysis)
-                        Ok(v) if hops < MAX_HOPS && next_job(&v).is_some() => {
+                        Ok(v) if next_job(&v).is_some() => {
+                            if hops >= MAX_HOPS {
+                                return CallToolResult::error(vec![Content::text(too_many_hops(id, &v))]);
+                            }
                             hops += 1;
                             job = next_job(&v).unwrap_or(job);
                             start = v;

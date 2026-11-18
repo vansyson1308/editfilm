@@ -10,9 +10,10 @@
 use filmagic_time::Tick;
 use serde_json::{Map, Value, json};
 
+use super::follow::{Follow, Pending};
 use super::{
-    Analysis, Footage, Pick, RUN, Recipe, Steps, analyse, aspect_p, clip_of, done, extent, find_asset, flag, footage, number, pick_p, picture_change,
-    place_cuts, round3, text, ticks_of, time_json,
+    Analysis, Footage, Pick, RUN, Recipe, Steps, analyse, aspect_p, clip_of, extent, find_asset, flag, footage, number, pick_p, picture_change, place_cuts,
+    round3, text, ticks_of, time_json,
 };
 use crate::commands::bad;
 use crate::{Result, Session};
@@ -124,8 +125,25 @@ pub(super) fn plan(span: (Tick, Tick), moment: Tick, speech: &[(Tick, Tick)], ma
             merged.remove(0);
             total -= b - a;
         } else {
-            first.0 = (a + excess).min(b);
-            total -= excess;
+            // cut into the piece, but not mid-phrase: at the next phrase that starts in it
+            let cut = (a + excess).min(b);
+            let in_phrase = speech.iter().any(|g| g.0 - pad < cut && cut < g.1 + pad);
+            let next = speech.iter().map(|g| (g.0 - pad).max(a)).filter(|x| *x >= cut && *x < b).min();
+            match next.filter(|_| in_phrase) {
+                Some(x) => {
+                    first.0 = x;
+                    total -= x - a;
+                }
+                // the cut is in the piece's last phrase: leave that phrase out whole
+                None if in_phrase && n > 1 => {
+                    merged.remove(0);
+                    total -= b - a;
+                }
+                None => {
+                    first.0 = cut;
+                    total -= cut - a;
+                }
+            }
         }
     }
     merged.retain(|(a, b)| b > a);
@@ -199,24 +217,20 @@ fn prepare_voice(s: &mut Session, v: &mut Voice, wait: bool) -> std::result::Res
     Ok(r["job"].as_u64())
 }
 
-/// Where the synthesis job `job` stands: still running (`None`), or how the build speaks.
-fn voice_state(s: &Session, job: u64) -> Result<Option<Speak>> {
+/// Where the synthesis job `job` (one the recipe started) stands: still running (`None`), or how
+/// the build speaks.
+fn voice_state(s: &Session, job: u64) -> Option<Speak> {
     use std::sync::atomic::Ordering;
-    let Some(j) = s.jobs.iter().find(|j| j.id == job) else {
-        // pruned: tts.create finds the take in its cache, or says to synthesize it
-        return Ok(Some(Speak::Create));
-    };
-    if j.label != "Synthesizing narration" {
-        return Err(bad(RUN, format!("`voiceJob` {job} is no narration job: leave it out (the resultCommand sets it)")));
-    }
+    // pruned: tts.create finds the take in its cache, or says to synthesize it
+    let Some(j) = s.jobs.iter().find(|j| j.id == job) else { return Some(Speak::Create) };
     if !j.progress.finished.load(Ordering::Relaxed) {
-        return Ok(None);
+        return None;
     }
     let failed = j.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|r| r.as_ref().err().cloned());
-    Ok(Some(match failed {
+    Some(match failed {
         Some(e) => Speak::Skip(format!("the Vietnamese voice-over could not be synthesized: {e}. {VIENEU_HELP}")),
         None => Speak::Create,
-    }))
+    })
 }
 
 fn voice_p(p: &Value) -> Result<Option<Voice>> {
@@ -336,36 +350,54 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
     hp.insert("limit".into(), json!(5));
     hp.insert("minSeconds".into(), json!(0.3));
     hp.insert("maxSeconds".into(), json!(10));
-    // a Vietnamese voice-over is synthesized first, as a job beside the analysis
     let mut voice_job = match p.get("voiceJob") {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_u64().ok_or_else(|| bad(RUN, "`voiceJob` must be a job id (the resultCommand sets it)"))?),
     };
-    if voice_job.is_some() && !o.voice.as_ref().is_some_and(Voice::is_vieneu) {
-        return Err(bad(RUN, "`voiceJob` is only for a Vietnamese `voiceover`: leave it out"));
+    if let Some(vj) = voice_job {
+        if !o.voice.as_ref().is_some_and(Voice::is_vieneu) {
+            return Err(bad(RUN, "`voiceJob` is only for a Vietnamese `voiceover`: leave it out"));
+        }
+        if !s.recipes.voice_jobs.contains(&vj) {
+            return Err(bad(RUN, format!("`voiceJob` {vj} is no voice-over this recipe started: leave it out (the resultCommand sets it)")));
+        }
     }
+    // the analysis first: it checks its own parameters, and nothing is synthesized for a call it refuses
+    let analysis = analyse(s, &f, Value::Object(hp), wait, job)?;
+    // a Vietnamese voice-over is synthesized as a job beside the analysis
     if voice_job.is_none()
         && let Some(v) = o.voice.as_mut().filter(|v| v.is_vieneu())
     {
         match prepare_voice(s, v, wait) {
-            Ok(j) => voice_job = j,
+            Ok(j) => {
+                voice_job = j;
+                if let Some(j) = j {
+                    s.recipes.voice_jobs.push_back(j);
+                    while s.recipes.voice_jobs.len() > 32 {
+                        s.recipes.voice_jobs.pop_front();
+                    }
+                }
+            }
             Err(why) => o.speak = Speak::Skip(why),
         }
     }
-    let r = match analyse(s, &f, Value::Object(hp), wait, job)? {
+    let r = match analysis {
         Analysis::Running(j) => return Ok(super::running_with(RECIPE.id, p, j, &voice_extra(&o, voice_job, Some(j)))),
         Analysis::Ready(r) => r,
     };
     if let Some(vj) = voice_job {
-        match voice_state(s, vj)? {
+        match voice_state(s, vj) {
             Some(sp) => o.speak = sp,
             None => return Ok(super::running_with(RECIPE.id, p, vj, &voice_extra(&o, voice_job, job))),
         }
     }
-    s.edit_group(LABEL, |s| build(s, &f, &r, o))
+    let mut d = Pending::new(s, &RECIPE, LABEL, finish);
+    d.cache = job.map(|j| (j, super::follow::essence(p)));
+    s.edit_group(LABEL, |s| build(s, &mut d, &f, &r, o))?;
+    super::follow::advance(s, d, wait)
 }
 
-fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
+fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, o: Opts) -> Result<()> {
     let mut st = Steps { notes: f.notes.clone(), ..Default::default() };
     st.record("story.highlights", &f.target, "find the moment and the speech", "done");
     let span = (r["span"]["from"].as_f64().map_or(f.span.0, Tick::from_seconds_f64), r["span"]["to"].as_f64().map_or(f.span.1, Tick::from_seconds_f64));
@@ -395,9 +427,8 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
     let edit_seq = made["sequence"].as_u64().map(filmagic_project::ItemId).ok_or_else(|| bad(RUN, "file.newSequence answered no sequence"))?;
     let placed = place_cuts(s, &mut st, f, &cuts, "piece")?;
     let rate = s.sequence_rate();
-    let (w, h) = s.active_sequence().map_or(f.size, |q| (q.settings.width, q.settings.height));
     let (a0, b0) = extent(s);
-    let before = crate::story::looks_across(s, a0, b0);
+    d.looks = Some((crate::story::looks_across(s, a0, b0), a0, b0));
     // punch in on every other cut
     let zoomed: Vec<u64> = placed.iter().skip(1).step_by(2).filter_map(|pl| pl.video.map(|v| v.0)).collect();
     if o.zoom > 100.0 && !zoomed.is_empty() {
@@ -434,34 +465,6 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
             st.skip("effects.apply", json!({"effect": "camera_shake"}), "shake the freeze", "there is no freeze (`freeze` is 0)");
         }
         hit_at = t;
-    }
-    // top text over the build-up, punch text on the moment
-    let size = round3((f64::from(h) * 0.085).clamp(24.0, 400.0));
-    let lettering = |s: &mut Session, st: &mut Steps, words: &str, from: Tick, len: Tick, anchor: &str, why: &str| {
-        let len = len.max(rate.frame_duration());
-        let v = st.may(
-            s,
-            why,
-            "graphics.newText",
-            json!({"text": words, "time": from.0, "seconds": round3(len.seconds()), "size": size, "track": "auto", "position": [f64::from(w) / 2.0, f64::from(h) / 2.0]}),
-        )?;
-        let clip = v["clip"].as_u64()?;
-        st.may(
-            s,
-            "meme lettering: bold white with a black outline",
-            "graphics.set",
-            json!({"clip": clip, "props": {"font_style": "Bold", "align": "center", "fill_color": "#ffffff", "stroke": true, "stroke_width": round3((size / 12.0).max(3.0)), "shadow": false}, "pictureChange": false}),
-        );
-        st.may(s, "keep the text in the title-safe area", "graphics.anchor", json!({"clip": clip, "anchor": anchor, "safe": "title"}));
-        Some(clip)
-    };
-    if let Some(t) = &o.top
-        && let Some(c) = lettering(s, &mut st, t, Tick::ZERO, hit_at, "top", "top text over the build-up")
-    {
-        st.next("graphics.setText", json!({"clip": c, "text": "…"}), "your own top text");
-    }
-    if let Some(t) = &o.punch {
-        lettering(s, &mut st, t, hit_at, hold_len + Tick::from_seconds_f64(0.5), "bottom", "text on the moment");
     }
     // sound and meme on the moment, from the installed packs
     let sound = match &o.sound {
@@ -522,14 +525,8 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
             st.next("tts.voices", json!({}), "the voices this build has (tts.downloadVoices for the natural ones)");
         }
     }
-    let change = picture_change(s, &before, a0, extent(s).1);
-    let mut extra = Map::new();
+    let extra = &mut d.extra;
     extra.insert("edit".into(), json!(edit_seq.0));
-    if let Some(asp) = o.aspect {
-        let shaped = super::reframe(s, &mut st, edit_seq, asp, &format!("{} {asp}", o.name), rate)?;
-        extra.insert("shaped".into(), json!({"aspect": asp, "sequence": shaped.map(|x| x.0)}));
-        st.notes.push(format!("the active sequence is the {asp} copy; the edit itself is sequence {}", edit_seq.0));
-    }
     extra.insert("footage".into(), f.target.clone());
     extra.insert("moment".into(), json!({"source": round3(moment.seconds()), "edit": time_json(hit_at)}));
     extra.insert(
@@ -541,7 +538,19 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
                 .collect::<Vec<_>>()
         ),
     );
-    extra.insert("pictureChange".into(), change);
+    if let Some(asp) = o.aspect {
+        // the pieces are reframed (a freeze cannot be: it is made to fill the frame after)
+        let clips: Vec<u64> = placed.iter().filter_map(|pl| pl.video.map(|c| c.0)).collect();
+        d.then(Follow::Reframe { seq: edit_seq, aspect: asp, name: format!("{} {asp}", o.name), graphics: "follow", clips: Some(clips) });
+    }
+    d.ctx = json!({
+        "edit": edit_seq.0,
+        "top": o.top,
+        "punch": o.punch,
+        "hit": hit_at.0,
+        "hold": hold_len.0,
+        "zoom": o.zoom,
+    });
     let mut again = f.target.clone();
     again["recipe"] = json!(RECIPE.id);
     again["moment"] = json!(round3(moment.seconds()));
@@ -554,5 +563,105 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
     );
     st.next("layout.check", json!({}), "check the text stays readable and inside the safe area");
     st.next("file.exportMedia", json!({"path": "meme.mp4", "draft": true, "wait": true}), "a quick review copy");
-    Ok(done(&RECIPE, s, st, extra, LABEL))
+    let notes = std::mem::take(&mut d.steps);
+    d.steps = merge_steps(notes, st);
+    Ok(())
+}
+
+/// Steps recorded before (`a`) and after (`b`), as one list.
+fn merge_steps(a: Steps, b: Steps) -> Steps {
+    let mut out = a;
+    for mut x in b.list {
+        x["step"] = json!(out.list.len() + 1);
+        out.list.push(x);
+    }
+    out.warnings.extend(b.warnings);
+    out.notes.extend(b.notes);
+    out.next.extend(b.next);
+    out
+}
+
+/// Meme lettering on the active sequence: bold white with a black outline, sized to the frame's
+/// width, kept in the title-safe area.
+fn lettering(s: &mut Session, st: &mut Steps, words: &str, from: Tick, len: Tick, anchor: &str, why: &str) -> Option<u64> {
+    let rate = s.sequence_rate();
+    let (w, h) = s.active_sequence().map(|q| (f64::from(q.settings.width), f64::from(q.settings.height)))?;
+    let chars = words.chars().count().max(1) as f64;
+    // about 0.6 em a character: the words fit the width with a margin
+    let size = round3((h * 0.085).min(0.9 * w / (0.6 * chars)).clamp(12.0, 400.0));
+    let len = len.max(rate.frame_duration());
+    let v = st.may(
+        s,
+        why,
+        "graphics.newText",
+        json!({"text": words, "time": from.0, "seconds": round3(len.seconds()), "size": size, "track": "auto", "position": [w / 2.0, h / 2.0]}),
+    )?;
+    let clip = v["clip"].as_u64()?;
+    st.may(
+        s,
+        "meme lettering: bold white with a black outline",
+        "graphics.set",
+        json!({"clip": clip, "props": {"font_style": "Bold", "align": "center", "fill_color": "#ffffff", "stroke": true, "stroke_width": round3((size / 12.0).max(3.0)), "shadow": false}, "pictureChange": false}),
+    );
+    st.may(s, "keep the text in the title-safe area", "graphics.anchor", json!({"clip": clip, "anchor": anchor, "safe": "title"}));
+    super::fit(s, st, clip, anchor);
+    Some(clip)
+}
+
+/// After the reframe job: in the copy the freeze fills the frame (it is not reframed), and the
+/// lettering goes on in each sequence, sized to it.
+fn finish(s: &mut Session, d: &mut Pending) -> Result<()> {
+    let tick = |k: &str| Tick(d.ctx[k].as_i64().unwrap_or(0));
+    let (hit, hold) = (tick("hit"), tick("hold"));
+    let zoom = d.ctx["zoom"].as_f64().unwrap_or(115.0);
+    let (top, punch) = (d.ctx["top"].as_str().map(str::to_string), d.ctx["punch"].as_str().map(str::to_string));
+    let edit = d.ctx["edit"].as_u64().map(filmagic_project::ItemId);
+    let mut seqs: Vec<filmagic_project::ItemId> = edit.into_iter().collect();
+    if let Some(copy) = d.copy {
+        seqs.push(copy);
+    }
+    for (k, seq) in seqs.iter().enumerate() {
+        super::follow::open_seq(s, *seq);
+        let st = &mut d.steps;
+        if k > 0 {
+            let holds: Vec<u64> = s
+                .active_sequence()
+                .map(|q| q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.frame_hold.is_some()).map(|i| i.id.0).collect())
+                .unwrap_or_default();
+            if !holds.is_empty() && st.may(s, "the freeze fills the new frame", "clip.fillFrame", json!({"clips": holds})).is_some() {
+                for h in holds {
+                    let scale = clip_of(s, filmagic_project::ClipId(h))
+                        .and_then(|it| it.effect("motion").map(|m| m.f64_at("scale", it.start)))
+                        .filter(|x| x.is_finite() && *x > 0.0)
+                        .unwrap_or(100.0);
+                    st.may(
+                        s,
+                        "zoom on the freeze, covering the frame",
+                        "effects.setParam",
+                        json!({"clip": h, "effect": "motion", "param": "scale", "value": round3(scale * (zoom + 15.0) / 100.0)}),
+                    );
+                }
+            }
+        }
+        let why = |w: &'static str| if k == 0 { w } else { "the same text in the copy, sized to it" };
+        if let Some(t) = &top
+            && let Some(c) = lettering(s, st, t, Tick::ZERO, hit, "top", why("top text over the build-up"))
+            && k == 0
+        {
+            st.next("graphics.setText", json!({"clip": c, "text": "…"}), "your own top text");
+        }
+        if let Some(t) = &punch {
+            lettering(s, st, t, hit, hold + Tick::from_seconds_f64(0.5), "bottom", why("text on the moment"));
+        }
+        if k == 0
+            && let Some((before, a, b)) = d.looks.take()
+        {
+            d.extra.insert("pictureChange".into(), picture_change(s, &before, a, b.max(extent(s).1)));
+        }
+    }
+    if let Some(copy) = d.copy {
+        d.extra.insert("shaped".into(), json!({"sequence": copy.0, "size": s.project.sequence(copy).map(|q| (q.settings.width, q.settings.height))}));
+        d.steps.notes.push(format!("the active sequence is the reframed copy; the edit itself is sequence {}", edit.map_or(0, |e| e.0)));
+    }
+    Ok(())
 }

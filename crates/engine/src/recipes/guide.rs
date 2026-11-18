@@ -302,7 +302,7 @@ pub(crate) const TOPICS: &[Topic] = &[
     Topic {
         id: "voice-over",
         goal: "add a voice-over or narration (text to speech, or recorded)",
-        words: "voice voiceover voice-over narration narrator tts text to speech speak say read vietnamese tieng viet vieneu",
+        words: "voice voiceover voice-over narration narrator tts text to speech speak say read vietnamese tieng viet long vieneu",
         steps: &[
             ("tts.voices", r#"{}"#, "the voices"),
             ("tts.create", r#"{"text":"…","voice":"…","time":0}"#, "speak a line onto the timeline"),
@@ -357,7 +357,8 @@ const STOP: &[&str] = &[
 ];
 
 fn words(t: &str) -> Vec<String> {
-    t.to_lowercase()
+    // "lồng tiếng" finds what "long tieng" finds
+    crate::assets::manifest::fold(t)
         .split(|c: char| !c.is_alphanumeric() && c != ':' && c != '-')
         .map(|w| w.trim_matches(['-', ':']).to_string())
         .filter(|w| !w.is_empty() && !STOP.contains(&w.as_str()))
@@ -368,8 +369,12 @@ fn words(t: &str) -> Vec<String> {
 /// How many of `goal`'s words the topic holds (a word matches a topic word it starts, or that
 /// starts it, from three letters).
 fn score(t: &Topic, goal: &[String]) -> usize {
+    let hit =
+        |own: &[String], g: &String| own.iter().any(|w| w == g || (g.len() >= 3 && w.len() >= 3 && (w.starts_with(g.as_str()) || g.starts_with(w.as_str()))));
     let own = words(&format!("{} {} {}", t.id.replace('-', " "), t.goal, t.words));
-    goal.iter().filter(|g| own.iter().any(|w| w == *g || (g.len() >= 3 && w.len() >= 3 && (w.starts_with(g.as_str()) || g.starts_with(w.as_str()))))).count()
+    // the topic's own name counts twice: "slow motion at the best moment" is about slow motion
+    let name = words(&t.id.replace('-', " "));
+    goal.iter().filter(|g| hit(&own, g)).count() + goal.iter().filter(|g| hit(&name, g)).count()
 }
 
 fn topic_json(t: &Topic) -> Value {

@@ -15,9 +15,28 @@ use super::{RECIPES, Recipe};
 use crate::Session;
 use crate::media_test_util::tmp_dir;
 
-/// Commands a recipe or the guide may name although this build does not have them yet; they are
-/// skipped with a note (recipes) or left out (the guide's `prefer`) until they land.
-const LATER: &[&str] = &["clip.autoReframe", "sports.ballTrail", "sports.trackPoint"];
+thread_local! {
+    /// A required step to fail on purpose: the command id, and on which call of it (1 = the first).
+    static FAIL: std::cell::RefCell<Option<(String, usize)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether this call of required step `id` is the one a test asked to fail.
+pub(super) fn inject(id: &str) -> bool {
+    FAIL.with(|f| {
+        let mut f = f.borrow_mut();
+        match f.as_mut() {
+            Some((c, n)) if c == id => {
+                *n -= 1;
+                if *n == 0 {
+                    *f = None;
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    })
+}
 
 const FPS: u32 = 25;
 const SR: u32 = 48_000;
@@ -37,7 +56,7 @@ fn every_command_the_recipes_and_the_guide_name_exists() {
             assert!(exists(c), "recipe {} runs `{c}`, which is not in the registry", r.id);
         }
         for (c, _) in r.later {
-            assert!(exists(c) || LATER.contains(c), "recipe {} names `{c}`, which is neither in the registry nor expected later", r.id);
+            assert!(exists(c), "recipe {} names `{c}`, which is not in the registry", r.id);
         }
         assert!(!r.keys.contains(&"recipe") && !r.keys.contains(&"job") && !r.keys.contains(&"wait"));
     }
@@ -48,7 +67,7 @@ fn every_command_the_recipes_and_the_guide_name_exists() {
             assert!(exists(c), "guide topic {} names `{c}`, which is not in the registry", t.id);
         }
         if let Some((c, _, _)) = t.prefer {
-            assert!(exists(c) || LATER.contains(&c), "guide topic {} prefers `{c}`, which is neither in the registry nor expected later", t.id);
+            assert!(exists(c), "guide topic {} prefers `{c}`, which is not in the registry", t.id);
         }
     }
     // the recipes' and the guide's own commands are registered
@@ -64,7 +83,7 @@ fn every_command_the_recipes_and_the_guide_name_exists() {
                 let is_file = [".png", ".mp4", ".gif", ".srt"].iter().any(|x| w.ends_with(&x[1..]) && w.contains('.'));
                 let in_space = w.split('.').next().is_some_and(|x| spaces.contains(x));
                 if looks_like_id && in_space && !is_file && w.split('.').all(|x| !x.is_empty() && x.chars().all(char::is_alphanumeric)) {
-                    assert!(exists(w) || LATER.contains(&w), "guide topic {} mentions `{w}`", t.id);
+                    assert!(exists(w), "guide topic {} mentions `{w}`", t.id);
                 }
             }
         }
@@ -109,6 +128,11 @@ fn the_guide_leads_to_the_commands_agents_missed() {
     for bad in [json!({"goal": 5}), json!({"goal": "x".repeat(501)}), json!({"limit": 0}), json!({"limit": "3"}), json!([1])] {
         assert!(s.execute("guide.find", bad.clone()).is_err(), "{bad}");
     }
+    // diacritics fold, and a topic's own name weighs most
+    let r = guide(&mut s, "lồng tiếng tiếng Việt");
+    assert_eq!(r["topics"][0]["topic"], "voice-over", "{r}");
+    let r = guide(&mut s, "slow motion at the best moment");
+    assert_eq!(r["topics"][0]["topic"], "slow-motion", "{r}");
     // the deterministic order
     assert_eq!(guide(&mut s, "slow motion freeze"), guide(&mut s, "slow motion freeze"));
 }
@@ -152,11 +176,18 @@ fn meme_plan_cuts_pauses_and_ends_on_the_payoff() {
     // phrases padded by 0.15 s; 4.0–4.2 is too short a pause to cut; the payoff runs from 0.6 s
     // before the moment to 2.5 s after it, merged with the phrase before it
     assert_eq!(s, vec![(0.85, 2.15), (2.85, 5.15), (7.85, 12.5)], "{s:?}");
-    // the total is capped from the front
+    // the total is capped from the front (a phrase the cap would cut into is left out whole)
     let p = plan((t(0.0), t(20.0)), t(10.0), &speech, t(5.0), t(0.35), true);
     let total: f64 = p.iter().map(|(a, b)| (*b - *a).seconds()).sum();
-    assert!((total - 5.0).abs() < 1e-6, "{p:?}");
+    assert!((4.0..=5.0 + 1e-6).contains(&total), "{p:?}");
     assert_eq!(p.last().map(|x| x.1), Some(t(12.5)));
+    // a cut that would land mid-phrase starts at the next phrase instead (or leaves the phrase out)
+    let phrases = [(t(1.0), t(2.0)), (t(3.48), t(5.0))];
+    let p = plan((t(0.0), t(20.0)), t(10.0), &phrases, t(8.0), t(0.35), true);
+    for (a, _) in &p {
+        assert!(!phrases.iter().any(|g| g.0 < *a && *a < g.1), "{p:?} starts inside a phrase");
+    }
+    assert!(p.iter().map(|(a, b)| (*b - *a).seconds()).sum::<f64>() <= 8.0 + 1e-6, "{p:?}");
     // without speech, or with cutPauses false: one stretch before the payoff
     let p = plan((t(0.0), t(20.0)), t(10.0), &[], t(6.0), t(0.35), true);
     assert_eq!(p, vec![(t(6.5), t(12.5))]);
@@ -222,6 +253,11 @@ fn wav(path: &Path, x: &[f32]) {
 /// A movie (ProRes + PCM, written by our own encoder) of `sound`, with a white square crossing a
 /// dark frame during each of `moving` (seconds).
 fn movie(dir: &Path, name: &str, sound: &[f32], moving: &[(f64, f64)]) -> PathBuf {
+    movie_sized(dir, name, sound, moving, (W, H))
+}
+
+/// [`movie`] at another frame size.
+fn movie_sized(dir: &Path, name: &str, sound: &[f32], moving: &[(f64, f64)], (w, h): (u32, u32)) -> PathBuf {
     let seconds = sound.len() as f64 / f64::from(SR);
     let frames = (seconds * f64::from(FPS)).floor() as u32;
     let pics = dir.join(format!("{name}-frames"));
@@ -229,11 +265,12 @@ fn movie(dir: &Path, name: &str, sound: &[f32], moving: &[(f64, f64)]) -> PathBu
     let mut first = String::new();
     for n in 0..frames {
         let t = f64::from(n) / f64::from(FPS);
-        let mut img = image::RgbaImage::from_pixel(W, H, image::Rgba([40, 40, 40, 255]));
+        let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([40, 40, 40, 255]));
+        let side = (h / 3).max(12);
         if let Some((a, _)) = moving.iter().find(|(a, b)| t >= *a && t < *b) {
-            let x0 = (((t - a) * 40.0) as u32) % (W - 12);
-            for y in 10..26 {
-                for x in x0..x0 + 12 {
+            let x0 = (((t - a) * 40.0) as u32) % (w - side);
+            for y in h / 3..(h / 3 + side).min(h) {
+                for x in x0..x0 + side {
                     img.put_pixel(x, y, image::Rgba([250, 250, 250, 255]));
                 }
             }
@@ -250,7 +287,7 @@ fn movie(dir: &Path, name: &str, sound: &[f32], moving: &[(f64, f64)]) -> PathBu
     s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "25"})).unwrap();
     let img = s.execute("file.import", json!({"paths": [first], "imageSequence": true})).unwrap()["items"][0].as_u64().unwrap();
     let aud = s.execute("file.import", json!({"paths": [snd.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
-    s.execute("file.newSequence", json!({"name": "src", "width": W, "height": H, "fps": FPS, "video": 1, "audio": 1})).unwrap();
+    s.execute("file.newSequence", json!({"name": "src", "width": w, "height": h, "fps": FPS, "video": 1, "audio": 1})).unwrap();
     s.execute("timeline.place", json!({"item": img, "track": "V1", "time": 0, "audio": false})).unwrap();
     s.execute("timeline.place", json!({"item": aud, "track": "A1", "time": 0})).unwrap();
     let out = dir.join(format!("{name}.mov"));
@@ -531,7 +568,7 @@ fn vertical_recipe_for_a_sequence_an_item_and_a_clip() {
     let mut s = Session::default();
     let item = import(&mut s, &path);
     // an item: a 9:16 sequence holding it, filled from the centre
-    let r = recipe(&mut s, json!({"recipe": "vertical", "item": item}));
+    let r = recipe(&mut s, json!({"recipe": "vertical", "item": item, "wait": true}));
     assert_eq!(r["status"], "done", "{r}");
     let q = s.active_sequence().unwrap();
     assert_eq!((q.settings.width, q.settings.height), (1080, 1920));
@@ -540,7 +577,7 @@ fn vertical_recipe_for_a_sequence_an_item_and_a_clip() {
     assert!(steps_of(&r, "clip.fillFrame").len() == 1 || steps_of(&r, "clip.autoReframe").iter().any(|x| x["status"] == "done"), "{r}");
     // a sequence (the active one): a square copy that nests it
     let seq = r["sequence"].as_u64().unwrap();
-    let r = recipe(&mut s, json!({"recipe": "vertical", "aspect": "1:1"}));
+    let r = recipe(&mut s, json!({"recipe": "vertical", "aspect": "1:1", "wait": true}));
     let q = s.active_sequence().unwrap();
     assert_eq!((q.settings.width, q.settings.height), (1080, 1080));
     assert_eq!(r["from"]["sequence"], seq);
@@ -548,7 +585,7 @@ fn vertical_recipe_for_a_sequence_an_item_and_a_clip() {
     s.execute("file.newSequence", json!({"name": "M", "fromItem": item})).unwrap();
     let c = s.active_sequence().unwrap().video_tracks[0].items[0].id;
     s.execute("timeline.trim", json!({"clip": c.0, "edge": "in", "mode": "regular", "deltaFrames": 50})).unwrap();
-    let r = recipe(&mut s, json!({"recipe": "vertical", "clip": c.0, "aspect": "4:5"}));
+    let r = recipe(&mut s, json!({"recipe": "vertical", "clip": c.0, "aspect": "4:5", "wait": true}));
     let q = s.active_sequence().unwrap();
     assert_eq!((q.settings.width, q.settings.height), (1080, 1350));
     let it = &q.video_tracks[0].items[0];
@@ -572,7 +609,7 @@ fn list_and_describe_show_every_recipe() {
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert!(missing.iter().all(|c| LATER.contains(c)), "{missing:?}");
+        assert!(missing.is_empty(), "{missing:?}");
         let _: &Recipe = r;
     }
     // a near spelling is accepted; another word is not
@@ -622,6 +659,7 @@ fn hostile_parameters_are_refused_and_change_nothing() {
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [1, 2], "at": -1}}),
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [f64::MAX, 2], "at": 1}}),
         json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [1, 2], "at": 1, "size": 0}}),
+        json!({"recipe": "sports-highlight", "item": item, "ball": {"point": [1, 2], "at": 1, "sise": 20}}),
         json!({"recipe": "sports-highlight", "item": item, "transitionFrames": -2}),
         json!({"recipe": "sports-highlight", "item": item, "mode": "everything"}),
         json!({"recipe": "sports-highlight", "item": item, "cadence": [5, 1]}),
@@ -652,6 +690,11 @@ fn hostile_parameters_are_refused_and_change_nothing() {
         assert!(msg.len() < 1200, "{msg}");
         assert_eq!((s.revision, s.history.undo.len(), s.jobs.len(), s.project.items.len()), (rev, undo, jobs, items), "{p} changed something: {msg}");
     }
+    // an empty sequence has nothing to repurpose
+    s.execute("file.newSequence", json!({"name": "Empty", "width": 64, "height": 36})).unwrap();
+    let e = s.execute("recipes.run", json!({"recipe": "vertical", "wait": true})).unwrap_err().to_string();
+    assert!(e.contains("empty"), "{e}");
+    let _ = (seq, wav_item);
     for p in [json!({"recipe": "x"}), json!({"recipe": 1}), json!(null), json!({})] {
         assert!(s.execute("recipes.describe", p).is_err());
     }
@@ -708,5 +751,214 @@ fn a_vietnamese_voice_over_is_skipped_with_how_to_install_vieneu() {
         assert!(s.execute("recipes.run", json!({"recipe": "comedy-meme", "item": item, "voiceover": bad, "wait": true})).is_err(), "{bad}");
     }
     assert!(s.execute("recipes.run", json!({"recipe": "comedy-meme", "item": item, "voiceJob": 1})).is_err());
+    // a call refused for its other parameters synthesizes nothing
+    for bad in [json!({"fps": 999}), json!({"fromSeconds": 9, "toSeconds": 2})] {
+        let jobs = s.jobs.len();
+        let mut p = json!({"recipe": "comedy-meme", "item": item, "voiceover": {"text": "Xin chào", "voice": "vieneu:Ngoc"}});
+        p.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert!(s.execute("recipes.run", p.clone()).is_err(), "{p}");
+        assert_eq!(s.jobs.len(), jobs, "{p} started a job");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A rally recording at a usual frame shape (320×180), for tests that look at what fits the frame.
+fn wide_rally(dir: &Path) -> PathBuf {
+    let mut clicks: Vec<f64> = (0..6).map(|i| 4.0 + 0.8 * f64::from(i)).collect();
+    clicks.extend((0..5).map(|i| 12.0 + 0.9 * f64::from(i)));
+    let mut x = rally_sound(18.0, &clicks, &[(8.8, 10.5), (16.0, 17.5)]);
+    voice(&mut x, 1.0, 2.6);
+    movie_sized(dir, "wide", &x, &[(4.0, 9.0), (12.0, 17.0)], (320, 180))
+}
+
+/// Every graphic and caption of the active sequence inside its safe area.
+fn all_fit(s: &mut Session) -> Value {
+    let r = s.execute("layout.check", json!({})).unwrap();
+    let out: Vec<&Value> = r["items"].as_array().unwrap().iter().filter(|i| !i["outside"].is_null()).collect();
+    assert!(out.is_empty(), "outside the safe area: {out:?}");
+    r
+}
+
+#[test]
+fn copies_in_a_new_shape_keep_text_inside_and_the_freeze_covers_the_frame() {
+    let dir = tmp_dir("recipe-fit");
+    let path = wide_rally(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    // a meme in 9:16: the copy's text fits it, and the freeze fills it (no black band)
+    let r = recipe(&mut s, json!({"recipe": "comedy-meme", "item": item, "aspect": "9:16", "punchText": "BRUH", "wait": true}));
+    assert_eq!(r["status"], "done", "{r}");
+    let copy = r["shaped"]["sequence"].as_u64().unwrap();
+    assert_eq!(s.state.active_sequence.map(|x| x.0), Some(copy));
+    let layout = all_fit(&mut s);
+    assert!(layout["items"].as_array().unwrap().len() >= 2, "both texts are in the copy: {layout}");
+    let q = s.active_sequence().unwrap();
+    assert!(q.settings.height > q.settings.width);
+    let hold = q.video_tracks.iter().flat_map(|t| t.items.iter()).find(|i| i.frame_hold.is_some()).unwrap().clone();
+    let f = q.settings.frame_rate.frame_at(hold.start) + 2;
+    let (w, h, px) = crate::media_test_util::frame_rgba(&mut s, f, 1.0);
+    let rows = |a: usize, b: usize| {
+        let mut sum = 0u64;
+        for y in a..b {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                sum += u64::from(px[i]) + u64::from(px[i + 1]) + u64::from(px[i + 2]);
+            }
+        }
+        sum as f64 / (3 * w * (b - a)) as f64
+    };
+    assert!(rows(0, h / 8) > 10.0 && rows(h - h / 8, h) > 10.0, "black band at the freeze: top {} bottom {}", rows(0, h / 8), rows(h - h / 8, h));
+    // the edit itself keeps its text too
+    super::follow::open_seq(&mut s, filmagic_project::ItemId(r["edit"].as_u64().unwrap()));
+    all_fit(&mut s);
+    // a sports reel in 9:16: its title fits the copy
+    let r = recipe(&mut s, json!({"recipe": "sports-highlight", "item": item, "vertical": true, "targetSeconds": 12, "wait": true}));
+    assert_eq!(r["status"], "done", "{r}");
+    assert_eq!(s.state.active_sequence.map(|x| x.0), r["shaped"]["sequence"].as_u64());
+    let titles = all_fit(&mut s);
+    assert!(!titles["items"].as_array().unwrap().is_empty(), "the copy has its title: {r}");
+    // a finished sequence with a wide title, repurposed: the title is fitted, not cropped
+    s.execute("file.newSequence", json!({"name": "Film", "fromItem": item})).unwrap();
+    s.execute("graphics.newText", json!({"text": "A RATHER LONG TITLE ACROSS", "size": 28, "time": 0, "seconds": 4, "track": "auto", "position": [160, 90]}))
+        .unwrap();
+    let r = recipe(&mut s, json!({"recipe": "vertical", "wait": true}));
+    assert_eq!(r["status"], "done", "{r}");
+    all_fit(&mut s);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Over MCP (no `wait`) the heavy follow-ons run as jobs: each call answers at once, with the
+/// next resultCommand. The draft stays one undo step, and a reframe stopped midway changes nothing.
+#[test]
+fn follow_on_jobs_run_one_call_at_a_time_and_fold_into_one_undo_step() {
+    let dir = tmp_dir("recipe-follow");
+    let path = rally_movie(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    let undo = s.history.undo.len();
+    let p = json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "vertical": true, "ball": {"point": [46, 18], "size": 12, "at": 5.0}});
+    let step = |s: &mut Session, r: Value| -> Value {
+        for _ in 0..4000 {
+            if r["status"] != "running" {
+                return r;
+            }
+            let job = r["job"].as_u64().unwrap();
+            let finished = s.jobs.iter().find(|j| j.id == job).is_none_or(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+            if finished {
+                return recipe(s, r["resultCommand"]["params"].clone());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("{r}");
+    };
+    let mut r = recipe(&mut s, p.clone());
+    let mut seen = Vec::new();
+    while r["status"] == "running" {
+        seen.push(r["step"].as_str().unwrap_or("story.highlights").to_string());
+        r = step(&mut s, r);
+    }
+    assert_eq!(r["status"], "done", "{r}");
+    assert!(seen.contains(&"sports.ballTrail".to_string()) && seen.contains(&"clip.autoReframe".to_string()), "each job answered on its own: {seen:?}");
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step: {:?}", s.history.undo.iter().map(|u| &u.0).collect::<Vec<_>>());
+    assert_eq!(s.history.undo.last().unwrap().0, "Recipe: Sports Highlight");
+    let copy = r["shaped"]["sequence"].as_u64().unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(
+        s.project.sequence(filmagic_project::ItemId(copy)).is_none() && s.project.sequence(filmagic_project::ItemId(r["reel"].as_u64().unwrap())).is_none()
+    );
+    // again, the reframe stopped while it runs: the draft is kept as it was before it
+    let mut r = recipe(&mut s, p.clone());
+    let sequences = |s: &Session| s.project.items.values().filter(|i| matches!(i.kind, filmagic_project::ItemKind::Sequence(_))).count();
+    let mut before_reframe = 0;
+    while r["status"] == "running" {
+        if r["step"] == "clip.autoReframe" {
+            before_reframe = sequences(&s);
+            s.execute("jobs.cancel", json!({"job": r["job"]})).unwrap();
+        }
+        r = step(&mut s, r);
+    }
+    assert_eq!(r["status"], "done", "{r}");
+    assert!(steps_of(&r, "clip.autoReframe").iter().all(|x| x["status"] == "cancelled"), "{r}");
+    assert_eq!(sequences(&s), before_reframe, "the stopped reframe made no copy");
+    assert!(r.get("shaped").is_none_or(Value::is_null), "{r}");
+    assert_eq!(s.history.undo.len(), undo + 1);
+    // a follow key that is not one
+    assert!(s.execute("recipes.run", json!({"recipe": "sports-highlight", "follow": 999})).is_err());
+    assert!(s.execute("recipes.run", json!({"recipe": "sports-highlight", "follow": 0, "item": 3})).is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_ball_trail_is_seeded_at_the_frame_that_shows_the_ball() {
+    let dir = tmp_dir("recipe-ball");
+    let path = rally_movie(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    let r = recipe(&mut s, json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "title": false, "wait": true}));
+    // the best moment (rank 1) ends in slow motion: seed the ball in its slowed tail
+    let best = r["moments"].as_array().unwrap().iter().find(|m| m["rank"] == 1).unwrap().clone();
+    let tail = best["media"]["to"].as_f64().unwrap() - 0.4;
+    s.execute("edit.undo", json!({})).unwrap();
+    let r = recipe(
+        &mut s,
+        json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "title": false, "ball": {"point": [46, 18], "size": 12, "at": tail}, "wait": true}),
+    );
+    let trail = steps_of(&r, "sports.ballTrail");
+    assert_eq!(trail.len(), 1, "{r}");
+    let at = Tick(trail[0]["params"]["at"].as_i64().unwrap());
+    let clip = filmagic_project::ClipId(trail[0]["params"]["clip"].as_u64().unwrap());
+    let reel = filmagic_project::ItemId(r["reel"].as_u64().unwrap());
+    let it = s.project.sequence(reel).unwrap().find_item(clip).unwrap().1.clone();
+    assert!(it.remap().is_some(), "the moment is ramped");
+    let shown = it.source_time_at(at).seconds();
+    assert!((shown - tail).abs() < 0.05, "seeded at {:.3} s, which shows media {shown:.3} s, not {tail:.3}", at.seconds());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_repeated_result_command_is_checked_against_the_project() {
+    let dir = tmp_dir("recipe-again");
+    let path = rally_movie(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    let mut r = recipe(&mut s, json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "picture": false}));
+    let params = r["resultCommand"]["params"].clone();
+    while r["status"] == "running" {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        r = recipe(&mut s, params.clone());
+    }
+    assert_eq!(r["status"], "done");
+    assert_eq!(recipe(&mut s, params.clone())["alreadyBuilt"], true);
+    // other parameters with the same job: refused
+    let mut other = params.clone();
+    other["targetSeconds"] = json!(12);
+    let e = s.execute("recipes.run", other).unwrap_err().to_string();
+    assert!(e.contains("other parameters"), "{e}");
+    // undone: built again, not answered from memory
+    s.execute("edit.undo", json!({})).unwrap();
+    let again = recipe(&mut s, params.clone());
+    assert_eq!(again["status"], "done");
+    assert!(again.get("alreadyBuilt").is_none(), "{again}");
+    assert!(s.project.sequence(filmagic_project::ItemId(again["sequence"].as_u64().unwrap())).is_some());
+    // a new project: its drafts are gone
+    s.execute("file.newProject", json!({})).ok();
+    assert!(s.execute("recipes.run", params).is_err(), "the analysis and its draft belong to the closed project");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_failed_required_step_rolls_the_whole_draft_back() {
+    let dir = tmp_dir("recipe-rollback");
+    let path = rally_movie(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    let before = serde_json::to_value(&*s.project).unwrap();
+    let (undo, redo, active) = (s.history.undo.len(), s.history.redo.len(), s.state.active_sequence);
+    // the second moment cannot be placed
+    FAIL.with(|f| *f.borrow_mut() = Some(("timeline.place".into(), 2)));
+    let e = s.execute("recipes.run", json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 20, "wait": true})).unwrap_err().to_string();
+    assert!(e.contains("step") && e.contains("timeline.place") && e.contains("rolled back"), "{e}");
+    assert_eq!(serde_json::to_value(&*s.project).unwrap(), before, "the project is exactly as before");
+    assert_eq!((s.history.undo.len(), s.history.redo.len(), s.state.active_sequence), (undo, redo, active));
     let _ = std::fs::remove_dir_all(dir);
 }

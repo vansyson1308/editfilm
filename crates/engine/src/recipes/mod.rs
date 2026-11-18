@@ -21,6 +21,7 @@
 //! media: music, sound effects and meme overlays come from asset packs the user installed
 //! (`assets.search`), and a recipe says what to add when none is installed.
 
+mod follow;
 mod guide;
 mod meme;
 mod sports;
@@ -29,19 +30,14 @@ mod vertical;
 #[cfg(test)]
 mod tests;
 
-use std::collections::VecDeque;
-
 use filmagic_project::{ClipId, ItemId, TrackItem, TrackKind};
-use filmagic_time::{FrameRate, Tick};
+use filmagic_time::Tick;
 use serde_json::{Map, Value, json};
 
 use crate::commands::{CommandSpec, NamedKeys, always, bad};
 use crate::{EngineError, Result, Session};
 
 const RUN: &str = "recipes.run";
-/// Built drafts kept for a repeated `recipes.run {job}` (it answers the draft instead of building
-/// a second one).
-const BUILT: usize = 16;
 /// Most steps one recipe records (every recipe is bounded far below this; a guard, not a limit).
 const MAX_STEPS: usize = 400;
 
@@ -92,7 +88,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             RUN,
             "Run Recipe",
-            r#"{"recipe":"sports-highlight|comedy-meme|vertical", …the recipe's own parameters (recipes.describe),"wait":bool=false,"job":id? (build from a finished analysis job: the resultCommand of a call that did not wait)} -> {status:"done",sequence,steps:[{step,command,params,status,why}],warnings,notes,pictureChange,nextSteps,undo} (one undo step) or {status:"running",job,resultCommand}"#,
+            r#"{"recipe":"sports-highlight|comedy-meme|vertical", …the recipe's own parameters (recipes.describe),"wait":bool=false,"job":id? (build from a finished analysis job: the resultCommand of a call that did not wait),"follow":key? (continue a draft after its follow-on job: the resultCommand of a running draft; takes only recipe and wait)} -> {status:"done",sequence,steps:[{step,command,params,status,why}],warnings,notes,pictureChange,nextSteps,undo} (one undo step) or {status:"running",job,resultCommand}"#,
             run,
             true,
         ),
@@ -106,11 +102,8 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
     ]
 }
 
-/// The session's built drafts, by the analysis job they were built from.
-#[derive(Default)]
-pub struct State {
-    built: VecDeque<(u64, Value)>,
-}
+/// The session's drafts: those whose follow-on jobs run, and finished ones for a repeated call.
+pub type State = follow::Drafts;
 
 fn missing(r: &Recipe) -> Vec<&'static str> {
     r.later.iter().map(|l| l.0).chain(r.steps.iter().map(|x| x.0)).filter(|id| crate::commands::find(id).is_none()).collect()
@@ -176,6 +169,16 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(RUN, format!("params must be an object with `recipe`: one of {}", known_ids())));
     };
     let r = recipe_p(p, RUN)?;
+    if let Some(f) = p.get("follow").filter(|v| !v.is_null()) {
+        let key = f.as_u64().ok_or_else(|| bad(RUN, "`follow` must be the key a resultCommand names"))?;
+        if let Some(k) = obj.keys().find(|k| !["recipe", "follow", "wait"].contains(&k.as_str())) {
+            return Err(bad(
+                RUN,
+                format!("`{}` cannot go with `follow`: a follow-on takes only `recipe` and `follow` (the draft keeps its own parameters)", clip_text(k, 40)),
+            ));
+        }
+        return follow::resume(s, r, key, flag(p, "wait", false, RUN)?);
+    }
     for k in obj.keys() {
         if !["recipe", "wait", "job"].contains(&k.as_str()) && !r.keys.contains(&k.as_str()) {
             return Err(bad(RUN, format!("`{}` is not a parameter of recipe `{}`; it takes {} (recipes.describe)", clip_text(k, 40), r.id, r.keys.join(", "))));
@@ -190,32 +193,15 @@ fn run(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(RUN, format!("recipe `{}` analyses nothing, so it has no `job`: run it without one", r.id)));
     }
     if let Some(j) = job
-        && let Some(done) = s.recipes.built.iter().find(|b| b.0 == j).map(|b| b.1.clone())
+        && let Some(out) = follow::built_from(s, j, p)?
     {
-        let mut out = done;
-        out["alreadyBuilt"] = json!(true);
-        if let Some(n) = out["notes"].as_array_mut() {
-            n.push(json!(format!(
-                "this draft was built from job {j} before; it was not built again. Run the recipe without `job` for another draft (the analysis is cached)"
-            )));
-        }
         return Ok(out);
     }
-    let out = match r.id {
-        "sports-highlight" => sports::run(s, p, wait, job)?,
-        "comedy-meme" => meme::run(s, p, wait, job)?,
-        _ => vertical::run(s, p)?,
-    };
-    if let Some(j) = job
-        && out["status"] == "done"
-    {
-        s.recipes.built.retain(|b| b.0 != j);
-        s.recipes.built.push_back((j, out.clone()));
-        while s.recipes.built.len() > BUILT {
-            s.recipes.built.pop_front();
-        }
+    match r.id {
+        "sports-highlight" => sports::run(s, p, wait, job),
+        "comedy-meme" => meme::run(s, p, wait, job),
+        _ => vertical::run(s, p, wait),
     }
-    Ok(out)
 }
 
 // ---------- parameters ----------
@@ -308,7 +294,6 @@ pub(crate) struct Footage {
     pub target: Value,
     /// For a clip: the clip that maps the analysis's sequence time to the item's media time.
     pub clip: Option<TrackItem>,
-    pub size: (u32, u32),
     pub video: bool,
     pub audio: bool,
     /// What the analysis can cover, in its time (sequence time for a clip, media time for an item).
@@ -371,7 +356,6 @@ pub(crate) fn footage(s: &Session, p: &Value, cmd: &str) -> Result<Footage> {
     let src =
         s.source(item).ok_or_else(|| bad(cmd, format!("`{}` has no media to read (offline, or not a media file); media.findMissing relinks it", pi.name)))?;
     let info = src.info();
-    let size = info.video.as_ref().map_or((1920, 1080), |v| (v.width.max(2), v.height.max(2)));
     let span = match &picked {
         Some(c) if clip.is_some() => (c.start, c.end()),
         _ => match s.project.resolve_media(item) {
@@ -388,7 +372,6 @@ pub(crate) fn footage(s: &Session, p: &Value, cmd: &str) -> Result<Footage> {
             _ => json!({"item": item.0}),
         },
         clip: picked,
-        size,
         video: info.video.is_some(),
         audio: info.has_audio(),
         notes,
@@ -515,7 +498,11 @@ impl Steps {
 
     /// A step the draft needs: its failure stops the recipe, and the whole draft is rolled back.
     pub fn must(&mut self, s: &mut Session, why: &str, id: &str, params: Value) -> Result<Value> {
-        match s.execute(id, params.clone()) {
+        #[cfg(test)]
+        let r = if tests::inject(id) { Err(EngineError::Other("injected failure".into())) } else { s.execute(id, params.clone()) };
+        #[cfg(not(test))]
+        let r = s.execute(id, params.clone());
+        match r {
             Ok(v) => {
                 let n = self.record(id, &params, why, "done");
                 if let Some(x) = self.list.get_mut(n - 1) {
@@ -644,61 +631,70 @@ pub(crate) fn find_asset(s: &mut Session, steps: &mut Steps, kind: Value, querie
     None
 }
 
-/// Sequences of the draft: a copy in another shape (`aspect`) of the active sequence `reel`. With
-/// `clip.autoReframe` (when this build has it) the copy follows the subject; without it the reel
-/// is nested in a sequence of that shape and fills its frame (a centre crop).
-pub(crate) fn reframe(s: &mut Session, steps: &mut Steps, reel: ItemId, aspect: &str, name: &str, rate: FrameRate) -> Result<Option<ItemId>> {
-    let (w, h) = aspect_size(aspect);
-    if crate::commands::find("clip.autoReframe").is_some() {
-        let made = steps.may(
-            s,
-            "a copy in the new shape that follows the subject",
-            "clip.autoReframe",
-            json!({"output": "sequence", "aspect": aspect, "name": name, "wait": true}),
-        );
-        if let Some(id) = made.as_ref().and_then(|v| v["sequence"]["id"].as_u64()) {
-            // open the copy: it is the draft's new shape
-            steps.must(s, "open the copy", "sequence.open", json!({"item": id}))?;
-            steps.next(
-                "clip.autoReframe",
-                json!({"output": "sequence", "aspect": aspect, "subject": {"box": [0, 0, 100, 100], "at": 0}, "wait": true}),
-                "follow one player instead (a box around them at `at`, the reel's pixels): run it on the reel",
+/// Keep graphic `clip` inside the title-safe area of the active sequence: while `layout.check`
+/// finds it outside, make its layers smaller (each layer's Scale, its position drawn toward the
+/// frame's centre) and anchor it again. Says so when it still does not fit.
+pub(crate) fn fit(s: &mut Session, st: &mut Steps, clip: u64, anchor: &str) -> bool {
+    let frame = s.active_sequence().map_or((1920.0, 1080.0), |q| (f64::from(q.settings.width), f64::from(q.settings.height)));
+    let mut scale: Option<f64> = None;
+    for _ in 0..8 {
+        let Ok(r) = s.execute("layout.check", json!({"clip": clip})) else { return false };
+        let outside = r["items"].as_array().into_iter().flatten().find(|i| i["clip"] == clip).map(|i| i["outside"].clone()).unwrap_or(Value::Null);
+        if outside.is_null() {
+            return true;
+        }
+        let Ok(list) = s.execute("graphics.list", json!({"clip": clip})) else { return false };
+        let canvas = list["canvas"].as_array().and_then(|c| Some((c.first()?.as_f64()?, c.get(1)?.as_f64()?))).unwrap_or(frame);
+        // a graphic drawn for another frame shape (a copy in another aspect) is first scaled to fit
+        // the frame whole; the safe-area anchor then no longer applies (it reads the canvas)
+        let other_shape = (canvas.0 - frame.0).abs() > 0.5 || (canvas.1 - frame.1).abs() > 0.5;
+        if other_shape {
+            // shrink the whole graphic about the frame's centre (Motion scale), which keeps a
+            // centred title centred
+            scale = match scale {
+                None => st
+                    .may(s, "the graphic, drawn for the other shape, fits the frame whole", "clip.fitToFrame", json!({"clips": [clip]}))
+                    .and_then(|r| r["clips"].get(0)?["scale"].as_f64()),
+                Some(pct) => {
+                    let pct = round3(pct * 0.8);
+                    st.may(s, "make it fit the frame", "effects.setParam", json!({"clip": clip, "effect": "motion", "param": "scale", "value": pct}))
+                        .map(|_| pct)
+                }
+            };
+            if scale.is_none() {
+                break;
+            }
+            continue;
+        }
+        let layers: Vec<(u64, f64, [f64; 2])> = list["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(32)
+            .filter_map(|l| {
+                let scale = l["scale"].as_f64().filter(|x| x.is_finite() && *x > 0.0)?;
+                Some((l["layer"].as_u64()?, scale, [l["position"].get(0)?.as_f64()?, l["position"].get(1)?.as_f64()?]))
+            })
+            .collect();
+        if layers.is_empty() {
+            break;
+        }
+        let (cx, cy) = (canvas.0 / 2.0, canvas.1 / 2.0);
+        for (layer, scale, [x, y]) in layers {
+            let pos = [round3(cx + (x - cx) * 0.8), round3(cy + (y - cy) * 0.8)];
+            st.may(
+                s,
+                "make it fit the frame",
+                "graphics.set",
+                json!({"clip": clip, "layer": layer, "props": {"scale": round3(scale * 0.8), "position": pos}, "pictureChange": false}),
             );
-            return Ok(Some(ItemId(id)));
         }
-        // fall back to the centre crop below, back in the reel
-        if s.state.active_sequence != Some(reel) {
-            s.execute("sequence.open", json!({"item": reel.0})).ok();
+        if !other_shape {
+            st.may(s, "keep it in the title-safe area", "graphics.anchor", json!({"clip": clip, "anchor": anchor, "safe": "title"}));
         }
-    } else {
-        steps.skip(
-            "clip.autoReframe",
-            json!({"output": "sequence", "aspect": aspect}),
-            "a copy in the new shape that follows the subject",
-            "this build does not have the command yet: the copy is a centre crop of the reel instead",
-        );
     }
-    let made = steps.must(
-        s,
-        "a sequence in the new shape, holding the reel",
-        "file.newSequence",
-        json!({"name": name, "fromItems": [reel.0], "fps": rate.as_f64()}),
-    )?;
-    let seq = made["sequence"].as_u64().map(ItemId);
-    steps.must(s, "the new shape's frame size", "sequence.settings", json!({"width": w, "height": h}))?;
-    let nested: Vec<u64> = s
-        .active_sequence()
-        .map(|q| q.video_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.item == reel).map(|i| i.id.0).collect())
-        .unwrap_or_default();
-    steps.must(s, "fill the frame: a centre crop of the reel", "clip.fillFrame", json!({"clips": nested}))?;
-    if let Some(c) = nested.first() {
-        steps.next(
-            "effects.setParam",
-            json!({"clip": c, "effect": "motion", "param": "position", "value": [w / 2, h / 2]}),
-            "move the crop sideways onto the action (x)",
-        );
-    }
-    Ok(seq)
+    st.warnings.push(format!("graphic clip {clip} still leaves the safe area after shrinking: make its text shorter (layout.check)"));
+    false
 }
 
 /// How much the styling changed the picture of `[a, b)`, from the looks taken before it.

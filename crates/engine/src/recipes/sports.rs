@@ -6,13 +6,17 @@
 //! cheering), and placed in time order in a new sequence. The best one ends in slow motion, cuts
 //! are softened, each moment gets a marker, and the reel opens on a title. Music is laid under it
 //! and ducked when a music pack is installed. A ball trail (with a `ball` seed) and a reframed
-//! copy (`aspect`) come from the sports commands where this build has them.
+//! copy (`aspect`) come from the sports commands where this build has them, as follow-on
+//! jobs folded into the same undo step.
 
 use filmagic_time::Tick;
 use serde_json::{Map, Value, json};
 
+use filmagic_project::ItemId;
+
+use super::follow::{Follow, Pending};
 use super::{
-    Analysis, Footage, Pick, Placed, RUN, Recipe, Steps, analyse, aspect_p, clip_of, done, extent, find_asset, flag, footage, number, pick_p, picture_change,
+    Analysis, Footage, Pick, Placed, RUN, Recipe, Steps, analyse, aspect_p, clip_of, extent, find_asset, flag, footage, number, pick_p, picture_change,
     place_cuts, round3, running, text, ticks_of, time_json, whole,
 };
 use crate::commands::bad;
@@ -151,6 +155,9 @@ struct Ball {
 
 fn ball_p(p: &Value) -> Result<Option<Ball>> {
     let Some(b) = p.get("ball").filter(|v| !v.is_null()) else { return Ok(None) };
+    if let Some(k) = b.as_object().and_then(|o| o.keys().find(|k| !["point", "at", "size"].contains(&k.as_str()))) {
+        return Err(bad(RUN, format!("`ball.{}` is not a ball parameter: point, at, size", super::clip_text(k, 40))));
+    }
     let wrong =
         || bad(RUN, "`ball` must be {\"point\":[x,y] (the ball's centre, the recording's pixels),\"at\":seconds (when, in the recording),\"size\":px?}");
     let point = b
@@ -211,7 +218,11 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
             "story.highlights found no moment that stands out (no run of impacts at the cadence, no cheering, no burst of motion): try \"mode\":\"peaks\", a wider `cadence` or a lower `minHits`. Nothing was changed",
         ));
     }
-    s.edit_group(LABEL, |s| build(s, &f, &r, &chosen, Opts { title, name, slow, frames, markers, music, aspect, ball }))
+    let mut d = Pending::new(s, &RECIPE, LABEL, finish);
+    d.cache = job.map(|j| (j, super::follow::essence(p)));
+    let o = Opts { title, name, slow, frames, markers, music, aspect, ball };
+    s.edit_group(LABEL, |s| build(s, &mut d, &f, &r, &chosen, o))?;
+    super::follow::advance(s, d, wait)
 }
 
 struct Opts {
@@ -225,30 +236,50 @@ struct Opts {
     ball: Option<Ball>,
 }
 
-fn build(s: &mut Session, f: &Footage, r: &Value, chosen: &[Seg], o: Opts) -> Result<Value> {
-    let mut st = Steps { notes: f.notes.clone(), ..Default::default() };
+/// The reel: everything but what needs a job (the ball trail, the reframed copy) and what goes on
+/// last (the title, in each sequence, once the copy is made).
+fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, chosen: &[Seg], o: Opts) -> Result<()> {
+    let st = &mut d.steps;
+    st.notes = f.notes.clone();
     st.record("story.highlights", &f.target, "find and score the moments", "done");
     let made =
         st.must(s, "the reel, with the recording's frame size and rate", "file.newSequence", json!({"name": o.name, "fromItem": f.item.0, "place": false}))?;
-    let reel = made["sequence"].as_u64().map(filmagic_project::ItemId).ok_or_else(|| bad(RUN, "file.newSequence answered no sequence"))?;
+    let reel = made["sequence"].as_u64().map(ItemId).ok_or_else(|| bad(RUN, "file.newSequence answered no sequence"))?;
     let cuts: Vec<(Tick, Tick)> = chosen.iter().map(|g| (g.a, g.b)).collect();
-    let placed = place_cuts(s, &mut st, f, &cuts, "moment")?;
+    let placed = place_cuts(s, st, f, &cuts, "moment")?;
     let rate = s.sequence_rate();
     // slow motion on the best moment's last stretch: the reel grows, later moments move along
     let best = chosen.iter().zip(&placed).max_by(|x, y| x.0.score.total_cmp(&y.0.score).then(y.0.a.cmp(&x.0.a))).map(|(_, pl)| pl.clone());
     if o.slow
-        && let Some(Placed { video: Some(v), .. }) = &best
-        && let Some(it) = clip_of(s, *v)
+        && let Some(pl) = &best
+        && let Some(v) = pl.video
+        && let Some(it) = clip_of(s, v)
     {
         let tail = Tick::from_seconds_f64(1.5).min(Tick(it.duration.0 / 3));
         let at = rate.snap(it.end() - tail);
-        st.may(
+        let ramped = st.may(
             s,
             "slow motion at the end of the best moment",
             "clip.speedRamp",
             json!({"clip": v.0, "from": 100, "to": 50, "at": at.0, "duration": Tick::from_seconds_f64(0.4).min(tail).0, "ripple": true, "audio": "keep"}),
         );
         st.next("clip.speedRamp", json!({"clip": v.0, "clear": true}), "remove the slow motion, or call again with another `to` (percent)");
+        // the sound plays on at its own speed: end it with the moment, faded, not past its Out
+        if ramped.is_some()
+            && let Some(a) = pl.audio.first()
+            && let Some(ai) = clip_of(s, *a)
+        {
+            let keep = rate.snap(pl.media_out - pl.media_in);
+            if ai.duration > keep + rate.frame_duration() {
+                st.may(
+                    s,
+                    "end the moment's sound at its Out (it plays at its own speed under the slow motion)",
+                    "timeline.trim",
+                    json!({"clip": a.0, "edge": "out", "mode": "regular", "delta": (keep - ai.duration).0, "linked": false}),
+                );
+                st.may(s, "fade it out", "sequence.applyAudioTransition", json!({"clip": a.0, "edge": "out", "frames": 8, "align": "end"}));
+            }
+        }
     }
     if o.frames > 0 {
         for pl in placed.iter().skip(1) {
@@ -284,44 +315,33 @@ fn build(s: &mut Session, f: &Footage, r: &Value, chosen: &[Seg], o: Opts) -> Re
         }
     }
     let (a, b) = extent(s);
-    let before = crate::story::looks_across(s, a, b);
-    if let Some(t) = &o.title
-        && let Some(v) = st.may(
-            s,
-            "an opening title",
-            "graphics.template.apply",
-            json!({"template": "builtin:title-centered", "values": {"title": t, "subtitle": f.name}, "time": 0, "track": "auto"}),
-        )
-    {
-        st.next("graphics.template.set", json!({"clip": v["clip"], "values": {"title": t, "subtitle": ""}}), "change the title's words");
-    }
-    music_step(s, &mut st, &o.music);
+    d.looks = Some((crate::story::looks_across(s, a, b), a, b));
+    music_step(s, &mut d.steps, &o.music);
+    let st = &mut d.steps;
     if let Some(ball) = &o.ball {
-        ball_step(s, &mut st, &placed, ball);
-    } else if crate::commands::find("sports.ballTrail").is_some()
-        && let Some(v) = placed.first().and_then(|x| x.video)
-    {
+        match ball_seed(s, &placed, ball) {
+            Ok(f) => d.then(f(reel)),
+            Err(why) => st.skip("sports.ballTrail", json!({"point": ball.point, "size": ball.size}), "a trail behind the ball", &why),
+        }
+    } else if let Some(v) = placed.first().and_then(|x| x.video) {
         st.next(
             "sports.ballTrail",
             json!({"clip": v.0, "point": [0, 0], "size": 24, "at": 0, "wait": true}),
             "a trail behind the ball: give its centre (sequence pixels) at `at`",
         );
     }
-    let change = picture_change(s, &before, a, b);
-    let mut extra = Map::new();
-    extra.insert("reel".into(), json!(reel.0));
     if let Some(asp) = o.aspect {
-        let shaped = super::reframe(s, &mut st, reel, asp, &format!("{} {asp}", o.name), rate)?;
-        extra.insert("shaped".into(), json!({"aspect": asp, "sequence": shaped.map(|x| x.0)}));
-        st.notes.push(format!("the active sequence is the {asp} copy; the reel itself is sequence {}", reel.0));
+        d.then(Follow::Reframe { seq: reel, aspect: asp, name: format!("{} {asp}", o.name), graphics: "follow", clips: None });
     }
-    extra.insert("footage".into(), f.target.clone());
-    extra.insert("moments".into(), json!(moments));
-    extra.insert(
+    d.extra.insert("reel".into(), json!(reel.0));
+    d.extra.insert("footage".into(), f.target.clone());
+    d.extra.insert("moments".into(), json!(moments));
+    d.extra.insert(
         "analysis".into(),
         json!({"found": r["found"], "impacts": r["impacts"], "span": r["span"], "analysed": r["analysed"], "warnings": r["warnings"]}),
     );
-    extra.insert("pictureChange".into(), change);
+    d.ctx = json!({"reel": reel.0, "title": o.title, "subtitle": f.name});
+    let st = &mut d.steps;
     let mut hp = f.target.clone();
     hp["limit"] = json!(20);
     hp["wait"] = json!(true);
@@ -332,7 +352,43 @@ fn build(s: &mut Session, f: &Footage, r: &Value, chosen: &[Seg], o: Opts) -> Re
     st.next("story.board", json!({"path": "highlights-board.png"}), "look at the reel, one frame per shot");
     st.next("mix.check", json!({}), "check the loudness of the reel");
     st.next("file.exportMedia", json!({"path": "highlights.mp4", "draft": true, "wait": true}), "a quick review copy");
-    Ok(done(&RECIPE, s, st, extra, LABEL))
+    Ok(())
+}
+
+/// After the jobs: the title in the reel, and in the copy (fitted to its frame).
+fn finish(s: &mut Session, d: &mut Pending) -> Result<()> {
+    let reel = d.ctx["reel"].as_u64().map(ItemId);
+    let title = d.ctx["title"].as_str().map(str::to_string);
+    let subtitle = d.ctx["subtitle"].clone();
+    if let Some(reel) = reel {
+        super::follow::open_seq(s, reel);
+    }
+    let place_title = |s: &mut Session, st: &mut Steps, why: &str| -> Option<u64> {
+        let t = title.as_ref()?;
+        let v = st.may(
+            s,
+            why,
+            "graphics.template.apply",
+            json!({"template": "builtin:title-centered", "values": {"title": t, "subtitle": subtitle}, "time": 0, "track": "auto"}),
+        )?;
+        let clip = v["clip"].as_u64()?;
+        super::fit(s, st, clip, "center");
+        Some(clip)
+    };
+    if let Some(c) = place_title(s, &mut d.steps, "an opening title") {
+        d.steps.next("graphics.template.set", json!({"clip": c, "values": {"title": title, "subtitle": ""}}), "change the title's words");
+    }
+    if let Some((before, a, b)) = d.looks.take() {
+        d.extra.insert("pictureChange".into(), picture_change(s, &before, a, b));
+    }
+    if let Some(copy) = d.copy {
+        super::follow::open_seq(s, copy);
+        place_title(s, &mut d.steps, "the title in the copy, fitted to its frame");
+        let aspect = s.project.sequence(copy).map(|q| (q.settings.width, q.settings.height));
+        d.extra.insert("shaped".into(), json!({"sequence": copy.0, "size": aspect}));
+        d.steps.notes.push(format!("the active sequence is the reframed copy; the reel itself is sequence {}", reel.map_or(0, |r| r.0)));
+    }
+    Ok(())
 }
 
 /// Music under the whole reel, ducked under speech, from an installed pack.
@@ -360,18 +416,17 @@ pub(super) fn music_step(s: &mut Session, st: &mut Steps, music: &Pick) {
     }
 }
 
-fn ball_step(s: &mut Session, st: &mut Steps, placed: &[Placed], ball: &Ball) {
-    let hit = placed.iter().find(|pl| pl.media_in <= ball.at && ball.at < pl.media_out).and_then(|pl| pl.video.map(|v| (v, pl.media_in)));
-    let Some((v, media_in)) = hit else {
-        st.skip(
-            "sports.ballTrail",
-            json!({"point": ball.point, "size": ball.size}),
-            "a trail behind the ball",
-            "`ball.at` is in none of the chosen moments: give a time inside one (`moments[].media`)",
-        );
-        return;
-    };
-    let Some(it) = clip_of(s, v) else { return };
-    let at = s.sequence_rate().snap(it.start + (ball.at - media_in));
-    st.may(s, "a trail behind the ball", "sports.ballTrail", json!({"clip": v.0, "point": ball.point, "size": ball.size, "at": at.0, "wait": true}));
+/// Where the ball trail is seeded: the moment showing `ball.at`, and the reel time that shows it
+/// (through the slow motion's remap).
+fn ball_seed(s: &Session, placed: &[Placed], ball: &Ball) -> std::result::Result<impl FnOnce(ItemId) -> Follow, String> {
+    let v = placed
+        .iter()
+        .find(|pl| pl.media_in <= ball.at && ball.at < pl.media_out)
+        .and_then(|pl| pl.video)
+        .ok_or_else(|| "`ball.at` is in none of the chosen moments: give a time inside one (`moments[].media`)".to_string())?;
+    let it = clip_of(s, v).ok_or_else(|| "the moment's clip is gone".to_string())?;
+    let at = crate::sequence_tools::timeline_time_of(&it, ball.at).ok_or_else(|| "the reel does not show `ball.at` (it falls in a cut)".to_string())?;
+    let at = s.sequence_rate().snap(at);
+    let (point, size) = (ball.point, ball.size);
+    Ok(move |seq| Follow::Trail { seq, clip: v.0, point, size, at })
 }

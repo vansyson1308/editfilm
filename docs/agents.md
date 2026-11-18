@@ -534,13 +534,15 @@ checks that every command they name is in the registry.
 
 | Recipe | From | Builds |
 |---|---|---|
-| `sports-highlight` | a long rally recording (`item` or `clip`) | a reel of the best moments by `story.highlights` (to `targetSeconds`, in time order), slow motion at the end of the best one, soft cuts, a marker per moment, an opening title, music when a pack has one; `aspect` (or `vertical: true`) adds a 9:16, 1:1 or 4:5 copy that follows the action (`clip.autoReframe`, with the title and trail following into it); `ball` (`{"point": [x, y], "at": seconds}` in the recording) a ball trail (`sports.ballTrail`). The order is slow motion, then the trail, then the reframe |
-| `comedy-meme` | a clip | an edit that builds to the funniest moment (the loudest laugh or burst): pauses in the speech cut out, punch-ins, a freeze with camera shake on the moment, top text and `punchText`, a sound effect and a meme from the installed packs, a `voiceover` line by Text to Speech (`"language": "vi"` or a `vieneu:<name>` voice: Vietnamese with VieNeu-TTS, synthesized as a job first; skipped with how to install it, `tts.setupVieneu {"install": true}`, when VieNeu is not set up) |
-| `vertical` | the active sequence, a `sequence`, an `item` or a `clip` | a copy in 9:16 (or 1:1, 4:5) |
+| `sports-highlight` | a long rally recording (`item` or `clip`) | a reel of the best moments by `story.highlights` (to `targetSeconds`, in time order), slow motion at the end of the best one, soft cuts, a marker per moment, an opening title, music when a pack has one; `aspect` (or `vertical: true`) adds a 9:16, 1:1 or 4:5 copy that follows the action (`clip.autoReframe`, the trail following into it; the title is set in the copy after, inside its title-safe area); `ball` (`{"point": [x, y], "at": seconds}` in the recording) a ball trail (`sports.ballTrail`), seeded at the reel frame that shows that moment, in the slowed tail too. The order is slow motion, then the trail, then the reframe |
+| `comedy-meme` | a clip | an edit (cut at phrase starts) that builds to the funniest moment (the loudest laugh or burst): pauses in the speech cut out, punch-ins, a freeze with camera shake on the moment, top text and `punchText`, a sound effect and a meme from the installed packs, a `voiceover` line by Text to Speech (`"language": "vi"` or a `vieneu:<name>` voice: Vietnamese with VieNeu-TTS, synthesized as a job first; skipped with how to install it, `tts.setupVieneu {"install": true}`, when VieNeu is not set up, or when the synthesis fails); `aspect` adds a copy in that shape where the text is set after the reframe and the freeze fills the frame |
+| `vertical` | the active sequence (not an empty one), a `sequence`, an `item` or a `clip` | a copy in 9:16 (or 1:1, 4:5); titles and text keep their place and are made smaller until `layout.check` finds them inside the frame |
 
 How a run works:
 
-- **One undo step.** `edit.undo` takes the whole draft back. A required step that fails rolls it
+- **One undo step.** `edit.undo` takes the whole draft back, follow-on jobs included (their
+  edits are folded into the recipe's step; an edit of your own in between stops the folding, with
+  a warning). A required step that fails rolls it
   all back, with the step and its error. An optional step that fails is a warning.
 - **Every step is in the result**: `steps` lists each command with its exact `params`, its status
   (`done`, `failed`, `skipped`) and why it ran. Tune any of them with the same command, or start
@@ -548,10 +550,16 @@ How a run works:
 - **Analysis is a job.** `wait: true` answers with the draft. Without it the reply is
   `{"status": "running", "job", "resultCommand"}`: once `jobs.list` shows the job finished,
   run the `resultCommand` (`recipes.run` with `job`) to build the draft. Its answer can be
-  `running` again, on the next job (a Vietnamese voice-over being synthesized): follow its
-  `resultCommand` the same way. Over MCP a waiting call does all of this for you, as for exports. Running the same `resultCommand` again answers the same draft
-  (`alreadyBuilt`) rather than building a second one. The analysis is cached, so another run with
-  other options reads no media again.
+  `running` again, on the next job: a Vietnamese voice-over being synthesized, or a follow-on
+  job of the draft (`clip.autoReframe`, `sports.ballTrail`), whose `resultCommand` is
+  `recipes.run {"recipe", "follow": key}`. Follow each the same way; every call returns quickly.
+  Over MCP and the bridge a waiting call does all of this for you, as for exports, and stops after
+  6 follow-on jobs with an error that names the last one. A follow-on job that fails or is
+  cancelled (`jobs.cancel`) does not end the run: its `resultCommand` still answers, with the
+  fallback (a centre crop) or a warning. Running the same `resultCommand` again answers the same
+  draft (`alreadyBuilt`) while it is still in the project; after an undo or a new project it
+  builds again, and other parameters with the same `job` are refused. The analysis is cached, so
+  another run with other options reads no media again.
 - **Deterministic.** The same footage and parameters give the same draft.
 - **No media ships.** Music, sounds and memes come from installed packs (`assets.search`). When
   none is installed the recipe says so in `notes`, and says what to add.
@@ -559,10 +567,9 @@ How a run works:
   skipped with a note. If `clip.autoReframe` cannot run, `aspect` falls back to a centre crop: the
   draft is nested in a sequence of that shape and fills its frame, and `nextSteps` says how to
   move the crop. A ball trail whose seed finds nothing is a warning that says how to seed it.
-- **What runs inside the build.** The analysis (and a Vietnamese voice-over) are jobs. The
-  reframe and the ball trail are bounded analyses that run inside the build, so the draft stays
-  one undo step (both bound their cost: small analysis frames, sampled, a capped number of
-  samples).
+- **What runs as a job.** The analysis, a Vietnamese voice-over, the reframe and the ball trail
+  are jobs; the UI never waits on them. The voice-over's parameters are checked before its job
+  starts, so a refused voice starts nothing.
 - **Hostile parameters** are refused before anything changes: unknown keys (a typo is never
   ignored), wrong types, out-of-range numbers. Costs are bounded. A reel is at most 300 s and 20
   moments. A meme is cut from at most 600 s of footage, in at most 40 pieces.

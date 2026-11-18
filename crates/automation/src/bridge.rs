@@ -84,15 +84,19 @@ impl BridgeClient {
                 }
             };
             let (result, _, _) = &polled;
-            if let Some(e) = result.get("error").and_then(Value::as_str) {
+            // a followed job's failure is for its resultCommand to report (see long_job)
+            if hops == 0
+                && let Some(e) = result.get("error").and_then(Value::as_str)
+            {
                 return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
             }
             if let Some((cmd, p)) = crate::long_job::result_command(&start) {
                 let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
                 // its answer started the next job (a recipe's voice-over after its analysis)
-                if hops < crate::long_job::MAX_HOPS
-                    && let Some(next) = crate::long_job::next_job(&answer)
-                {
+                if let Some(next) = crate::long_job::next_job(&answer) {
+                    if hops >= crate::long_job::MAX_HOPS {
+                        return Err(AutomationError::App(crate::long_job::too_many_hops(id, &answer)));
+                    }
                     hops += 1;
                     job = next;
                     start = answer;
@@ -402,6 +406,72 @@ mod tests {
             let e = b.execute("story.highlights", json!({"item": 3, "wait": true})).await.unwrap_err().to_string();
             assert!(e.contains(status) && e.contains("story.highlights"), "{e}");
         }
+    }
+
+    /// A stand-in app for a recipe whose answer starts a second job (a voice-over after the
+    /// analysis), which then fails: the failure is the recipe's to report, so its resultCommand
+    /// still runs. `hops` follow-on jobs are chained, each failing.
+    async fn hop_app(hops: u64) -> (String, Arc<Mutex<Vec<Value>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            let (s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.into_split();
+            let mut lines = BufReader::new(r).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                if let Some(reply) = hello_reply(&req, port) {
+                    w.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+                    continue;
+                }
+                log.lock().await.push(req.clone());
+                let p = &req["params"]["params"];
+                let reply = match req["params"]["command"].as_str() {
+                    Some("recipes.run") => {
+                        // job 7 is the analysis; 8, 9, … the follow-ons
+                        let at = p["follow"].as_u64().or_else(|| p["job"].as_u64().map(|_| 7)).unwrap_or(6);
+                        if at < 7 + hops {
+                            let next = at + 1;
+                            json!({"job": next, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"follow": next}}})
+                        } else if at == 6 {
+                            json!({"job": 7, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"job": 7}}})
+                        } else {
+                            json!({"status": "done", "steps": [{"command": "tts.create", "status": "skipped"}]})
+                        }
+                    }
+                    Some("jobs.list") => json!((7..8 + hops)
+                        .map(|id| json!({"id": id, "finished": true, "result": if id == 7 { json!({"frames": 1}) } else { json!({"error": "VieNeu is not installed"}) }}))
+                        .collect::<Vec<_>>()),
+                    _ => json!(null),
+                };
+                let line = format!("{}\n", json!({"id": req["id"], "ok": true, "result": reply}));
+                w.write_all(line.as_bytes()).await.unwrap();
+            }
+        });
+        (addr, seen)
+    }
+
+    /// A recipe's follow-on job that fails is reported by the recipe, not as the call's error: the
+    /// bridge runs the resultCommand of every hop (#22), and gives up with an error naming the job
+    /// past MAX_HOPS.
+    #[tokio::test]
+    async fn a_failed_follow_on_job_is_left_to_the_recipe() {
+        let (addr, seen) = hop_app(1).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let r = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap();
+        assert_eq!(r["status"], "done", "{r}");
+        let seen = seen.lock().await;
+        let runs: Vec<&Value> = seen.iter().filter(|q| q["params"]["command"] == "recipes.run").map(|q| &q["params"]["params"]).collect();
+        assert_eq!(runs.len(), 3, "start, after the analysis, after the follow-on: {runs:?}");
+        assert_eq!(runs[2], &json!({"follow": 8}));
+        drop(seen);
+        let (addr, _) = hop_app(crate::long_job::MAX_HOPS as u64 + 2).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let e = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap_err().to_string();
+        assert!(e.contains("still running after") && e.contains("job"), "{e}");
     }
 
     #[tokio::test]
