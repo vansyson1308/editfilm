@@ -63,7 +63,7 @@ fn continuous(a: &TrackItem, b: &TrackItem) -> bool {
         && !b.reverse
         && a.frame_hold.is_none()
         && b.frame_hold.is_none()
-        && a.source_out() == b.source_in
+        && a.linear_source_out() == b.source_in
         && a.enabled == b.enabled
         && a.gain_db == b.gain_db
         && a.effects == b.effects
@@ -155,8 +155,8 @@ pub fn record(seq: &mut Sequence, tracks: &[TrackId], source: ItemId, cuts: &[Cu
 /// Inner links are remapped through `links` (so a flattened video/audio pair stays linked).
 /// Fails for clips with a speed change, reverse or frame hold (no exact flattening).
 pub fn flatten_items(outer: &TrackItem, source_track: &Track, ctx: &mut EditCtx, links: &mut HashMap<u64, u64>) -> Result<Vec<TrackItem>> {
-    if (outer.speed - 1.0).abs() > 1e-9 || outer.reverse || outer.frame_hold.is_some() {
-        return Err(EditError::Other("can't flatten a clip with a speed change, reverse or frame hold".into()));
+    if (outer.speed - 1.0).abs() > 1e-9 || outer.reverse || outer.frame_hold.is_some() || outer.has_speed_ramp() {
+        return Err(EditError::Other("can't flatten a clip with a speed change, speed ramp, reverse or frame hold".into()));
     }
     let (s0, s1) = (outer.source_in, outer.source_out());
     let mut out = Vec::new();

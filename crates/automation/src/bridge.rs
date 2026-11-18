@@ -84,6 +84,13 @@ impl BridgeClient {
         if let Some(e) = result.get("error").and_then(Value::as_str) {
             return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
         }
+        if let Some((cmd, p)) = crate::long_job::result_command(&start) {
+            let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
+            return match crate::long_job::unfinished(id, &answer) {
+                Some(e) => Err(AutomationError::App(e)),
+                None => Ok(answer),
+            };
+        }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);
             if let Some(st) = status.filter(|v| id != "file.exportMedia" && v.as_str().is_some_and(|s| !s.is_empty())) {
@@ -251,6 +258,12 @@ mod tests {
 
     /// [`fake_app`] whose finished job also lists `offline` as its `offlineMedia`.
     async fn fake_app_with(result: Value, offline: Option<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
+        fake_app_full(result, offline, Value::Null).await
+    }
+
+    /// [`fake_app_with`] that also runs `story.highlights`: its start names the command that reads
+    /// the finished job (`resultCommand`), which answers `answer`.
+    async fn fake_app_full(result: Value, offline: Option<Value>, answer: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let port = listener.local_addr().unwrap().port();
@@ -270,6 +283,10 @@ mod tests {
                 log.lock().await.push(req.clone());
                 let reply = match req["params"]["command"].as_str() {
                     Some("file.exportMedia") => json!({"job": 7, "path": "/tmp/out.mov"}),
+                    Some("story.highlights") if req["params"]["params"]["job"] == 7 => answer.clone(),
+                    Some("story.highlights") => {
+                        json!({"job": 7, "status": "running", "resultCommand": {"command": "story.highlights", "params": {"job": 7}}})
+                    }
                     Some("assets.install") => json!({"job": 7, "poll": "jobs.list"}),
                     Some("jobs.list") => {
                         polls += 1;
@@ -350,6 +367,27 @@ mod tests {
         let b = BridgeClient::new(addr).unwrap();
         let r = b.execute("file.exportMedia", json!({"path": "/tmp/out.mov", "wait": true})).await.unwrap();
         assert_eq!(r["offlineMedia"], off, "{r}");
+    }
+
+    /// `story.highlights` with `wait: true` is polled as a job too, and answers with what its
+    /// `resultCommand` reads once the job is done; a job that ends failed or cancelled is an error.
+    #[tokio::test]
+    async fn a_blocking_highlights_call_is_polled_and_read_back() {
+        let segments = json!({"status": "done", "segments": [{"rank": 1, "kind": "rally"}]});
+        let (addr, seen) = fake_app_full(json!({"frames": 9}), None, segments.clone()).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let r = b.execute("story.highlights", json!({"item": 3, "wait": true})).await.unwrap();
+        assert_eq!(r, segments);
+        let seen = seen.lock().await;
+        assert!(seen.iter().all(|q| q["params"]["params"]["wait"] != json!(true)), "the app never runs it blocking");
+        assert_eq!(seen.last().unwrap()["params"]["params"], json!({"job": 7}), "the result is read back with its job");
+        drop(seen);
+        for status in ["failed", "cancelled"] {
+            let (addr, _) = fake_app_full(json!({"frames": 9}), None, json!({"status": status, "error": "the project was replaced"})).await;
+            let b = BridgeClient::new(addr).unwrap();
+            let e = b.execute("story.highlights", json!({"item": 3, "wait": true})).await.unwrap_err().to_string();
+            assert!(e.contains(status) && e.contains("story.highlights"), "{e}");
+        }
     }
 
     #[tokio::test]

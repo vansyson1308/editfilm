@@ -338,6 +338,7 @@ pub(crate) fn reports_only(id: &str, p: &Value) -> bool {
     // `story.blinkPoints` edits only when asked to leave markers
     (id == "sequence.settings" && (p.is_null() || p.as_object().is_some_and(|m| m.is_empty())))
         || (id == "story.blinkPoints" && p.get("markers").and_then(Value::as_bool) != Some(true))
+        || (id == "story.highlights" && p.get("markers").and_then(Value::as_bool) != Some(true))
 }
 /// A marker accepts either an unchanged preset label or an exact six-digit sRGB hex color.
 pub(crate) fn marker_color_p(p: &Value, cmd: &str) -> Result<Option<(Label, Option<filmagic_project::HexColor>)>> {
@@ -4461,6 +4462,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::project_manager::commands());
     v.extend(crate::masks::commands());
     v.extend(crate::story::commands());
+    v.extend(crate::speed_ramp::commands());
+    v.extend(crate::highlights::commands());
     v.extend(crate::source_cuts::commands());
     v.extend(crate::layout_check::commands());
     v.extend(crate::motion_preview::commands());
