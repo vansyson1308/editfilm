@@ -127,10 +127,24 @@ pub(crate) fn vieneu_engine(s: &Session) -> Option<PathBuf> {
 /// beside the bridge) can be run by the next VieNeu call.
 pub(crate) fn refuse_inside_engine(engine: Option<&Path>, path: &Path) -> std::result::Result<(), String> {
     let Some(engine) = engine else { return Ok(()) };
-    if tts::vieneu::resolved(path).starts_with(tts::vieneu::resolved(engine)) {
+    if tts::vieneu::inside_engine(engine, path) {
         return Err(format!("{} is inside VieNeu's engine folder {}, which holds code it runs; choose another folder", path.display(), engine.display()));
     }
     Ok(())
+}
+
+/// Refuse `folder` (one an agent can set: the models folder, the media cache) when it overlaps
+/// VieNeu's engine directory `engine`, either inside the other, links resolved and letter case
+/// ignored where the file system does. `what` names the folder in the error.
+pub(crate) fn refuse_engine_overlap(engine: Option<&Path>, folder: &Path, what: &str) -> std::result::Result<(), String> {
+    match engine {
+        Some(e) if tts::vieneu::engine_overlaps(e, folder) => Err(format!(
+            "the {what} {} and VieNeu's engine folder {} overlap (one is inside the other), and the engine folder holds code it runs; choose a folder outside it",
+            folder.display(),
+            e.display()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// VieNeu's two directories for this session.

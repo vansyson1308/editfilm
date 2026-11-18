@@ -803,3 +803,54 @@ fn luts_are_never_exported_into_the_vieneu_engine_folder() {
     let ok = root.path().join("look.cube");
     s.execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": ok.to_string_lossy()})).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn exports_saves_and_scratch_disks_never_land_in_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    let site = engine.join("venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    let snap = (*s.project).clone();
+    // the encoder opens the file itself: its path and the folder it would create are refused
+    for path in [site.join("evil.pth"), site.join("new-folder/evil.wav"), link.join("venv/lib/python3.12/site-packages/evil.pth")] {
+        let e = s.execute("file.exportMedia", json!({"path": path.to_string_lossy(), "format": "wav", "wait": true})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{}: {e}", path.display());
+    }
+    assert!(!site.join("new-folder").exists());
+    // the project manager copies media and writes a project into `destination`
+    let e = s.execute("file.projectManager", json!({"destination": site.to_string_lossy(), "wait": true})).unwrap_err().to_string();
+    assert!(e.contains("engine folder"), "{e}");
+    // scratch disks: captured media, previews and auto-saves are written there
+    for k in ["captured", "videoPreviews", "audioPreviews", "autoSave"] {
+        let e = s.execute("file.projectSettings.scratchDisks", json!({k: site.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{k}: {e}");
+    }
+    assert_eq!(*s.project, snap, "nothing changed");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| !p.starts_with(engine.join("work"))).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // elsewhere is fine
+    let ok = root.path().join("out").join("demo.wav");
+    s.execute("file.exportMedia", json!({"path": ok.to_string_lossy(), "format": "wav", "wait": true})).unwrap();
+}
+
+#[test]
+fn media_cache_folders_may_not_overlap_the_default_engine_folder() {
+    let Some(engine) = crate::narration::vieneu_engine_dir() else { return };
+    let mut s = Session::default();
+    for key in ["mediaCache.location", "mediaCache.databaseLocation"] {
+        for v in [engine.join("venv"), engine.clone()] {
+            let e = s.execute("prefs.set", json!({"key": key, "value": v.to_string_lossy()})).unwrap_err().to_string();
+            assert!(e.contains("overlap"), "{key}: {e}");
+        }
+        if let Some(parent) = engine.parent() {
+            assert!(s.execute("prefs.set", json!({"key": key, "value": parent.to_string_lossy()})).is_err(), "{key}: a folder that holds the engine");
+        }
+    }
+    assert_eq!(s.prefs.media_cache.location, "");
+    let ok = tempfile::tempdir().unwrap();
+    s.execute("prefs.set", json!({"key": "mediaCache.location", "value": ok.path().to_string_lossy()})).unwrap();
+}

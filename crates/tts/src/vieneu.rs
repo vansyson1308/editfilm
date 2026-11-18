@@ -43,7 +43,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use unicode_normalization::UnicodeNormalization;
 
 use crate::{Audio, MAX_SECONDS, Params, TtsError, check_text, script};
 
@@ -127,6 +126,17 @@ impl Dirs {
         if cfg!(windows) { self.venv().join("Scripts").join("python.exe") } else { self.venv().join("bin").join("python") }
     }
 
+    /// Written by [`install`] once it has created [`Dirs::venv`]: an environment without it was
+    /// not made by Filmagic and is never run.
+    fn venv_marker(&self) -> PathBuf {
+        self.engine.join("venv.created-by-filmagic")
+    }
+
+    /// A `venv` folder Filmagic did not create (no marker): refused until it is removed.
+    pub fn foreign_venv(&self) -> bool {
+        self.venv().exists() && !self.venv_marker().is_file()
+    }
+
     fn bridge(&self) -> PathBuf {
         self.engine.join("bridge").join("vieneu_bridge.py")
     }
@@ -163,7 +173,7 @@ impl Dirs {
     /// let a prepared "model" folder become part of what is executed. Compared after resolving
     /// symbolic links, so a linked parent cannot hide the overlap.
     pub fn check(&self) -> Result<(), String> {
-        if overlap(&self.engine, &self.models) {
+        if engine_overlaps(&self.engine, &self.models) {
             return Err(format!(
                 "the models folder {} and VieNeu's engine folder {} overlap (one is inside the other); choose a models folder outside it (models.setLocation)",
                 self.models.display(),
@@ -209,10 +219,44 @@ pub fn resolved(p: &Path) -> PathBuf {
     cur
 }
 
-/// One of `a` and `b` is inside the other (or they are the same folder), links resolved.
+/// File systems where `Vieneu` and `vieneu` name one folder (NTFS, APFS and HFS+ by default).
+pub const CASE_INSENSITIVE: bool = cfg!(any(windows, target_os = "macos"));
+
+/// `path` is `dir` or inside it, comparing components; with `fold`, letter case is ignored
+/// (Unicode lowercase), as a case-insensitive file system does.
+pub fn starts_with_folded(path: &Path, dir: &Path, fold: bool) -> bool {
+    let key = |c: std::path::Component<'_>| {
+        let s = c.as_os_str().to_string_lossy();
+        if fold { s.to_lowercase() } else { s.into_owned() }
+    };
+    let mut p = path.components();
+    dir.components().all(|d| p.next().is_some_and(|c| key(c) == key(d)))
+}
+
+/// One of `a` and `b` is inside the other (or they are the same folder), links resolved and,
+/// on case-insensitive file systems, letter case ignored.
 pub fn overlap(a: &Path, b: &Path) -> bool {
     let (a, b) = (resolved(a), resolved(b));
-    a.starts_with(&b) || b.starts_with(&a)
+    starts_with_folded(&a, &b, CASE_INSENSITIVE) || starts_with_folded(&b, &a, CASE_INSENSITIVE)
+}
+
+/// `path` is inside `dir` (or is it), links resolved and, on case-insensitive file systems,
+/// letter case ignored.
+pub fn inside(path: &Path, dir: &Path) -> bool {
+    starts_with_folded(&resolved(path), &resolved(dir), CASE_INSENSITIVE)
+}
+
+/// [`overlap`] for VieNeu's engine directory, which is created first: a folder that does not
+/// exist yet cannot be canonicalized, so its real spelling (case, links) would be unknown.
+pub fn engine_overlaps(engine: &Path, other: &Path) -> bool {
+    let _ = std::fs::create_dir_all(engine);
+    overlap(engine, other)
+}
+
+/// [`inside`] VieNeu's engine directory, which is created first (see [`engine_overlaps`]).
+pub fn inside_engine(engine: &Path, path: &Path) -> bool {
+    let _ = std::fs::create_dir_all(engine);
+    inside(path, engine)
 }
 
 /// Interpreters to try, in order (see the module docs). `host` is one a host program chose
@@ -223,7 +267,7 @@ pub fn candidates(dirs: &Dirs, host: Option<&Python>) -> Vec<Python> {
         out.push(Python::new(p, &[], "env"));
     }
     let v = dirs.venv_python();
-    if v.is_file() {
+    if v.is_file() && dirs.venv_marker().is_file() {
         out.push(Python::new(v, &[], "venv"));
     }
     if cfg!(windows) {
@@ -238,7 +282,7 @@ pub fn candidates(dirs: &Dirs, host: Option<&Python>) -> Vec<Python> {
 
 /// NFC form of `s` (a name typed or pasted in decomposed form matches the preset).
 pub fn nfc(s: &str) -> String {
-    s.nfc().collect()
+    icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(s).into_owned()
 }
 
 /// What a subprocess left behind.
@@ -472,9 +516,19 @@ impl Status {
     }
 }
 
+fn foreign_venv_error(dirs: &Dirs) -> String {
+    format!(
+        "{} was not created by Filmagic, so it is not run: delete that folder, then run tts.setupVieneu {{\"install\": true}} to create a new one",
+        dirs.venv().display()
+    )
+}
+
 /// Find an interpreter that has `vieneu` ([`candidates`] in order).
 pub fn detect(dirs: &Dirs, host: Option<&Python>) -> Status {
     let mut st = Status::default();
+    if dirs.foreign_venv() {
+        st.tried.push((dirs.venv_python().display().to_string(), foreign_venv_error(dirs)));
+    }
     for py in candidates(dirs, host) {
         match probe(&py, dirs) {
             Ok(p) if p.vieneu.is_some() => {
@@ -526,6 +580,9 @@ pub fn install_steps(st: &Status, dirs: &Dirs) -> Vec<String> {
 pub fn install(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>, log: &mut dyn FnMut(&str)) -> Result<Python, String> {
     let vpy = dirs.venv_python();
     std::fs::create_dir_all(&dirs.engine).map_err(|e| format!("{}: {e}", dirs.engine.display()))?;
+    if dirs.foreign_venv() {
+        return Err(foreign_venv_error(dirs));
+    }
     if !vpy.is_file() {
         log(&format!("Creating a Python environment in {}", dirs.venv().display()));
         let mut cmd = command(&python.program, dirs, false)?;
@@ -534,6 +591,8 @@ pub fn install(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>, log: &
         if !out.success || !vpy.is_file() {
             return Err(format!("{} -m venv failed: {}", python.display(), out.stderr));
         }
+        let marker = dirs.venv_marker();
+        std::fs::write(&marker, b"This Python environment was created by Filmagic.\n").map_err(|e| format!("{}: {e}", marker.display()))?;
     }
     log(&format!("Installing {PACKAGE_SPEC} with pip (this can take several minutes)"));
     let mut cmd = command(&vpy, dirs, false)?;
@@ -1034,6 +1093,64 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
         let d = Dirs { engine: engine.clone(), models: root.path().join("engine-models") };
         assert!(!overlap(&d.engine, &d.models) && d.check().is_ok());
         assert_eq!(resolved(&root.path().join("innocent").join("x")), resolved(&engine).join("x"));
+    }
+
+    #[test]
+    fn folded_comparison_ignores_letter_case_only_when_asked() {
+        let (p, d) = (Path::new("/Users/AN/AppData/Local/Filmagic/VieNeu/bridge"), Path::new("/users/an/appdata/local/filmagic/vieneu"));
+        assert!(starts_with_folded(p, d, true));
+        assert!(!starts_with_folded(p, d, false));
+        assert!(starts_with_folded(p, p, false), "a folder is inside itself");
+        // whole components only, and Unicode letters fold too
+        assert!(!starts_with_folded(Path::new("/a/vieneu2"), Path::new("/a/vieneu"), true));
+        assert!(starts_with_folded(Path::new("/Đĩa/Mô Hình"), Path::new("/đĩa"), true));
+        assert!(!starts_with_folded(Path::new("/a"), Path::new("/a/b"), true), "a parent is not inside its child");
+        assert_eq!(CASE_INSENSITIVE, cfg!(any(windows, target_os = "macos")));
+    }
+
+    #[test]
+    fn an_engine_folder_that_does_not_exist_yet_is_created_before_comparing() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = root.path().join("Local").join("Filmagic").join("vieneu");
+        let d = Dirs { engine: engine.clone(), models: engine.join("bridge") };
+        assert!(d.check().is_err());
+        assert!(engine.is_dir(), "created, so its real spelling is known");
+        assert!(Dirs { engine: engine.clone(), models: root.path().join("models") }.check().is_ok());
+    }
+
+    /// NTFS and APFS treat `VIENEU` and `vieneu` as one folder, so a models folder spelled in
+    /// other letter case is the engine folder there.
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn a_models_folder_in_other_letter_case_is_the_engine_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = root.path().join("Local").join("Filmagic").join("vieneu");
+        for models in [root.path().join("LOCAL").join("filmagic").join("VieNeu").join("bridge"), root.path().join("local").join("FILMAGIC")] {
+            let d = Dirs { engine: engine.clone(), models: models.clone() };
+            assert!(d.check().unwrap_err().contains("overlap"), "{}", models.display());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_python_environment_filmagic_did_not_create_is_never_run() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        let vpy = d.venv_python();
+        std::fs::create_dir_all(vpy.parent().unwrap()).unwrap();
+        std::fs::write(&vpy, "#!/bin/sh\nexit 0\n").unwrap();
+        assert!(d.foreign_venv());
+        assert!(candidates(&d, None).iter().all(|p| p.source != "venv"), "not tried");
+        let st = detect(&d, Some(&Python::new(root.path().join("no-such-python"), &[], "host")));
+        assert!(st.tried.iter().any(|(_, why)| why.contains("not created by Filmagic") && why.contains("delete")), "{:?}", st.tried);
+        let py = fake(root.path(), 480, None);
+        let e = install(&py, &d, None, &mut |_| {}).unwrap_err();
+        assert!(e.contains("not created by Filmagic"), "{e}");
+        assert!(!d.work().join("args.txt").exists(), "nothing ran");
+        // the marker install writes makes it Filmagic's
+        std::fs::write(d.venv_marker(), b"x").unwrap();
+        assert!(!d.foreign_venv());
+        assert_eq!(candidates(&d, None).iter().find(|p| p.source == "venv").map(|p| p.program.clone()), Some(vpy));
     }
 
     #[cfg(unix)]

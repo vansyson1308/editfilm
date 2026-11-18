@@ -646,6 +646,11 @@ pub fn validate(key: &str, v: &Value) -> std::result::Result<(), String> {
     if key == "mediaAnalysis.modelsLocation" {
         return crate::models_store::validate_setting(v);
     }
+    if (key == "mediaCache.location" || key == "mediaCache.databaseLocation")
+        && let Some(d) = v.as_str().map(str::trim).filter(|d| !d.is_empty())
+    {
+        crate::narration::refuse_engine_overlap(crate::narration::vieneu_engine_dir().as_deref(), std::path::Path::new(d), "media cache folder")?;
+    }
     let kind = match field(key) {
         Some(f) => f.kind,
         None if is_unit_key(key) => Kind::Choice(DURATION_UNITS),

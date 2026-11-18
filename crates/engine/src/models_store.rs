@@ -103,17 +103,8 @@ pub fn validate_setting(v: &Value) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Refuse a models folder that is inside VieNeu's engine directory `engine` or holds it, links
-/// resolved: VieNeu runs code from there, and models are moved into the models folder.
 fn refuse_engine_overlap(engine: Option<&Path>, models: &Path) -> std::result::Result<(), String> {
-    match engine {
-        Some(e) if filmagic_tts::vieneu::overlap(e, models) => Err(format!(
-            "the models folder {} and VieNeu's engine folder {} overlap (one is inside the other); choose a folder outside it",
-            models.display(),
-            e.display()
-        )),
-        _ => Ok(()),
-    }
+    crate::narration::refuse_engine_overlap(engine, models, "models folder")
 }
 
 impl Session {

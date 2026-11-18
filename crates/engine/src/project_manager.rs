@@ -82,6 +82,7 @@ struct Work {
 /// Plan, estimate and (unless `dryRun`) run the Project Manager.
 pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
     let dest = str_p(p, "destination").ok_or_else(|| bad("file.projectManager", "need `destination`"))?.to_string();
+    crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), Path::new(&dest)).map_err(|e| bad("file.projectManager", e))?;
     let consolidate = match str_p(p, "mode").unwrap_or("collect") {
         "collect" => false,
         "consolidate" | "transcode" => true,
