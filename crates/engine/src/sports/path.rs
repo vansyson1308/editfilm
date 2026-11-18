@@ -118,7 +118,18 @@ pub fn limit_speed(v: &[f64], max_step: f64) -> Vec<f64> {
     if !(max_step.is_finite() && max_step > 0.0) {
         return v.to_vec();
     }
+    // a value that is not a number would make the bounds below cross (and `clamp` panics on
+    // them): it takes the last finite value before it (or after it, at the start)
     let mut out = v.to_vec();
+    let first = out.iter().copied().find(|x| x.is_finite()).unwrap_or(0.0);
+    let mut last = first;
+    for x in &mut out {
+        if x.is_finite() {
+            last = *x;
+        } else {
+            *x = last;
+        }
+    }
     for i in 1..out.len() {
         let p = out[i - 1];
         out[i] = out[i].clamp(p - max_step, p + max_step);
@@ -327,6 +338,9 @@ mod tests {
         let l = limit_speed(&s, 3.0);
         assert!(l.windows(2).all(|w| (w[1] - w[0]).abs() <= 3.0 + 1e-9));
         assert!(spring_smooth(&v, f64::NAN, 1.0) == v && limit_speed(&v, -1.0) == v);
+        // values that are not numbers do not panic the limit
+        let odd = limit_speed(&[f64::NAN, 1.0, f64::INFINITY, 9.0, f64::NAN], 2.0);
+        assert!(odd.iter().all(|x| x.is_finite()) && odd.windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{odd:?}");
         // a steady pan is followed to both ends
         let ramp: Vec<f64> = (0..50).map(|k| 10.0 * k as f64).collect();
         let r = spring_smooth(&ramp, 0.1, 0.8);

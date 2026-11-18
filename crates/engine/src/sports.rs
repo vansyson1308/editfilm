@@ -236,33 +236,42 @@ pub fn poll(s: &mut Session) {
 /// A clip as the analysis sees it: what maps its source pixels to the sequence frame.
 #[derive(Clone)]
 pub(crate) struct ClipView {
-    seq: Sequence,
+    /// The sequence's settings, in a [`Sequence`] without clips ([`frame_of`]), shared by every
+    /// clip of a command.
+    seq: Arc<Sequence>,
     pub item: TrackItem,
     pub src: (u32, u32),
     par: Option<(u32, u32)>,
 }
 
+/// The frame `q` places clips in: a copy of `q` without its clips (only the settings are read),
+/// made once per command.
+pub(crate) fn frame_of(q: &Sequence) -> Arc<Sequence> {
+    let mut seq = q.clone();
+    for tr in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()).chain(seq.submix_tracks.iter_mut()) {
+        tr.items.clear();
+        tr.transitions.clear();
+    }
+    seq.caption_tracks.clear();
+    seq.markers.clear();
+    Arc::new(seq)
+}
+
 impl ClipView {
-    pub(crate) fn new(s: &Session, q: &Sequence, it: &TrackItem) -> Option<ClipView> {
+    pub(crate) fn new(s: &Session, frame: &Arc<Sequence>, it: &TrackItem) -> Option<ClipView> {
         let src = s.project.source_size(it.item)?;
         if src.0 == 0 || src.1 == 0 {
             return None;
         }
-        // only the settings are read; the tracks are not needed by the analysis
-        let mut seq = q.clone();
-        for tr in seq.video_tracks.iter_mut().chain(seq.audio_tracks.iter_mut()) {
-            tr.items.clear();
-            tr.transitions.clear();
-        }
-        seq.caption_tracks.clear();
-        Some(ClipView { seq, item: it.clone(), src, par: s.project.source_par(it.item) })
+        Some(ClipView { seq: frame.clone(), item: it.clone(), src, par: s.project.source_par(it.item) })
     }
 
     /// The same clip in a sequence of `w`×`h` (Auto Reframe's new sequence).
     pub(crate) fn resized(&self, w: u32, h: u32) -> ClipView {
         let mut v = self.clone();
-        v.seq.settings.width = w;
-        v.seq.settings.height = h;
+        let seq = Arc::make_mut(&mut v.seq);
+        seq.settings.width = w;
+        seq.settings.height = h;
         v
     }
 

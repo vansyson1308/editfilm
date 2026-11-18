@@ -60,7 +60,7 @@ impl BridgeClient {
     /// here until it finishes, so the app keeps repainting (its status bar shows the progress) and
     /// answering other requests, and no request waits on the control server's 60 s reply limit
     /// (#91, #92). The reply is the same as a blocking export's: `{job, path, result}`, or the
-    /// export's error.
+    /// export's error; a sports analysis (`clip.autoReframe`, `sports.*`) answers its report.
     pub async fn execute(&self, id: &str, mut params: Value) -> Result<Value, AutomationError> {
         if !crate::long_job::is_long(id, &params) {
             return self.call("engine.execute", json!({"command": id, "params": params})).await;
@@ -68,28 +68,19 @@ impl BridgeClient {
         if let Some(p) = params.as_object_mut() {
             p.insert("wait".into(), json!(false));
         }
-        let mut start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
+        let start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
         let Some(job) = start.get("job").and_then(Value::as_u64) else { return Ok(start) };
-        let (result, offline) = loop {
+        let state = loop {
             tokio::time::sleep(JOB_POLL).await;
             let jobs = self.call("engine.execute", json!({"command": "jobs.list", "params": {}})).await?;
             let Some(j) = jobs.as_array().and_then(|a| a.iter().find(|j| j["id"].as_u64() == Some(job))).cloned() else {
-                break (Value::Null, None);
+                break None;
             };
             if j["finished"].as_bool() == Some(true) {
-                break (j["result"].clone(), j.get("offlineMedia").cloned());
+                break Some(j);
             }
         };
-        if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("export failed: {e}")));
-        }
-        if let Some(o) = start.as_object_mut() {
-            o.insert("result".into(), result);
-            if let Some(off) = offline {
-                o.insert("offlineMedia".into(), off);
-            }
-        }
-        Ok(start)
+        crate::long_job::finished_reply(id, start, state.as_ref()).map_err(AutomationError::App)
     }
 
     /// Call a control method; returns `result` or the app's error.

@@ -236,8 +236,9 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let mut work = Vec::new();
     let mut total = 0usize;
+    let frame = super::frame_of(q);
     for it in &clips {
-        let view = ClipView::new(s, q, it).ok_or_else(|| bad(CMD, format!("clip {} has no picture", it.id.0)))?;
+        let view = ClipView::new(s, &frame, it).ok_or_else(|| bad(CMD, format!("clip {} has no picture", it.id.0)))?;
         let src = s.source(it.item).ok_or_else(|| bad(CMD, format!("clip {} has no media to analyse", it.id.0)))?;
         if it.frame_hold.is_some() {
             return Err(bad(CMD, format!("clip {} is a freeze frame: there is no motion to follow", it.id.0)));
@@ -520,7 +521,7 @@ const MAX_FOLLOW_SAMPLES: usize = 4000;
 
 /// Give each graphic clip of the new sequence `nid` that lies over a reframed clip the same crop:
 /// its Motion becomes (the clip's new Motion) ∘ (its old Motion)⁻¹ ∘ (the graphic's old Motion),
-/// sampled every frame where they overlap and thinned. An overlay drawn on the old frame (a ball
+/// sampled every frame where they overlap (every few frames of a long overlap) and thinned. An overlay drawn on the old frame (a ball
 /// trail, a ring) then stays on what it marks. Answers notes about graphics left as they were.
 fn follow_graphics(pr: &mut Project, old: ItemId, nid: ItemId, ids: &HashMap<ClipId, ClipId>, reframed: &[ClipId]) -> Vec<String> {
     use filmagic_render::motion_matrix;
@@ -559,9 +560,14 @@ fn follow_graphics(pr: &mut Project, old: ItemId, nid: ItemId, ids: &HashMap<Cli
             let (lo, hi) = (g.start.max(c.start), g.end().min(c.end()));
             let mut pos = Vec::new();
             let mut scale = Vec::new();
+            // every frame, or every `stride` frames of a long overlap (and its last frame), so the
+            // whole of it is followed with at most MAX_FOLLOW_SAMPLES samples
+            let frames = usize::try_from((hi - lo).0 / fd.0).unwrap_or(usize::MAX).max(1);
+            let stride = Tick(fd.0.saturating_mul(frames.div_ceil(MAX_FOLLOW_SAMPLES).max(1) as i64));
+            let last = hi - fd;
             let mut t = lo;
             let mut skewed = false;
-            while t < hi && pos.len() < MAX_FOLLOW_SAMPLES {
+            while t < hi && pos.len() <= MAX_FOLLOW_SAMPLES {
                 let a = motion_matrix(&nq, c, cs, cpar, c.effect_time_at(t));
                 let b = motion_matrix(&oq, c_old, cs, cpar, c_old.effect_time_at(t)).inverse();
                 let m = motion_matrix(&oq, g_old, gs, gpar, g_old.effect_time_at(t));
@@ -575,7 +581,7 @@ fn follow_graphics(pr: &mut Project, old: ItemId, nid: ItemId, ids: &HashMap<Cli
                     pos.push((et, total.apply(anchor)));
                     scale.push((et, 100.0 * total.a / fit));
                 }
-                t += fd;
+                t = if t < last && t + stride > last { last } else { t + stride };
             }
             if skewed {
                 notes.push(format!("graphic {} ({}) would need a rotated or stretched crop and keeps its Motion", g.id.0, g.name));

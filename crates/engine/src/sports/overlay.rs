@@ -37,7 +37,7 @@ pub(crate) const RING_PARAMS: &str = concat!(
 pub(crate) const PATH_PARAMS: &str = concat!(
     "{",
     track_doc!(),
-    r##","points":[{"time":ticks?,"x":px,"y":px}]|[[x,y]]? (the path to draw, instead of tracking),"time":ticks? (where the drawing starts; default the end of the followed range, e.g. the start of a freeze frame),"duration":ticks? (how long it shows; default the rest of a freeze-frame clip at `time`, else 3 s),"curve":"smooth"|"arc"|"line"="smooth" (arc: a parabola fitted to the points, a ball's flight),"color":"#RRGGBB"|[r,g,b,a]="#FFD21F","width":px=6,"dashed":bool=false,"arrow":bool=true,"glow":bool=true,"reveal":ticks? (a length: draw the line on over this long),"track":index?} → a graphic clip of line segments (rounded-rectangle shape layers) and an arrowhead, pictureChange"##
+    r##","points":[{"time":ticks?,"x":px,"y":px}]|[[x,y]]? (the path to draw, instead of tracking),"time":ticks? (where the drawing starts; default the end of the followed range, e.g. the start of a freeze frame, or with untimed `points` the playhead (the start of a freeze frame there)),"duration":ticks? (how long it shows; default the rest of a freeze-frame clip at `time`, else 3 s),"curve":"smooth"|"arc"|"line"="smooth" (arc: a parabola fitted to the points, a ball's flight),"color":"#RRGGBB"|[r,g,b,a]="#FFD21F","width":px=6,"dashed":bool=false,"arrow":bool=true,"glow":bool=true,"reveal":ticks? (a length: draw the line on over this long),"track":index?} → a graphic clip of line segments (rounded-rectangle shape layers) and an arrowhead, pictureChange"##
 );
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +110,8 @@ pub(crate) struct Request {
     track: Option<usize>,
     /// The points come from tracking (one per frame), not from the caller.
     tracked: bool,
+    /// The points have times (tracked, or every given point had one).
+    timed: bool,
     warnings: Vec<String>,
     notes: Vec<String>,
     rate: FrameRate,
@@ -184,14 +186,16 @@ fn style_of(p: &Value, kind: Kind, cmd: &'static str) -> Result<Style> {
     })
 }
 
-/// Points the caller gave: `[x, y]` or `{"time", "x", "y"}`.
-fn given_points(p: &Value, cmd: &str, need_time: bool) -> Result<Option<Vec<TrackedPoint>>> {
+/// Points the caller gave: `[x, y]` or `{"time", "x", "y"}`, and whether every one has a time
+/// (without, they are numbered in order and the drawing is placed at the playhead).
+fn given_points(p: &Value, cmd: &str, need_time: bool) -> Result<Option<(Vec<TrackedPoint>, bool)>> {
     let Some(v) = p.get("points").filter(|v| !v.is_null()) else { return Ok(None) };
     let arr = v.as_array().ok_or_else(|| bad(cmd, "`points` must be a list"))?;
     if arr.len() > super::MAX_TRACK_FRAMES {
         return Err(bad(cmd, format!("`points` holds {} points; at most {}", arr.len(), super::MAX_TRACK_FRAMES)));
     }
     let mut out = Vec::with_capacity(arr.len());
+    let mut timed = true;
     for (i, e) in arr.iter().enumerate() {
         let (at, time) = if let Some(q) = point(e) {
             (q, None)
@@ -210,6 +214,7 @@ fn given_points(p: &Value, cmd: &str, need_time: bool) -> Result<Option<Vec<Trac
         if need_time && time.is_none() {
             return Err(bad(cmd, format!("points[{i}] needs a `time`: this overlay moves with the object")));
         }
+        timed &= time.is_some();
         out.push(TrackedPoint { time: time.unwrap_or(Tick(i as i64)), at: Some(at), score: 1.0 });
     }
     if need_time {
@@ -219,7 +224,7 @@ fn given_points(p: &Value, cmd: &str, need_time: bool) -> Result<Option<Vec<Trac
     if out.len() < 2 {
         return Err(bad(cmd, "`points` needs at least two points"));
     }
-    Ok(Some(out))
+    Ok(Some((out, timed)))
 }
 
 pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -> Result<Value> {
@@ -233,8 +238,9 @@ pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_u64().filter(|t| *t < 1000).ok_or_else(|| bad(cmd, format!("`track` must be a video track index, got {v}")))? as usize),
     };
-    let mut req = Request { cmd, style, track, tracked: false, warnings: Vec::new(), notes: Vec::new(), rate };
-    if let Some(pts) = given_points(p, cmd, matches!(kind, Kind::Trail | Kind::Ring))? {
+    let mut req = Request { cmd, style, track, tracked: false, timed: true, warnings: Vec::new(), notes: Vec::new(), rate };
+    if let Some((pts, timed)) = given_points(p, cmd, matches!(kind, Kind::Trail | Kind::Ring))? {
+        req.timed = timed;
         if kind == Kind::Track {
             return Err(bad(cmd, "`points` is for the drawing commands; sports.trackPoint finds them"));
         }
@@ -253,7 +259,7 @@ pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -
     let it = super::target_clip(s, p, cmd, Some(at))?;
     let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let fd = q.settings.frame_rate.frame_duration().max(Tick(1));
-    let view = super::ClipView::new(s, q, &it).ok_or_else(|| bad(cmd, format!("clip {} has no picture to follow anything in", it.id.0)))?;
+    let view = super::ClipView::new(s, &super::frame_of(q), &it).ok_or_else(|| bad(cmd, format!("clip {} has no picture to follow anything in", it.id.0)))?;
     let src = s.source(it.item).ok_or_else(|| bad(cmd, format!("clip {} has no media to analyse", it.id.0)))?;
     if it.frame_hold.is_some() {
         return Err(bad(
@@ -325,22 +331,23 @@ pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -
 
 /// One position per sequence frame from the first known sample to the last, and the first's
 /// time. Tracked samples (one per frame) keep their gaps, short ones bridged; points the caller
-/// gave are interpolated between. `None` when that span is longer than a job may follow.
-fn per_frame(pts: &[TrackedPoint], rate: FrameRate, tracked: bool) -> Option<(Tick, Vec<Option<Vec2>>)> {
+/// gave are interpolated between. `Err` says why there is nothing to draw.
+fn per_frame(pts: &[TrackedPoint], rate: FrameRate, tracked: bool) -> std::result::Result<(Tick, Vec<Option<Vec2>>), String> {
     let fd = rate.frame_duration().max(Tick(1));
-    let first = pts.iter().position(|q| q.at.is_some())?;
-    let last = pts.iter().rposition(|q| q.at.is_some())?;
+    let none = || "the object was not found in any frame: nothing to draw".to_string();
+    let first = pts.iter().position(|q| q.at.is_some()).ok_or_else(none)?;
+    let last = pts.iter().rposition(|q| q.at.is_some()).ok_or_else(none)?;
     if tracked {
-        let mut out: Vec<Option<Vec2>> = pts.get(first..=last)?.iter().map(|q| q.at).collect();
+        let mut out: Vec<Option<Vec2>> = pts.get(first..=last).ok_or_else(none)?.iter().map(|q| q.at).collect();
         bridge(&mut out, MAX_GAP);
-        return Some((pts[first].time, out));
+        return Ok((pts[first].time, out));
     }
     let known: Vec<(Tick, Vec2)> = pts.iter().filter_map(|q| q.at.map(|a| (q.time, a))).collect();
-    let (t_first, t_last) = (known.first()?.0, known.last()?.0);
+    let (Some(&(t_first, _)), Some(&(t_last, _))) = (known.first(), known.last()) else { return Err(none()) };
     let t0 = rate.snap(t_first).max(t_first);
-    let n = usize::try_from((t_last - t0).0 / fd.0).ok()?.checked_add(1)?;
+    let n = usize::try_from((t_last - t0).0 / fd.0).unwrap_or(0).saturating_add(1);
     if n > super::MAX_TRACK_FRAMES {
-        return None;
+        return Err(format!("the points span {n} frames; at most {} are drawn: give a shorter stretch", super::MAX_TRACK_FRAMES));
     }
     let mut out = vec![None; n];
     let mut j = 0usize;
@@ -356,7 +363,7 @@ fn per_frame(pts: &[TrackedPoint], rate: FrameRate, tracked: bool) -> Option<(Ti
             _ => Some(a),
         };
     }
-    Some((t0, out))
+    Ok((t0, out))
 }
 
 /// Fill runs of `None` of at most `max` between two known values by linear interpolation.
@@ -428,14 +435,10 @@ fn segment(a: Vec2, b: Vec2, w: f64) -> (Vec2, Vec2, f64) {
 
 /// `deg` moved by whole turns to within half a turn of `prev`.
 fn unwrap(prev: f64, deg: f64) -> f64 {
-    let mut d = deg;
-    while d - prev > 180.0 {
-        d -= 360.0;
+    if !(prev.is_finite() && deg.is_finite()) {
+        return if deg.is_finite() { deg } else { 0.0 };
     }
-    while prev - d > 180.0 {
-        d += 360.0;
-    }
-    d
+    prev + (deg - prev + 180.0).rem_euclid(360.0) - 180.0
 }
 
 fn pt(v: Vec2) -> Vec<f64> {
@@ -456,8 +459,7 @@ fn coverage(pts: &[TrackedPoint], rate: FrameRate) -> (f64, Vec<Value>) {
 }
 
 pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request, pts: Vec<TrackedPoint>) -> Result<Value> {
-    let Request { cmd, style, track, tracked, mut warnings, mut notes, rate } = req;
-    let span_error = || bad(cmd, format!("the points span more than {} frames: draw a shorter stretch", super::MAX_TRACK_FRAMES));
+    let Request { cmd, style, track, tracked, timed, mut warnings, mut notes, rate } = req;
     let (cov, lost) = coverage(&pts, rate);
     if cov < 0.8 && pts.iter().any(|q| q.score < 1.0) {
         warnings.push(format!("the object was found in {:.0} % of the frames: see `lost`", cov * 100.0));
@@ -484,7 +486,7 @@ pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request
             return Ok(out);
         }
         Style::Trail(t) => {
-            let (t0, frames) = per_frame(&pts, rate, tracked).ok_or_else(span_error)?;
+            let (t0, frames) = per_frame(&pts, rate, tracked).map_err(|e| bad(cmd, e))?;
             if frames.iter().filter(|f| f.is_some()).count() < 2 {
                 return Err(bad(cmd, "the object was found in fewer than two frames: nothing to draw"));
             }
@@ -504,7 +506,7 @@ pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request
             place(s, cmd, "Ball Trail", t0, dur, track, layers, Vec::new())?
         }
         Style::Ring(r) => {
-            let (t0, frames) = per_frame(&pts, rate, tracked).ok_or_else(span_error)?;
+            let (t0, frames) = per_frame(&pts, rate, tracked).map_err(|e| bad(cmd, e))?;
             if frames.iter().all(Option::is_none) {
                 return Err(bad(cmd, "the object was not found: nothing to draw"));
             }
@@ -534,7 +536,10 @@ pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request
             }
             let line = path_points(&known, l.curve, &mut notes).ok_or_else(|| bad(cmd, "the points are all in one place: there is no line to draw"))?;
             let last_t = pts.iter().map(|q| q.time).max().unwrap_or_default();
-            let at = l.time.unwrap_or_else(|| rate.snap(last_t + fd));
+            // after the followed stretch; points without times go where the playhead is (from the
+            // start of a freeze frame there)
+            let at =
+                l.time.unwrap_or_else(|| if timed { rate.snap(last_t + fd) } else { freeze_start(s, s.playhead()).unwrap_or_else(|| rate.snap(s.playhead())) });
             let dur = l.duration.unwrap_or_else(|| freeze_rest(s, at).unwrap_or(Tick::from_seconds_f64(3.0)));
             let layers = path_layers(&line, &l, dur);
             look(s, at, dur.0);
@@ -551,6 +556,12 @@ pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request
     out["warnings"] = json!(warnings);
     out["notes"] = json!(notes);
     Ok(out)
+}
+
+/// Where the freeze-frame clip at `t` starts.
+fn freeze_start(s: &Session, t: Tick) -> Option<Tick> {
+    let q = s.active_sequence()?;
+    q.video_tracks.iter().rev().find_map(|tr| tr.item_at(t).filter(|i| i.frame_hold.is_some()).map(|i| i.start))
 }
 
 /// The rest of a freeze-frame clip at `t` (from `t` to its end).
@@ -571,21 +582,20 @@ fn place(s: &mut Session, cmd: &str, name: &str, t0: Tick, dur: i64, track: Opti
         p["track"] = json!(t);
     }
     let dur = Tick(dur.max(1));
-    let clip =
-        crate::graphics::place_video_clip(s, cmd, name, &p, name, layers, move |pr, (w, h, rate)| (crate::graphics::graphic_source(pr, w, h, rate), dur))?;
-    if !masks.is_empty() {
-        let before = s.history.undo.len();
-        s.edit_sequence(name, |q, _, _| {
-            let (_, it) = q.find_item_mut(clip).ok_or(filmagic_edit::EditError::NoItem(clip))?;
-            let op = it.effect_mut("opacity").ok_or_else(|| bad(cmd, "the graphic has no Opacity effect"))?;
-            op.masks.extend(masks);
-            Ok(())
-        })?;
-        // one undo step with the clip itself
-        if s.history.undo.len() > before && before > 0 {
-            s.history.undo.pop();
+    // the clip and its mask are one undo step
+    let clip = s.edit_group(name, |s| {
+        let clip =
+            crate::graphics::place_video_clip(s, cmd, name, &p, name, layers, move |pr, (w, h, rate)| (crate::graphics::graphic_source(pr, w, h, rate), dur))?;
+        if !masks.is_empty() {
+            s.edit_sequence(name, |q, _, _| {
+                let (_, it) = q.find_item_mut(clip).ok_or(filmagic_edit::EditError::NoItem(clip))?;
+                let op = it.effect_mut("opacity").ok_or_else(|| bad(cmd, "the graphic has no Opacity effect"))?;
+                op.masks.extend(masks);
+                Ok(())
+            })?;
         }
-    }
+        Ok(clip)
+    })?;
     let it = s.active_sequence().and_then(|q| q.find_item(clip)).map(|(_, i)| (i.start, i.end()));
     Ok(json!({"clip": clip.0, "layers": n, "keyframes": keys, "start": it.map(|r| r.0.seconds()), "end": it.map(|r| r.1.seconds())}))
 }
@@ -779,4 +789,16 @@ fn path_layers(line: &[Vec2], l: &PathLine, dur: Tick) -> Vec<EffectInstance> {
         out.push(e);
     }
     out
+}
+
+#[cfg(test)]
+mod unit_tests {
+    #[test]
+    fn angles_unwrap_to_within_half_a_turn() {
+        assert_eq!(super::unwrap(170.0, -170.0), 190.0);
+        assert_eq!(super::unwrap(-3600.0, 0.0), -3600.0);
+        assert!((super::unwrap(1e12, 5.0) - 1e12).abs() <= 180.0);
+        assert_eq!(super::unwrap(f64::NAN, 30.0), 30.0);
+        assert_eq!(super::unwrap(0.0, f64::INFINITY), 0.0);
+    }
 }

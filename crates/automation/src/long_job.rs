@@ -2,7 +2,8 @@
 //! runs as a background engine job; the server reports its progress as MCP
 //! `notifications/progress` (when the request carried a `progressToken`) and stops it on
 //! `notifications/cancelled`, deleting the partial output. The session lock is only held for
-//! short polls, so other requests are answered while the export runs.
+//! short polls, so other requests are answered while the export runs. The analysis jobs of the
+//! sports tools (`clip.autoReframe`, `sports.*`) run the same way, and answer their report.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -16,7 +17,29 @@ use serde_json::{Value, json};
 use crate::server::FilmagicMcp;
 
 /// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "clip.autoReframe", "sports.trackPoint", "sports.ballTrail", "sports.groundRing", "sports.pathLine"];
+
+/// The reply to a finished long job `job` (its `jobs.list` entry) started by `start`: an
+/// analysis job's `report` (what `wait: true` answers in the engine, with the job id), else an
+/// export's `start` with its `result` and `offlineMedia`. `Err` holds the failure to report.
+pub fn finished_reply(id: &str, mut start: Value, job: Option<&Value>) -> Result<Value, String> {
+    let report = job.and_then(|j| j.get("report")).filter(|r| r.is_object()).cloned();
+    let result = job.map(|j| j["result"].clone()).unwrap_or(Value::Null);
+    if let Some(e) = report.as_ref().and_then(|r| r.get("error")).and_then(Value::as_str).or_else(|| result.get("error").and_then(Value::as_str)) {
+        return Err(if id == "file.exportMedia" { format!("export failed: {e}") } else { format!("{id}: {e}") });
+    }
+    if let Some(mut r) = report {
+        r["job"] = start.get("job").cloned().unwrap_or(Value::Null);
+        return Ok(r);
+    }
+    if let Some(o) = start.as_object_mut() {
+        o.insert("result".into(), result);
+        if let Some(off) = job.and_then(|j| j.get("offlineMedia")).cloned() {
+            o.insert("offlineMedia".into(), off);
+        }
+    }
+    Ok(start)
+}
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
@@ -61,6 +84,10 @@ impl FilmagicMcp {
             Err(e) => return CallToolResult::error(vec![Content::text(e.to_string())]),
         };
         let Some(job) = start.get("job").and_then(Value::as_u64) else {
+            // a sports overlay given its `points` draws at once, without a job
+            if id != "file.exportMedia" {
+                return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&start).unwrap_or_default())]);
+            }
             return CallToolResult::error(vec![Content::text(format!("{id} started no job: {start}"))]);
         };
         let out = partial_output(&start);
@@ -73,19 +100,10 @@ impl FilmagicMcp {
                 rep.report(done, total, j["status"].as_str().unwrap_or_default()).await;
             }
             if finished {
-                let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
-                let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
-                if let Some(e) = result.get("error").and_then(Value::as_str) {
-                    return CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]);
-                }
-                let mut out = start;
-                if let Some(o) = out.as_object_mut() {
-                    o.insert("result".into(), result);
-                    if let Some(off) = offline {
-                        o.insert("offlineMedia".into(), off);
-                    }
-                }
-                return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap_or_default())]);
+                return match finished_reply(id, start, state.as_ref()) {
+                    Ok(out) => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&out).unwrap_or_default())]),
+                    Err(e) => CallToolResult::error(vec![Content::text(e)]),
+                };
             }
             tokio::select! {
                 _ = context.ct.cancelled() => break,
@@ -100,7 +118,10 @@ impl FilmagicMcp {
             }
             tokio::time::sleep(POLL).await;
         }
-        remove_partial(&out, started);
+        // an analysis job writes no file, and a cancelled one changes nothing
+        if id == "file.exportMedia" {
+            remove_partial(&out, started);
+        }
         CallToolResult::error(vec![Content::text("cancelled")])
     }
 
@@ -348,5 +369,21 @@ mod tests {
         remove_partial(&output(&dir, "clip.mp4", None), SystemTime::now() + Duration::from_secs(60));
         assert!(dir.join("clip.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_finished_analysis_answers_its_report_and_an_export_its_result() {
+        let start = serde_json::json!({"job": 7, "path": "a.mp4"});
+        let job = serde_json::json!({"id": 7, "finished": true, "result": {"frames": 3}, "report": {"coverage": 1.0}});
+        assert_eq!(finished_reply("sports.trackPoint", start.clone(), Some(&job)), Ok(serde_json::json!({"coverage": 1.0, "job": 7})));
+        let export = serde_json::json!({"id": 7, "finished": true, "result": {"frames": 3}});
+        assert_eq!(finished_reply("file.exportMedia", start.clone(), Some(&export)).map(|v| v["result"]["frames"].clone()), Ok(serde_json::json!(3)));
+        let failed = serde_json::json!({"id": 7, "finished": true, "result": {"error": "stopped"}});
+        assert_eq!(finished_reply("file.exportMedia", start.clone(), Some(&failed)), Err("export failed: stopped".into()));
+        let bad = serde_json::json!({"id": 7, "finished": true, "result": {}, "report": {"error": "the clip is gone"}});
+        assert_eq!(finished_reply("clip.autoReframe", start, Some(&bad)), Err("clip.autoReframe: the clip is gone".into()));
+        for id in ["clip.autoReframe", "sports.trackPoint", "sports.ballTrail", "sports.groundRing", "sports.pathLine"] {
+            assert!(is_long(id, &serde_json::json!({"wait": true})) && !is_long(id, &serde_json::json!({})), "{id}");
+        }
     }
 }

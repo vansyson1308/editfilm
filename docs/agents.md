@@ -534,6 +534,10 @@ Program Monitor and `file.exportFrame` show it; times take ticks or `{"seconds"|
 Each analysis is a job: `wait: true` runs it in the call and replies with its report; without it the
 reply is `{job, poll: "jobs.list", cancel: "jobs.cancel"}`, the result is applied (one undo step)
 when the job finishes, and `jobs.list` shows the job's `report`. A cancelled job changes nothing.
+Headless sessions apply a finished job before the next command runs, so an `edit.undo` sent right
+after the job finished undoes the job's result. Over MCP and the bridge, `wait: true` is run as a
+polled job (as long exports are, § Long exports): the session and the app stay responsive, progress
+is reported, cancelling the request cancels the job, and the reply is the report.
 Analysis is at reduced size (192 px wide for motion, 480–640 px when following an object) and
 bounded (at most 20 000 samples for a reframe, 7 200 frames for a track).
 
@@ -564,8 +568,9 @@ bounded (at most 20 000 samples for a reframe, 7 200 frames for a track).
 - `sports.pathLine` draws the object's path as a line with an arrowhead, for a freeze frame: from a
   track, or from `points` you give (`[[x, y], …]`). `curve` is `"smooth"`, `"arc"` (a parabola
   fitted to the points, a ball's flight) or `"line"`; `time` and `duration` place it (by default
-  after the tracked range, for the rest of the freeze-frame clip there); `dashed`, `reveal` (draw it
-  on over this long).
+  after the tracked range, or at the playhead for points without times, from the start of a freeze
+  frame there, and for the rest of that freeze-frame clip); `dashed`, `reveal` (draw it on over this
+  long).
 
 The drawing commands also take `points` (`[{"time", "x", "y"}]`) instead of tracking, and reply with
 the graphic `clip`, its `layers` and `keyframes`, `coverage`, `lost` and `pictureChange`.

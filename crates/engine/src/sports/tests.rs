@@ -536,3 +536,45 @@ fn overlays_follow_their_subject_into_a_reframed_sequence() {
     assert!(!it.effect("motion").unwrap().param("position").unwrap().is_animated());
     assert!(s.execute("clip.autoReframe", json!({"output": "sequence", "graphics": "move"})).is_err());
 }
+
+/// A disc drifting slowly back and forth across a long clip.
+fn drifting(k: f64) -> Option<(f64, f64, f64)> {
+    Some((320.0 + 200.0 * (k / 150.0).sin(), 180.0, 22.0))
+}
+
+#[test]
+fn a_graphic_follows_the_crop_over_a_clip_longer_than_the_sample_cap() {
+    let (mut s, _, _) = Setup::new(640, 360, 4800, drifting).session();
+    let pts: Vec<Value> = (0..4800).step_by(4).map(|k| json!({"time": {"frame": k}, "x": drifting(k as f64).unwrap().0, "y": 202})).collect();
+    s.execute("sports.groundRing", json!({"points": pts, "diameter": 50, "glow": false})).unwrap();
+    let r = s.execute("clip.autoReframe", json!({"output": "sequence", "subject": {"box": [298, 158, 44, 44], "at": 0}, "wait": true})).unwrap();
+    assert!(r["clips"][0]["coverage"].as_f64().unwrap() > 0.9, "{r}");
+    let new = ItemId(r["sequence"]["id"].as_u64().unwrap());
+    let q = s.project.sequence(new).unwrap();
+    let (footage, ring) = (q.video_tracks[0].items[0].id, q.video_tracks[1].items[0].id);
+    for k in [100, 2000, 3900, 4100, 4500, 4700, 4795] {
+        let (x, y, _) = drifting(k as f64).unwrap();
+        let p = Vec2::new(x, y + 22.0);
+        let (a, b) = (on_screen(&s, new, footage, k, p), on_screen(&s, new, ring, k, p));
+        assert!((a - b).length() < 1.0, "frame {k}: {a:?} vs {b:?}");
+    }
+}
+
+#[test]
+fn a_path_line_from_untimed_points_starts_at_the_playhead_or_its_freeze_frame() {
+    let (mut s, clip, seq) = Setup::new(320, 180, 240, nothing).session();
+    s.set_playhead(RATE.tick_of(120));
+    let pts = json!([[40, 150], [160, 50], [280, 150]]);
+    let r = s.execute("sports.pathLine", json!({"points": pts, "duration": {"seconds": 1}})).unwrap();
+    assert!((r["start"].as_f64().unwrap() - 5.0).abs() < 1e-9, "{r}");
+    assert!((r["end"].as_f64().unwrap() - 6.0).abs() < 1e-9, "{r}");
+    // over a freeze frame, the line starts with it and lasts as long by default
+    std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).unwrap().find_item_mut(clip).unwrap().1.frame_hold = Some(RATE.tick_of(30));
+    s.set_playhead(RATE.tick_of(200));
+    let r = s.execute("sports.pathLine", json!({"points": pts})).unwrap();
+    assert_eq!((r["start"].as_f64(), r["end"].as_f64()), (Some(0.0), Some(10.0)), "{r}");
+    // timed points still go after the stretch they span
+    let timed = json!([{"time": {"frame": 10}, "x": 40, "y": 150}, {"time": {"frame": 20}, "x": 280, "y": 150}]);
+    let r = s.execute("sports.pathLine", json!({"points": timed, "duration": {"frame": 24}})).unwrap();
+    assert!((r["start"].as_f64().unwrap() - 21.0 / 24.0).abs() < 1e-9, "{r}");
+}

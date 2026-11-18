@@ -802,3 +802,25 @@ fn the_no_control_message_says_what_works() {
     assert!(!why.contains("let `app_open`") && !why.contains("or let"), "{why}");
     assert!(why.contains("close it") && why.contains("--control"), "{why}");
 }
+
+/// A sports analysis with `wait: true` runs as a polled job over MCP, answers its report and is
+/// one undo step; an overlay given its points draws at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn sports_jobs_with_wait_answer_their_report() {
+    let mut c = Client::start(demo());
+    c.init().await;
+    let text = |r: &Value| -> Value { serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null) };
+    let seq = text(&c.call(1, "sequence_inspect", json!({})).await);
+    let clip = seq["video"][0]["items"][0]["clip"].as_u64().unwrap();
+    let r = c.call(2, "command_run", json!({"id": "clip.autoReframe", "params": {"clip": clip, "output": "sequence", "sampleEvery": 12, "wait": true}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let report = text(&r);
+    assert!(report["sequence"]["id"].is_u64() && report["job"].is_u64(), "{report}");
+    assert_eq!(report["clips"][0]["clip"], clip, "{report}");
+    let r = c.call(3, "command_run", json!({"id": "sports.pathLine", "params": {"points": [[100, 100], [500, 300]], "wait": true}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert!(text(&r)["clip"].is_u64(), "{r}");
+    // a refused one is a tool error
+    let r = c.call(4, "command_run", json!({"id": "sports.trackPoint", "params": {"point": "here", "wait": true}})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+}
