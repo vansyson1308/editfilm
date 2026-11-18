@@ -466,14 +466,7 @@ fn run_job(
         };
         *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         let report = match &r {
-            Ok(_) => Ok(filmagic_export::Report {
-                path: String::new(),
-                frames: 0,
-                seconds: t0.elapsed().as_secs_f64(),
-                bytes: 0,
-                render_fps: 0.0,
-                extra_files: Vec::new(),
-            }),
+            Ok(_) => Ok(filmagic_export::Report { seconds: t0.elapsed().as_secs_f64(), ..Default::default() }),
             Err(e) => {
                 *prog.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.clone());
                 Err(e.clone())
