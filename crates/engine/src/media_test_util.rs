@@ -65,6 +65,8 @@ pub fn make_movie_at(path: &Path, scene: DemoScene, w: u32, h: u32, rate: FrameR
         path: path.to_string_lossy().into_owned(),
         bitrate_kbps: 4000,
         mxf_video_codec: filmagic_export::MxfVideoCodec::ProRes,
+        // fixtures keep their audio exactly
+        effects: filmagic_export::ExportEffects { peak_limiter: filmagic_export::PeakLimiter::OFF, ..Default::default() },
         ..Default::default()
     };
     let shared: filmagic_media::SharedSource = Arc::new(src);

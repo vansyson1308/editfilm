@@ -446,7 +446,20 @@ fn edit_session(root: &Path) -> (Session, u64) {
 #[test]
 fn music_goes_on_a_free_track_as_music_and_ducks_under_dialogue() {
     let root = tmp_dir("assets-place-music");
-    let (mut s, _) = edit_session(&root);
+    let (mut s, tone_dialogue) = edit_session(&root);
+    // the clip typed Dialogue holds a tone, not speech: ducking follows detected speech (#15), and
+    // the note says how to duck on level instead
+    let r = s.execute("assets.place", json!({"asset": "my-memes/music-nhac-vui-epic", "time": 0, "untilEnd": true})).unwrap();
+    assert!(r["notes"].to_string().contains("by\\\":\\\"level"), "{r}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // real dialogue: speech-like sound from 0.3 s to 1.5 s, on its own track, typed Dialogue
+    s.execute("essentialSound.clearType", json!({"clips": [tone_dialogue]})).unwrap();
+    let talk = root.join("talk.wav");
+    let voice = filmagic_audio_dsp::speech::test_signals::speech(2.0, 48_000, 0.4, |t| (0.3..1.5).contains(&t));
+    std::fs::write(&talk, crate::voiceover::write_wav_f32(&voice, 48_000)).unwrap();
+    let item = s.execute("file.import", json!({"paths": [talk.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let placed = s.execute("timeline.place", json!({"item": item, "time": 0, "audioTrack": "new"})).unwrap();
+    s.execute("essentialSound.setType", json!({"clips": placed["clips"], "type": "dialogue"})).unwrap();
     let undo_before = s.history.undo.len();
     let r = s.execute("assets.place", json!({"asset": "my-memes/music-nhac-vui-epic", "seconds": 0.0, "untilEnd": true})).unwrap();
     assert_eq!(r["audioType"], "music", "{r}");

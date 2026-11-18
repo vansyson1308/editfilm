@@ -953,7 +953,10 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
             match s.execute("essentialSound.generateDucking", json!({"clips": aclips})) {
                 Ok(r) => {
                     let n: usize = r.get("clips").and_then(Value::as_array).map(|a| a.iter().map(|c| c.get("regions").and_then(Value::as_array).map_or(0, Vec::len)).sum()).unwrap_or(0);
-                    if n == 0 {
+                    let triggers = r.get("clips").and_then(Value::as_array).is_some_and(|a| a.iter().any(|c| c.get("triggers").and_then(Value::as_array).is_some_and(|t| !t.is_empty())));
+                    if n == 0 && triggers {
+                        notes.push("ducking is on, but no speech was found in the Dialogue clips under it (ducking follows detected speech): run essentialSound.generateDucking {\"by\":\"level\"} on this clip to duck on their level instead".into());
+                    } else if n == 0 {
                         notes.push("ducking is on, but no Dialogue clip plays under it yet: mark speech with essentialSound.setType {\"type\":\"dialogue\"}, then run essentialSound.generateDucking on this clip again".into());
                     }
                     ducking = r;
