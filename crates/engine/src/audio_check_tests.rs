@@ -121,8 +121,9 @@ fn auto_match_rejects_hostile_parameters() {
         let e = err(&mut s, "essentialSound.autoMatch", q);
         assert!(e.contains(want), "{p}: {e}");
     }
+    // an id of no clip is refused by the id check before the command runs (#14)
     let e = err(&mut s, "essentialSound.autoMatch", json!({"clips": [999_999]}));
-    assert!(e.contains("no clips"), "{e}");
+    assert!(e.contains("no clip 999999"), "{e}");
     assert_eq!(item(&s, c[0]).gain_db, 0.0, "nothing changed");
     assert!(s.history.undo.iter().all(|h| h.0 != "Auto-Match Loudness"));
 }
@@ -155,8 +156,9 @@ fn speech_segments_of_a_clip_an_item_and_a_range() {
     // hostile parameters
     for (p, want) in [
         (json!({"clip": 999_999}), "no clip 999999"),
-        (json!({"clip": "x"}), "`clip` must be a clip id"),
-        (json!({"clip": -1}), "no clip 0"),
+        // values that are no clip ids are refused by the id check before the command runs (#14)
+        (json!({"clip": "x"}), "`clip` holds \"x\", which is not a clip id"),
+        (json!({"clip": -1}), "`clip` holds -1, which is not a clip id"),
         (json!({"item": 999_999}), "no project item 999999"),
         (json!({"item": c[0].0 + 10_000}), "no project item"),
         (json!({"startSeconds": -1}), "`startSeconds` must be a number of seconds"),

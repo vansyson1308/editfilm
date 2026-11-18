@@ -125,7 +125,7 @@ pub(crate) fn place_video_clip(
 ) -> Result<ClipId> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     let t = time_p(s, p, "").unwrap_or_else(|| s.playhead());
-    let want_track = u64_p(p, "track").map(|v| v as usize);
+    let want_track = video_track_p(p, cmd)?;
     let name = name.to_string();
     s.edit(label, |pr, st| {
         let (w, h, rate) = {
@@ -152,10 +152,47 @@ pub(crate) fn place_video_clip(
         let range = TimeRange::new(t, dur);
         let free = |tr: &filmagic_project::Track| !tr.items.iter().any(|i| i.range().overlaps(&range));
         let idx = match want_track {
-            Some(i) if i < q.video_tracks.len() && free(&q.video_tracks[i]) => i,
-            Some(i) if i < q.video_tracks.len() => return Err(bad(cmd, format!("V{} is not free here", i + 1))),
-            _ => {
-                let top = q.video_tracks.iter().rposition(|tr| tr.item_at(t).is_some()).map_or(0, |k| k + 1);
+            GraphicTrack::Index(i) if i < q.video_tracks.len() && free(&q.video_tracks[i]) => i,
+            GraphicTrack::Index(i) if i < q.video_tracks.len() => {
+                let n = q.video_tracks.len();
+                return Err(bad(
+                    cmd,
+                    format!(
+                        "V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it ({})",
+                        i + 1,
+                        video_tracks_are(n)
+                    ),
+                ));
+            }
+            GraphicTrack::Named(i) => {
+                let n = q.video_tracks.len();
+                let tr = q
+                    .video_tracks
+                    .get(i)
+                    .ok_or_else(|| bad(cmd, format!("no track V{}: {}; pass \"track\":\"auto\" to use a free track or add one", i + 1, video_tracks_are(n))))?;
+                if tr.locked {
+                    return Err(bad(cmd, format!("V{} is locked; unlock it (timeline.setTrack) or pass \"track\":\"auto\"", i + 1)));
+                }
+                if !free(tr) {
+                    return Err(bad(
+                        cmd,
+                        format!(
+                            "V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it ({})",
+                            i + 1,
+                            video_tracks_are(n)
+                        ),
+                    ));
+                }
+                i
+            }
+            want => {
+                // the default: above the clips at the playhead; `auto`: above every clip the new
+                // clip's range overlaps, so the whole clip is free and nothing covers it
+                let top = match want {
+                    GraphicTrack::Auto => q.video_tracks.iter().rposition(|tr| !free(tr)),
+                    _ => q.video_tracks.iter().rposition(|tr| tr.item_at(t).is_some()),
+                }
+                .map_or(0, |k| k + 1);
                 match (top..q.video_tracks.len()).find(|&i| free(&q.video_tracks[i]) && !q.video_tracks[i].locked) {
                     Some(i) => i,
                     None => {
@@ -173,6 +210,57 @@ pub(crate) fn place_video_clip(
         st.graphic_layers = vec![0];
         Ok(id)
     })
+}
+
+/// Where `track` puts a new graphic clip (#14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GraphicTrack {
+    /// No `track`: the first free unlocked track above the clips at the playhead, else a new one.
+    Default,
+    /// `"auto"`: the first free unlocked track above every clip the new clip's range overlaps,
+    /// else a new one.
+    Auto,
+    /// A number: the 0-based video track (kept as it was; one past the last track is the default).
+    Index(usize),
+    /// `"V2"`: that video track, which must exist, be unlocked and be free over the range.
+    Named(usize),
+}
+
+/// "this sequence has V1–V3" (or only V1, or no video tracks), for track errors.
+fn video_tracks_are(n: usize) -> String {
+    match n {
+        0 => "this sequence has no video tracks".to_string(),
+        1 => "this sequence has only V1".to_string(),
+        n => format!("this sequence has V1–V{n}"),
+    }
+}
+
+/// The `track` of a command that places a graphic clip: a 0-based index, `"V2"` or `"auto"`.
+pub(crate) fn video_track_p(p: &Value, cmd: &str) -> Result<GraphicTrack> {
+    let v = match p.get("track") {
+        None | Some(Value::Null) => return Ok(GraphicTrack::Default),
+        Some(v) => v,
+    };
+    if let Some(i) = v.as_u64() {
+        return Ok(GraphicTrack::Index(usize::try_from(i).unwrap_or(usize::MAX)));
+    }
+    let hint = "`track` takes \"V1\", \"V2\"… (a video track), \"auto\" (the first free track above the clips there, or a new one) or a 0-based track index";
+    if let Some(f) = v.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f < 1.0e9) {
+        // 1.0 reads as a float; a track index is a whole number, so say which one to send
+        return Err(bad(cmd, format!("{hint}; got {v}, a decimal number: pass {} (or \"V{}\")", f as u64, f as u64 + 1)));
+    }
+    let Some(name) = v.as_str().map(str::trim) else { return Err(bad(cmd, format!("{hint}; got {v}"))) };
+    if name.eq_ignore_ascii_case("auto") {
+        return Ok(GraphicTrack::Auto);
+    }
+    let mut chars = name.chars();
+    let kind = chars.next().map(|c| c.to_ascii_uppercase());
+    let num: Option<usize> = chars.as_str().parse().ok().filter(|n| *n >= 1);
+    match (kind, num) {
+        (Some('V'), Some(n)) => Ok(GraphicTrack::Named(n - 1)),
+        (Some('A'), Some(_)) => Err(bad(cmd, format!("a graphic goes on a video track, not {name}; {hint}"))),
+        _ => Err(bad(cmd, format!("{hint}; got \"{name}\""))),
+    }
 }
 
 /// Add a layer to an existing graphic clip; returns the new layer index.
@@ -846,7 +934,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Rectangle",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+R"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index|"V2"|"auto"?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "rectangle"),
         ),
@@ -855,7 +943,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Ellipse",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+Alt+E"),
-            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[400,200],"clip":id?,"seconds":f64=5,"track":index|"V2"|"auto"?,"time":ticks?}"#,
             has_seq,
             |s, p| new_shape_cmd(s, p, "ellipse"),
         ),
@@ -864,7 +952,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "Polygon",
             &["Graphics and Titles", "New Layer"],
             None,
-            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"position":[x,y]?,"size":[w,h]=[300,300],"sides":n=6,"clip":id?,"seconds":f64=5,"track":index|"V2"|"auto"?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let mut q = if p.is_object() { p.clone() } else { json!({}) };
@@ -893,7 +981,7 @@ fn menu_commands() -> Vec<CommandSpec> {
             "From file…",
             &["Graphics and Titles", "New Layer"],
             None,
-            r#"{"path":str,"time":ticks?,"track":index?} (imports the image or video and places it above the clips at the playhead)"#,
+            r#"{"path":str,"time":ticks?,"track":index|"V2"|"auto"?} (imports the image or video and places it above the clips at the playhead)"#,
             has_seq,
             |s, p| {
                 let path = str_p(p, "path").ok_or_else(|| bad("graphics.newFromFile", "need `path`"))?.to_string();
@@ -1013,7 +1101,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Text",
             &["Graphics and Titles", "New Layer"],
             Some("Cmd+T"),
-            r#"{"text":str="New Text","position":[x,y]? (point text: its alignment point on the first baseline; with `box`: the box's top-left corner),"box":[w,h]? (paragraph text wrapped in a box this size),"clip":id?,"newClip":bool?,"vertical":bool=false,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"text":str="New Text","position":[x,y]? (point text: its alignment point on the first baseline; with `box`: the box's top-left corner),"box":[w,h]? (paragraph text wrapped in a box this size),"clip":id?,"newClip":bool?,"vertical":bool=false,"size":px=100,"font":str?,"fontStyle":str?,"seconds":f64=5,"track":index|"V2"|"auto"?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let text = str_p(p, "text").unwrap_or("New Text").to_string();
@@ -1056,7 +1144,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "Shape",
             &[],
             None,
-            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]? (the shape's centre),"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id? (add the shape to this graphic),"seconds":f64=5,"track":index?,"time":ticks?}"#,
+            r#"{"shape":"rectangle|ellipse|polygon|path","position":[x,y]? (the shape's centre),"size":[w,h]=[400,200],"points":[[x,y],…]?,"clip":id? (add the shape to this graphic),"seconds":f64=5,"track":index|"V2"|"auto"?,"time":ticks?}"#,
             has_seq,
             |s, p| {
                 let shape = str_p(p, "shape").unwrap_or("rectangle").to_ascii_lowercase();
