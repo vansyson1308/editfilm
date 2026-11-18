@@ -140,7 +140,7 @@ pub(crate) fn launch(
 ) -> Result<Value> {
     use std::sync::atomic::Ordering;
     let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let job = crate::Job { id, label: label.clone(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(total, Ordering::Relaxed);
     let out: Arc<Mutex<Option<Analysis>>> = Arc::default();
