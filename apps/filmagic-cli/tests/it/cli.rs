@@ -92,6 +92,11 @@ fn exec_inspect_and_describe() {
     assert!(d["params"].is_string());
     let list = json_out(&cli(&["commands", "razor", "--json"]));
     assert!(list.as_array().unwrap().iter().any(|c| c["id"] == "timeline.razor"));
+    // every word counts, in the keywords too, and the best match comes first
+    let list = json_out(&cli(&["commands", "paste", "attributes", "--json"]));
+    assert_eq!(list[0]["id"], "edit.pasteAttributes", "{list}");
+    let list = json_out(&cli(&["commands", "many", "clips", "colour", "--json"]));
+    assert!(list.as_array().unwrap().iter().any(|c| c["id"] == "edit.pasteAttributes"), "{list}");
     // An unknown command fails with exit status 1.
     let bad = cli(&["--demo", "exec", "no.such.command"]);
     assert_eq!(bad.status.code(), Some(1));
