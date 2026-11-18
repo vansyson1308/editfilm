@@ -451,6 +451,23 @@ pub(crate) fn running(recipe: &str, p: &Value, job: u64) -> Value {
     })
 }
 
+/// [`running`] for job `poll`, with `set` put into the resultCommand's parameters (`null` removes).
+pub(crate) fn running_with(recipe: &str, p: &Value, poll: u64, set: &[(&str, Value)]) -> Value {
+    let mut out = running(recipe, p, poll);
+    if let Some(o) = out["resultCommand"]["params"].as_object_mut() {
+        o.remove("job");
+        for (k, v) in set {
+            if v.is_null() {
+                o.remove(*k);
+            } else {
+                o.insert((*k).to_string(), v.clone());
+            }
+        }
+    }
+    out["result"] = json!(format!("run the resultCommand once job {poll} has finished; over MCP, wait:true does this for you"));
+    out
+}
+
 /// Seconds of an analysis time value (`{"seconds", "ticks", "frame"}`) as ticks.
 pub(crate) fn ticks_of(v: &Value) -> Option<Tick> {
     v.get("ticks").and_then(Value::as_i64).map(Tick).or_else(|| v.as_f64().filter(|x| x.is_finite() && *x >= 0.0).map(Tick::from_seconds_f64))

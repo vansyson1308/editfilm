@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     Analysis, Footage, Pick, RUN, Recipe, Steps, analyse, aspect_p, clip_of, done, extent, find_asset, flag, footage, number, pick_p, picture_change,
-    place_cuts, round3, running, text, ticks_of, time_json,
+    place_cuts, round3, text, ticks_of, time_json,
 };
 use crate::commands::bad;
 use crate::{Result, Session};
@@ -21,7 +21,7 @@ pub(super) const RECIPE: Recipe = Recipe {
     id: "comedy-meme",
     title: "Comedy meme edit",
     summary: "From a clip, a punchy short edit that builds to its funniest moment: dead air cut out, punch-in zooms, a freeze with shake on the moment, top text, and a sound effect and meme overlay from the installed packs",
-    params: r#"{"item":id|"clip":id (the clip: a project item, or a timeline clip),"fromSeconds":f64?,"toSeconds":f64? (the part to use; at most 600 s apart),"maxSeconds":3..120=20 (the edit's length at most),"moment":seconds? (the moment to build to: media time for an item, sequence time for a clip; default: the loudest laugh or cheer, else the strongest burst story.highlights finds),"cutPauses":bool=true (jump cuts: drop pauses in the speech),"minPause":0.1..3=0.35 (seconds of silence worth cutting),"zoom":100..200=115 (punch-in percent on every other cut; 100: none),"freeze":0..3=1 (seconds the moment freezes; 0: no freeze),"shake":bool=true,"topText":str|false="WAIT FOR IT...","punchText":str|false? (text on the moment),"sound":true|false|"pack/item"=true (a sound effect on the moment from the installed packs),"meme":true|false|"pack/item"=true (a meme overlay on the moment from the installed packs),"voiceover":{"text":str,"voice":str?,"pace":0.5..2?}? (a Text to Speech line at the start),"picture":bool=true,"fps":n?,"aspect":"source|9:16|1:1|4:5"="source" (also a copy in that shape),"name":str?,"wait":bool=false,"job":id?}"#,
+    params: r#"{"item":id|"clip":id (the clip: a project item, or a timeline clip),"fromSeconds":f64?,"toSeconds":f64? (the part to use; at most 600 s apart),"maxSeconds":3..120=20 (the edit's length at most),"moment":seconds? (the moment to build to: media time for an item, sequence time for a clip; default: the loudest laugh or cheer, else the strongest burst story.highlights finds),"cutPauses":bool=true (jump cuts: drop pauses in the speech),"minPause":0.1..3=0.35 (seconds of silence worth cutting),"zoom":100..200=115 (punch-in percent on every other cut; 100: none),"freeze":0..3=1 (seconds the moment freezes; 0: no freeze),"shake":bool=true,"topText":str|false="WAIT FOR IT...","punchText":str|false? (text on the moment),"sound":true|false|"pack/item"=true (a sound effect on the moment from the installed packs),"meme":true|false|"pack/item"=true (a meme overlay on the moment from the installed packs),"voiceover":{"text":str,"voice":str?,"pace":0.5..2?,"language":"vi"?}? (a Text to Speech line at the start; "vi" or a "vieneu:<name>" voice: Vietnamese with VieNeu-TTS, synthesized as a job first; skipped with how to install it when VieNeu is not set up),"voiceJob":id? (set by the resultCommand),"picture":bool=true,"fps":n?,"aspect":"source|9:16|1:1|4:5"="source" (also a copy in that shape),"name":str?,"wait":bool=false,"job":id?}"#,
     steps: &[
         ("story.highlights", "find the moment and the speech (a job)"),
         ("file.newSequence", "the edit, with the clip's frame size and rate"),
@@ -34,6 +34,8 @@ pub(super) const RECIPE: Recipe = Recipe {
         ("graphics.anchor", "the text at the top or bottom of the title-safe area"),
         ("assets.search", "a sound effect and a meme in the installed packs"),
         ("assets.place", "them on the moment"),
+        ("tts.voices", "with a Vietnamese `voiceover`: the first VieNeu voice"),
+        ("tts.render", "with a Vietnamese `voiceover`: synthesize it first (a job)"),
         ("tts.create", "with `voiceover`: the line, spoken"),
         ("file.newSequence", "with `aspect` and no auto-reframe: a sequence of that shape holding the edit"),
         ("clip.fillFrame", "with `aspect` and no auto-reframe: a centre crop"),
@@ -56,6 +58,7 @@ pub(super) const RECIPE: Recipe = Recipe {
         "sound",
         "meme",
         "voiceover",
+        "voiceJob",
         "picture",
         "fps",
         "aspect",
@@ -156,6 +159,64 @@ struct Voice {
     text: String,
     voice: Option<String>,
     pace: Option<f64>,
+    /// `"vi"`: a Vietnamese voice (VieNeu-TTS), the first installed one unless `voice` names one.
+    vietnamese: bool,
+}
+
+impl Voice {
+    fn is_vieneu(&self) -> bool {
+        self.vietnamese || self.voice.as_deref().is_some_and(|v| v.starts_with("vieneu"))
+    }
+}
+
+/// How the voice-over can be spoken in the build.
+enum Speak {
+    /// `tts.create` speaks it (a built-in or natural voice, or a VieNeu take already synthesized).
+    Create,
+    /// It cannot be spoken here, and why.
+    Skip(String),
+}
+
+/// What to say when VieNeu-TTS cannot speak.
+const VIENEU_HELP: &str = "Vietnamese voices need VieNeu-TTS: tts.engines shows what is missing, and tts.setupVieneu {\"install\": true} installs it (a Python environment and the model, about 0.6 GB); then run the recipe again";
+
+/// Get a VieNeu voice-over ready before the edit is built: pick the voice and start its synthesis
+/// (`tts.render`, a job; inline with `wait`). `Ok(Some(job))` is the job to wait for.
+fn prepare_voice(s: &mut Session, v: &mut Voice, wait: bool) -> std::result::Result<Option<u64>, String> {
+    if v.voice.is_none() {
+        let list = s.execute("tts.voices", json!({})).map_err(|e| e.to_string())?;
+        let first = list["voices"].as_array().into_iter().flatten().filter_map(|x| x["id"].as_str()).find(|id| id.starts_with("vieneu:")).map(str::to_string);
+        match first {
+            Some(id) => v.voice = Some(id),
+            None => return Err(format!("no Vietnamese voice is installed. {VIENEU_HELP}")),
+        }
+    }
+    let mut rp = json!({"text": v.text, "voice": v.voice, "wait": wait});
+    if let Some(x) = v.pace {
+        rp["pace"] = json!(x);
+    }
+    let r = s.execute("tts.render", rp).map_err(|e| format!("{e}. {VIENEU_HELP}"))?;
+    Ok(r["job"].as_u64())
+}
+
+/// Where the synthesis job `job` stands: still running (`None`), or how the build speaks.
+fn voice_state(s: &Session, job: u64) -> Result<Option<Speak>> {
+    use std::sync::atomic::Ordering;
+    let Some(j) = s.jobs.iter().find(|j| j.id == job) else {
+        // pruned: tts.create finds the take in its cache, or says to synthesize it
+        return Ok(Some(Speak::Create));
+    };
+    if j.label != "Synthesizing narration" {
+        return Err(bad(RUN, format!("`voiceJob` {job} is no narration job: leave it out (the resultCommand sets it)")));
+    }
+    if !j.progress.finished.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let failed = j.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|r| r.as_ref().err().cloned());
+    Ok(Some(match failed {
+        Some(e) => Speak::Skip(format!("the Vietnamese voice-over could not be synthesized: {e}. {VIENEU_HELP}")),
+        None => Speak::Create,
+    }))
 }
 
 fn voice_p(p: &Value) -> Result<Option<Voice>> {
@@ -171,7 +232,42 @@ fn voice_p(p: &Value) -> Result<Option<Voice>> {
         None | Some(Value::Null) => None,
         Some(_) => Some(number(v, "pace", 0.5, 2.0, 1.0, RUN)?),
     };
-    Ok(Some(Voice { text, voice, pace }))
+    let vietnamese = match v.get("language") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(l)) if l == "vi" || l == "vi-VN" => true,
+        Some(Value::String(l)) if l.len() <= 16 && voice.as_deref().is_none_or(|x| !x.starts_with("vieneu")) => {
+            return Err(bad(
+                RUN,
+                format!(
+                    "`voiceover.language` \"{l}\": only \"vi\" (Vietnamese, VieNeu-TTS) is chosen this way; for another language name a `voice` (tts.voices)"
+                ),
+            ));
+        }
+        Some(_) => return Err(bad(RUN, "`voiceover.language` must be \"vi\", or left out")),
+    };
+    if let Some(k) = v.as_object().and_then(|o| o.keys().find(|k| !["text", "voice", "pace", "language"].contains(&k.as_str()))) {
+        return Err(bad(RUN, format!("`voiceover.{}` is not a voice-over parameter: text, voice, pace, language", super::clip_text(k, 40))));
+    }
+    Ok(Some(Voice { text, voice, pace, vietnamese }))
+}
+
+/// What a resultCommand adds to the parameters: the analysis `job`, and the chosen Vietnamese
+/// voice and its synthesis job.
+fn voice_extra(o: &Opts, voice_job: Option<u64>, job: Option<u64>) -> Vec<(&'static str, Value)> {
+    let mut out = vec![("job", job.map_or(Value::Null, |j| json!(j)))];
+    if let Some(vj) = voice_job {
+        out.push(("voiceJob", json!(vj)));
+    }
+    if let Some(v) = o.voice.as_ref().filter(|v| v.is_vieneu())
+        && let Some(id) = &v.voice
+    {
+        let mut vo = json!({"text": v.text, "voice": id});
+        if let Some(x) = v.pace {
+            vo["pace"] = json!(x);
+        }
+        out.push(("voiceover", vo));
+    }
+    out
 }
 
 struct Opts {
@@ -187,6 +283,7 @@ struct Opts {
     sound: Pick,
     meme: Pick,
     voice: Option<Voice>,
+    speak: Speak,
     aspect: Option<&'static str>,
     name: String,
 }
@@ -196,7 +293,7 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
     if !f.video {
         return Err(bad(RUN, "a meme edit needs a picture: this footage has only sound"));
     }
-    let o = Opts {
+    let mut o = Opts {
         max: Tick::from_seconds_f64(number(p, "maxSeconds", 3.0, 120.0, 20.0, RUN)?),
         moment: match p.get("moment") {
             None | Some(Value::Null) => None,
@@ -212,6 +309,7 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
         sound: pick_p(p, "sound", Pick::Auto, RUN)?,
         meme: pick_p(p, "meme", Pick::Auto, RUN)?,
         voice: voice_p(p)?,
+        speak: Speak::Create,
         aspect: aspect_p(p, "aspect", None, RUN)?,
         name: text(p, "name", 120, None, RUN)?.unwrap_or_else(|| format!("{} Meme", f.name)),
     };
@@ -238,10 +336,32 @@ pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> R
     hp.insert("limit".into(), json!(5));
     hp.insert("minSeconds".into(), json!(0.3));
     hp.insert("maxSeconds".into(), json!(10));
+    // a Vietnamese voice-over is synthesized first, as a job beside the analysis
+    let mut voice_job = match p.get("voiceJob") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| bad(RUN, "`voiceJob` must be a job id (the resultCommand sets it)"))?),
+    };
+    if voice_job.is_some() && !o.voice.as_ref().is_some_and(Voice::is_vieneu) {
+        return Err(bad(RUN, "`voiceJob` is only for a Vietnamese `voiceover`: leave it out"));
+    }
+    if voice_job.is_none()
+        && let Some(v) = o.voice.as_mut().filter(|v| v.is_vieneu())
+    {
+        match prepare_voice(s, v, wait) {
+            Ok(j) => voice_job = j,
+            Err(why) => o.speak = Speak::Skip(why),
+        }
+    }
     let r = match analyse(s, &f, Value::Object(hp), wait, job)? {
-        Analysis::Running(j) => return Ok(running(RECIPE.id, p, j)),
+        Analysis::Running(j) => return Ok(super::running_with(RECIPE.id, p, j, &voice_extra(&o, voice_job, Some(j)))),
         Analysis::Ready(r) => r,
     };
+    if let Some(vj) = voice_job {
+        match voice_state(s, vj)? {
+            Some(sp) => o.speak = sp,
+            None => return Ok(super::running_with(RECIPE.id, p, vj, &voice_extra(&o, voice_job, job))),
+        }
+    }
     s.edit_group(LABEL, |s| build(s, &f, &r, o))
 }
 
@@ -386,7 +506,11 @@ fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
         }
         None => {}
     }
-    if let Some(v) = &o.voice {
+    if let (Some(v), Speak::Skip(why)) = (&o.voice, &o.speak) {
+        st.skip("tts.create", json!({"text": v.text, "voice": v.voice}), "the voice-over, spoken", why);
+        st.next("tts.engines", json!({}), "what the Vietnamese voices need");
+        st.next("tts.setupVieneu", json!({"install": true, "wait": true}), "install VieNeu-TTS, then run the recipe again");
+    } else if let Some(v) = &o.voice {
         let mut tp = json!({"text": v.text, "time": 0});
         if let Some(x) = &v.voice {
             tp["voice"] = json!(x);

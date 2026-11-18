@@ -302,10 +302,13 @@ pub(crate) const TOPICS: &[Topic] = &[
     Topic {
         id: "voice-over",
         goal: "add a voice-over or narration (text to speech, or recorded)",
-        words: "voice voiceover voice-over narration narrator tts text to speech speak say read",
+        words: "voice voiceover voice-over narration narrator tts text to speech speak say read vietnamese tieng viet vieneu",
         steps: &[
             ("tts.voices", r#"{}"#, "the voices"),
             ("tts.create", r#"{"text":"…","voice":"…","time":0}"#, "speak a line onto the timeline"),
+            ("tts.engines", r#"{}"#, "Vietnamese: whether VieNeu-TTS is set up (voices `vieneu:<name>`)"),
+            ("tts.setupVieneu", r#"{"install":true,"wait":true}"#, "Vietnamese: install VieNeu-TTS"),
+            ("tts.render", r#"{"text":"…","voice":"vieneu:<name>","wait":true}"#, "Vietnamese: synthesize first (a job), then tts.create"),
             ("audio.voiceover.start", r#"{"track":"A2"}"#, "or record one from a microphone"),
         ],
         prefer: None,

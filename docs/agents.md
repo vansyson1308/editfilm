@@ -535,7 +535,7 @@ checks that every command they name is in the registry.
 | Recipe | From | Builds |
 |---|---|---|
 | `sports-highlight` | a long rally recording (`item` or `clip`) | a reel of the best moments by `story.highlights` (to `targetSeconds`, in time order), slow motion at the end of the best one, soft cuts, a marker per moment, an opening title, music when a pack has one; `aspect` adds a 9:16, 1:1 or 4:5 copy; `ball` a ball trail |
-| `comedy-meme` | a clip | an edit that builds to the funniest moment (the loudest laugh or burst): pauses in the speech cut out, punch-ins, a freeze with camera shake on the moment, top text and `punchText`, a sound effect and a meme from the installed packs, a `voiceover` line by Text to Speech |
+| `comedy-meme` | a clip | an edit that builds to the funniest moment (the loudest laugh or burst): pauses in the speech cut out, punch-ins, a freeze with camera shake on the moment, top text and `punchText`, a sound effect and a meme from the installed packs, a `voiceover` line by Text to Speech (`"language": "vi"` or a `vieneu:<name>` voice: Vietnamese with VieNeu-TTS, synthesized as a job first; skipped with how to install it, `tts.setupVieneu {"install": true}`, when VieNeu is not set up) |
 | `vertical` | the active sequence, a `sequence`, an `item` or a `clip` | a copy in 9:16 (or 1:1, 4:5) |
 
 How a run works:
@@ -547,8 +547,9 @@ How a run works:
   from `nextSteps`. `pictureChange` says how visible the styling is.
 - **Analysis is a job.** `wait: true` answers with the draft. Without it the reply is
   `{"status": "running", "job", "resultCommand"}`: once `jobs.list` shows the job finished,
-  run the `resultCommand` (`recipes.run` with `job`) to build the draft. Over MCP a waiting call
-  does this for you, as for exports. Running the same `resultCommand` again answers the same draft
+  run the `resultCommand` (`recipes.run` with `job`) to build the draft. Its answer can be
+  `running` again, on the next job (a Vietnamese voice-over being synthesized): follow its
+  `resultCommand` the same way. Over MCP a waiting call does all of this for you, as for exports. Running the same `resultCommand` again answers the same draft
   (`alreadyBuilt`) rather than building a second one. The analysis is cached, so another run with
   other options reads no media again.
 - **Deterministic.** The same footage and parameters give the same draft.

@@ -641,3 +641,55 @@ fn hostile_parameters_are_refused_and_change_nothing() {
     assert!(s.execute("recipes.list", json!({"x": 1})).is_err());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A Vietnamese voice-over (VieNeu-TTS) is synthesized as its own job before the edit is built.
+/// Where VieNeu is not set up (this machine), the step is skipped with how to install it, and the
+/// rest of the draft is built; through the resultCommands the jobs are followed one after another.
+#[test]
+fn a_vietnamese_voice_over_is_skipped_with_how_to_install_vieneu() {
+    let dir = tmp_dir("recipe-meme-vi");
+    let mut x = rally_sound(10.0, &[], &[(6.0, 8.0)]);
+    voice(&mut x, 1.0, 2.5);
+    voice(&mut x, 3.5, 5.0);
+    let path = movie(&dir, "vi", &x, &[(6.0, 8.0)]);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    // no Vietnamese voice is installed: skipped before anything is synthesized
+    let jobs = s.jobs.len();
+    let r = recipe(&mut s, json!({"recipe": "comedy-meme", "item": item, "voiceover": {"text": "Xin chào các bạn", "language": "vi"}, "wait": true}));
+    assert_eq!(r["status"], "done", "{r}");
+    let tts = steps_of(&r, "tts.create");
+    assert_eq!(tts.len(), 1, "{r}");
+    assert_eq!(tts[0]["status"], "skipped", "{r}");
+    assert!(tts[0]["reason"].as_str().unwrap().contains("tts.setupVieneu"), "{r}");
+    assert!(r["nextSteps"].as_array().unwrap().iter().any(|n| n["command"] == "tts.setupVieneu"), "{r}");
+    assert!(s.jobs.len() <= jobs + 1, "only the analysis ran");
+    s.execute("edit.undo", json!({})).unwrap();
+    // a named VieNeu voice: its synthesis job fails here, and the draft says why
+    let mut p = json!({"recipe": "comedy-meme", "item": item, "voiceover": {"text": "Xin chào", "voice": "vieneu:Ngoc"}, "picture": false});
+    let mut r = recipe(&mut s, p.clone());
+    let mut hops = 0;
+    while r["status"] == "running" {
+        assert!(hops < 4000, "{r}");
+        hops += 1;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        p = r["resultCommand"]["params"].clone();
+        assert!(p.get("wait").is_none());
+        r = recipe(&mut s, p.clone());
+    }
+    assert_eq!(r["status"], "done", "{r}");
+    let tts = steps_of(&r, "tts.create");
+    assert_eq!(tts[0]["status"], "skipped", "{r}");
+    assert!(notes(&r).contains("VieNeu"), "{r}");
+    // hostile voice-over settings
+    for bad in [
+        json!({"text": "x", "language": "fr"}),
+        json!({"text": "x", "language": 3}),
+        json!({"text": "x", "lang": "vi"}),
+        json!({"text": "x", "voice": "vieneu:\u{0007}"}),
+    ] {
+        assert!(s.execute("recipes.run", json!({"recipe": "comedy-meme", "item": item, "voiceover": bad, "wait": true})).is_err(), "{bad}");
+    }
+    assert!(s.execute("recipes.run", json!({"recipe": "comedy-meme", "item": item, "voiceJob": 1})).is_err());
+    let _ = std::fs::remove_dir_all(dir);
+}

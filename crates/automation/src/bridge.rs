@@ -70,27 +70,41 @@ impl BridgeClient {
             p.insert("wait".into(), json!(false));
         }
         let mut start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
-        let Some(job) = start.get("job").and_then(Value::as_u64) else { return Ok(start) };
-        let (result, offline, status) = loop {
-            tokio::time::sleep(JOB_POLL).await;
-            let jobs = self.call("engine.execute", json!({"command": "jobs.list", "params": {}})).await?;
-            let Some(j) = jobs.as_array().and_then(|a| a.iter().find(|j| j["id"].as_u64() == Some(job))).cloned() else {
-                break (Value::Null, None, None);
+        let Some(mut job) = start.get("job").and_then(Value::as_u64) else { return Ok(start) };
+        let mut hops = 0;
+        let (result, offline, status) = 'follow: loop {
+            let polled = loop {
+                tokio::time::sleep(JOB_POLL).await;
+                let jobs = self.call("engine.execute", json!({"command": "jobs.list", "params": {}})).await?;
+                let Some(j) = jobs.as_array().and_then(|a| a.iter().find(|j| j["id"].as_u64() == Some(job))).cloned() else {
+                    break (Value::Null, None, None);
+                };
+                if j["finished"].as_bool() == Some(true) {
+                    break (j["result"].clone(), j.get("offlineMedia").cloned(), j.get("status").cloned());
+                }
             };
-            if j["finished"].as_bool() == Some(true) {
-                break (j["result"].clone(), j.get("offlineMedia").cloned(), j.get("status").cloned());
+            let (result, _, _) = &polled;
+            if let Some(e) = result.get("error").and_then(Value::as_str) {
+                return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
             }
+            if let Some((cmd, p)) = crate::long_job::result_command(&start) {
+                let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
+                // its answer started the next job (a recipe's voice-over after its analysis)
+                if hops < crate::long_job::MAX_HOPS
+                    && let Some(next) = crate::long_job::next_job(&answer)
+                {
+                    hops += 1;
+                    job = next;
+                    start = answer;
+                    continue 'follow;
+                }
+                return match crate::long_job::unfinished(id, &answer) {
+                    Some(e) => Err(AutomationError::App(e)),
+                    None => Ok(answer),
+                };
+            }
+            break 'follow polled;
         };
-        if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
-        }
-        if let Some((cmd, p)) = crate::long_job::result_command(&start) {
-            let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
-            return match crate::long_job::unfinished(id, &answer) {
-                Some(e) => Err(AutomationError::App(e)),
-                None => Ok(answer),
-            };
-        }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);
             if let Some(st) = status.filter(|v| id != "file.exportMedia" && v.as_str().is_some_and(|s| !s.is_empty())) {

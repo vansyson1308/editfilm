@@ -43,6 +43,17 @@ pub fn result_command(start: &Value) -> Option<(String, Value)> {
     Some((rc.get("command")?.as_str()?.to_string(), rc.get("params").cloned().unwrap_or(Value::Null)))
 }
 
+/// Most jobs one waiting call follows, one after another, through resultCommands.
+pub const MAX_HOPS: usize = 4;
+
+/// The job a resultCommand's answer started, when it says to wait for that one in turn
+/// (`"status": "running"` with a `job` and another `resultCommand`).
+pub fn next_job(answer: &Value) -> Option<u64> {
+    (answer.get("status").and_then(Value::as_str) == Some("running") && answer.get("resultCommand").is_some())
+        .then(|| answer.get("job").and_then(Value::as_u64))
+        .flatten()
+}
+
 /// A job's answer that says it did not finish (`"status": "failed"` or `"cancelled"`): the error
 /// to report instead of a success.
 pub fn unfinished(id: &str, answer: &Value) -> Option<String> {
@@ -90,9 +101,11 @@ impl FilmagicMcp {
             Err(e) => return CallToolResult::error(vec![Content::text(e.to_string())]),
         };
         // a command that finished at once (an asset pack installed from a local folder) started no job
-        let Some(job) = start.get("job").and_then(Value::as_u64) else {
+        let Some(mut job) = start.get("job").and_then(Value::as_u64) else {
             return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&start).unwrap_or_default())]);
         };
+        let mut start = start;
+        let mut hops = 0;
         let out = partial_output(&start);
         let mut rep = Reporter { peer: context.peer.clone(), token: context.meta.get_progress_token(), last: 0.0 };
         loop {
@@ -112,6 +125,13 @@ impl FilmagicMcp {
                 // a job whose answer is not its report says which command reads it (story.highlights)
                 if let Some((cmd, p)) = result_command(&start) {
                     return match self.run(&cmd, p).await {
+                        // its answer started the next job (a recipe's voice-over after its analysis)
+                        Ok(v) if hops < MAX_HOPS && next_job(&v).is_some() => {
+                            hops += 1;
+                            job = next_job(&v).unwrap_or(job);
+                            start = v;
+                            continue;
+                        }
                         Ok(v) => match unfinished(id, &v) {
                             Some(e) => CallToolResult::error(vec![Content::text(e)]),
                             None => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
@@ -246,6 +266,14 @@ fn is_sequence_extension(ext: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_result_command_that_starts_the_next_job_is_followed() {
+        assert_eq!(next_job(&json!({"status": "running", "job": 7, "resultCommand": {"command": "recipes.run", "params": {}}})), Some(7));
+        assert_eq!(next_job(&json!({"status": "running", "job": 7})), None, "no resultCommand: its answer");
+        assert_eq!(next_job(&json!({"status": "done", "job": 7, "resultCommand": {}})), None);
+        assert_eq!(next_job(&json!({"status": "running", "resultCommand": {}})), None);
+    }
 
     /// The output of an export to `name` in `dir`.
     fn output(dir: &Path, name: &str, stills: Option<(usize, u64)>) -> Output {
