@@ -133,11 +133,15 @@ fn compact_keeps_two_of_the_same_effect_apart_and_leaves_automatic_motion_out() 
     assert_eq!(indices, blurs.iter().map(|i| *i as u64).collect::<Vec<_>>(), "both blurs, each with its index: {one}");
     // Motion left at its automatic position and anchor is not a change
     assert!(!changed.iter().any(|e| e["effect"] == "motion"), "{one}");
-    // the demo's picture in a picture is scaled (a real change) but sits at its automatic
-    // position and anchor, which are not changes
+    // a Motion position or anchor is listed only where it is off its automatic centre (the
+    // demo's picture in a picture is scaled and moved to a corner)
+    let (w, h) = s.active_sequence().map(|q| (f64::from(q.settings.width), f64::from(q.settings.height))).unwrap();
     for x in compact_clips(&s.execute("sequence.inspect", json!({"compact": true})).unwrap()) {
         for e in x["changed"].as_array().into_iter().flatten().filter(|e| e["effect"] == "motion") {
-            assert!(e["params"].get("position").is_none() && e["params"].get("anchor_point").is_none() && e["params"].get("anchor").is_none(), "{x}");
+            assert!(e["params"].get("anchor").is_none(), "{x}");
+            if let Some(p) = e["params"].get("position") {
+                assert_ne!(p, &json!([w / 2.0, h / 2.0]), "{x}");
+            }
         }
     }
 }
@@ -171,4 +175,22 @@ fn compact_finds_a_clip_past_the_first_five_hundred_and_takes_track_names() {
     let compact = s.execute("sequence.inspect", json!({"track": name, "compact": true})).unwrap();
     assert_eq!(full["video"].as_array().map(Vec::len), Some(1));
     assert_eq!(compact["tracks"].as_array().map(Vec::len), Some(1), "{}", compact["tracks"]);
+}
+
+/// #16 re-review: an "auto" (NaN) default matched every value, so text layers moved to [100,100]
+/// and [500,500] no longer listed `position`. A point is compared with where "auto" puts it.
+#[test]
+fn compact_lists_a_moved_text_layer_and_not_an_untouched_motion_centre() {
+    let mut s = demo();
+    let mut clips = Vec::new();
+    for at in [[100.0, 100.0], [500.0, 500.0]] {
+        let r = s.execute("graphics.newText", json!({"text": "Title", "size": 60, "position": at, "newClip": true})).unwrap();
+        clips.push(r["clip"].as_u64().unwrap());
+    }
+    let r = s.execute("sequence.inspect", json!({"compact": true, "clip": clips})).unwrap();
+    for x in compact_clips(&r) {
+        let text = x["changed"].as_array().unwrap().iter().find(|e| e["effect"] == "graphic_text").cloned().unwrap_or_default();
+        assert!(text["params"].get("position").is_some(), "a moved layer lists its position: {x}");
+        assert!(!x["changed"].as_array().unwrap().iter().any(|e| e["effect"] == "motion"), "Motion is untouched: {x}");
+    }
 }

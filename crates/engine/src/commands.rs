@@ -1595,6 +1595,7 @@ fn build() -> Vec<CommandSpec> {
         cmd!("file.newProject", "Project…", ["File", "New"], Some("Cmd+Alt+N"), r#"{"name":str}"#, always, |s, p| {
             let name = str_p(p, "name").unwrap_or("Untitled").to_string();
             crate::masks::discard_jobs(s);
+            crate::source_cuts::reset(s);
             s.project = std::sync::Arc::new(filmagic_project::Project::new(&name));
             s.project_instance = std::sync::Arc::new(());
             s.document_epoch = s.document_epoch.wrapping_add(1);
@@ -1611,6 +1612,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"name": name, "revision": s.revision}))
         }),
         cmd!("file.openDemoProject", "Demo Project", ["File", "New"], None, "{}", always, |s, _| {
+            crate::source_cuts::reset(s);
             let (p, seq) = crate::demo::demo_project(&s.media);
             s.project = std::sync::Arc::new(p);
             s.project_instance = std::sync::Arc::new(());
@@ -5490,12 +5492,26 @@ impl InspectFilter {
     }
 }
 
-/// The parameters of an effect that differ from its defaults or are animated, as plain values.
-fn changed_params(e: &filmagic_project::EffectInstance) -> serde_json::Map<String, Value> {
-    let def = e.def();
+/// The parameters of an effect that differ from its defaults or are animated, as plain values. A
+/// point whose default is "automatic" (NaN: the frame's or the source's centre) is compared with
+/// that point as it resolves on a `frame` with a picture of `source` size, so a layer moved off
+/// the centre is listed and one left there is not.
+fn changed_params(e: &filmagic_project::EffectInstance, frame: (u32, u32), source: (u32, u32)) -> serde_json::Map<String, Value> {
+    let defaults = e.def().map(|d| {
+        let mut i = d.instance();
+        filmagic_project::resolve_auto_points(&mut i, frame, source);
+        i
+    });
+    let same = |a: &filmagic_project::ParamValue, b: &filmagic_project::ParamValue| match (a, b) {
+        (filmagic_project::ParamValue::Vec2(x), filmagic_project::ParamValue::Vec2(y)) => {
+            // still unresolved ("auto") is the default too
+            (x.x.is_nan() && x.y.is_nan()) || ((x.x - y.x).abs() < 1e-6 && (x.y - y.y).abs() < 1e-6)
+        }
+        _ => a == b,
+    };
     e.params
         .iter()
-        .filter(|(k, p)| !p.keyframes.is_empty() || def.and_then(|d| d.param(k)).is_none_or(|d| !filmagic_project::param_eq_default(&p.value, &d.default)))
+        .filter(|(k, p)| !p.keyframes.is_empty() || defaults.as_ref().and_then(|d| d.params.get(*k)).is_none_or(|d| !same(&p.value, &d.value)))
         .map(|(k, p)| {
             let v = crate::graphics::plain_value(&p.value);
             (k.clone(), if p.keyframes.is_empty() { v } else { json!({"value": v, "keyframes": p.keyframes.len()}) })
@@ -5564,6 +5580,9 @@ fn inspect_filtered(s: &Session, id: ItemId, q: &filmagic_project::Sequence, p: 
     };
     let mut brief = crate::story::list_clips_of(s, id, track, &|it| f.clip_ok(it))?;
     let find = |c: u64| q.all_tracks().flat_map(|t| t.items.iter()).find(|it| it.id.0 == c);
+    let frame = (q.settings.width, q.settings.height);
+    // a graphic's layers are placed on its canvas, a clip's anchor on its own picture
+    let source = |it: &filmagic_project::TrackItem| filmagic_render::source_size(&s.project, it.item).unwrap_or(frame);
     if let Some(tracks) = brief.get_mut("tracks").and_then(Value::as_array_mut) {
         for t in tracks.iter_mut() {
             let Some(clips) = t.get_mut("clips").and_then(Value::as_array_mut) else { continue };
@@ -5575,7 +5594,7 @@ fn inspect_filtered(s: &Session, id: ItemId, q: &filmagic_project::Sequence, p: 
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| f.effect_ok(e))
-                    .map(|(i, e)| (i, e, changed_params(e)))
+                    .map(|(i, e)| (i, e, changed_params(e, frame, source(it))))
                     .filter(|(_, _, m)| !m.is_empty())
                     .map(|(i, e, m)| json!({"effect": e.effect, "index": i, "params": m}))
                     .collect();
@@ -5657,6 +5676,8 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
 pub(crate) fn install_project(s: &mut Session, proj: filmagic_project::Project, path: Option<String>, clean: bool) {
+    // the cut finder works on the old project's items: stop it and forget what it found
+    crate::source_cuts::reset(s);
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);

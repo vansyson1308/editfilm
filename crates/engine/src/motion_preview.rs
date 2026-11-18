@@ -146,7 +146,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Motion Preview",
         menu: &[],
         shortcut: None,
-        params: r#"{"path":str (.gif: animated image; .mp4: H.264 with sound),"fromSeconds":f64? (default the playhead),"toSeconds":f64? (default 3 s later; at most 10 s after fromSeconds),"fps":1..30? (default 12 for GIF, lowered to keep a GIF at 60 frames; the sequence's rate up to 30 for MP4),"width":px? (the longest side, 64..640; default 320 for GIF, 480 for MP4)} -> a GIF over 4 MB is refused. To look at motion yourself use story.board with fps/step"#,
+        params: r#"{"path":str (.gif: animated image; .mp4: H.264 with sound),"fromSeconds":f64? (default the playhead),"toSeconds":f64? (default 3 s later; at most 10 s after fromSeconds),"fps":1..30? (default 12 for GIF, lowered to keep a GIF at 60 frames; the sequence's rate up to 30 for MP4),"width":px? (the longest side, 64..640; default 320 for GIF, 480 for MP4)} -> a GIF over 4 MB is refused. It renders before it answers (seconds; up to about 30 s for 10 s at 640 px, longer over the bridge): keep the range short. To look at motion yourself use story.board with fps/step"#,
         enabled: has_seq,
         run: preview,
         journal: false,

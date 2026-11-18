@@ -68,11 +68,17 @@ struct Entry {
     diffs: BTreeMap<i64, f32>,
 }
 
-/// A background check that is running: media frames `lo..=hi` of `item`.
-struct Pending {
-    item: ItemId,
-    lo: i64,
-    hi: i64,
+/// What is waiting to be checked in one item's media: merged ranges of frames, in order.
+struct Request {
+    root: ItemId,
+    key: String,
+    rate: FrameRate,
+    src: filmagic_media::SharedSource,
+    ranges: Vec<(i64, i64)>,
+}
+
+/// The one background worker of a session, while it runs.
+struct Worker {
     job: u64,
     progress: Arc<filmagic_export::Progress>,
 }
@@ -80,11 +86,18 @@ struct Pending {
 #[derive(Default)]
 struct Inner {
     media: HashMap<ItemId, Entry>,
-    pending: Vec<Pending>,
+    /// Work for the worker, one request per media item.
+    queue: Vec<Request>,
+    worker: Option<Worker>,
+    /// Jobs this cache started, to prune from the session's list once finished.
+    jobs: Vec<u64>,
+    /// Worker threads running now, and the most ever running at once.
+    live: usize,
+    most_live: usize,
 }
 
-/// Source-cut analysis per media item (session state, not saved), shared with the background
-/// jobs that fill it.
+/// Source-cut analysis per media item (session state, not saved), shared with the one background
+/// worker that fills it.
 #[derive(Clone, Default)]
 pub struct Cache {
     inner: Arc<Mutex<Inner>>,
@@ -96,8 +109,66 @@ impl Cache {
     }
     /// Forget what was found in `item`'s media (its file changed).
     pub fn forget(&self, item: ItemId) {
-        self.lock().media.remove(&item);
+        let mut inner = self.lock();
+        inner.media.remove(&item);
+        inner.queue.retain(|r| r.root != item);
     }
+    /// Whether job `id` is a cut finder: background work, shown only when nothing else runs.
+    pub fn is_background_job(&self, id: u64) -> bool {
+        self.lock().jobs.contains(&id)
+    }
+    /// The most worker threads that ever ran at once (one, by design).
+    pub fn most_workers(&self) -> usize {
+        self.lock().most_live
+    }
+}
+
+/// Ranges `(a, b)` kept sorted, with an overlapping or touching range merged in.
+fn merge_range(ranges: &mut Vec<(i64, i64)>, a: i64, b: i64) {
+    let (mut lo, mut hi) = (a, b);
+    ranges.retain(|&(x, y)| {
+        let apart = y.saturating_add(1) < lo || x > hi.saturating_add(1);
+        if !apart {
+            lo = lo.min(x);
+            hi = hi.max(y);
+        }
+        apart
+    });
+    let at = ranges.partition_point(|r| r.0 < lo);
+    ranges.insert(at, (lo, hi));
+}
+
+/// Frames waiting in the queue, all items together.
+fn queued_frames(inner: &Inner) -> i64 {
+    inner.queue.iter().flat_map(|r| r.ranges.iter()).map(|(a, b)| b - a + 1).sum()
+}
+
+/// Remove the session's finished cut-finder jobs from `jobs.list` and the status bar.
+pub(crate) fn prune_jobs(s: &mut Session) {
+    let finished: Vec<u64> = {
+        let inner = s.source_cuts.lock();
+        inner.jobs.iter().copied().filter(|id| s.jobs.iter().find(|j| j.id == *id).is_none_or(|j| j.progress.finished.load(Ordering::Relaxed))).collect()
+    };
+    if finished.is_empty() {
+        return;
+    }
+    s.jobs.retain(|j| !finished.contains(&j.id));
+    s.source_cuts.lock().jobs.retain(|id| !finished.contains(id));
+}
+
+/// A new project: stop the worker, forget the cuts and the jobs (the old project's item ids mean
+/// nothing in the new one). The worker may still finish its frame: it writes into the old cache,
+/// which nothing reads.
+pub(crate) fn reset(s: &mut Session) {
+    let ids: Vec<u64> = {
+        let inner = s.source_cuts.lock();
+        if let Some(w) = &inner.worker {
+            w.progress.cancel.store(true, Ordering::Relaxed);
+        }
+        inner.jobs.clone()
+    };
+    s.jobs.retain(|j| !ids.contains(&j.id));
+    s.source_cuts = Cache::default();
 }
 
 /// What a check found.
@@ -204,9 +275,7 @@ pub fn cached(s: &Session, item: ItemId, lo: i64, hi: i64) -> Option<Found> {
     Some(found)
 }
 
-/// Decode what is missing of frames `a..=b` of a media item into the shared cache, at most
-/// [`MAX_JOB_FRAMES`] frames, stopping when `progress` is cancelled.
-/// The cache entry a job fills: its item, media key and frame rate.
+/// The cache entry a check fills: its item, media key and frame rate.
 struct Target {
     cache: Cache,
     root: ItemId,
@@ -214,6 +283,14 @@ struct Target {
     rate: FrameRate,
 }
 
+/// Frames the worker takes from the queue at a time (new requests get in between).
+const CHUNK: i64 = 240;
+/// Most frames waiting in the queue; past it a request is refused with a note.
+pub const MAX_QUEUED_FRAMES: i64 = 4 * MAX_JOB_FRAMES;
+
+/// Decode what is missing of frames `a..=b` of a media item into the shared cache, at most
+/// [`MAX_JOB_FRAMES`] frames, stopping when `progress` is cancelled; adds what it decodes to
+/// `progress.done`.
 fn fill(t: &Target, src: &dyn filmagic_media::MediaSource, a: i64, b: i64, progress: &filmagic_export::Progress) -> std::result::Result<u64, String> {
     let (cache, root, key, rate) = (&t.cache, t.root, t.key.as_str(), t.rate);
     let scale = src.info().video.as_ref().map_or(1.0, |v| (SIDE / f64::from(v.width.max(v.height).max(1))).min(1.0)) as f32;
@@ -229,7 +306,6 @@ fn fill(t: &Target, src: &dyn filmagic_media::MediaSource, a: i64, b: i64, progr
         entry.diffs.range(a..=b).map(|(f, _)| *f).collect()
     };
     let missing: Vec<i64> = (a..=b).filter(|f| known.binary_search(f).is_err()).take(MAX_JOB_FRAMES as usize).collect();
-    progress.total.store(missing.len() as u64, Ordering::Relaxed);
     let mut prev: Option<(i64, Signature)> = None;
     let mut batch: Vec<(i64, f32)> = Vec::with_capacity(BATCH);
     let mut done = 0u64;
@@ -255,7 +331,7 @@ fn fill(t: &Target, src: &dyn filmagic_media::MediaSource, a: i64, b: i64, progr
         batch.push((f, if d.is_finite() { d } else { 0.0 }));
         prev = Some((f, sig));
         done += 1;
-        progress.done.store(done, Ordering::Relaxed);
+        progress.done.fetch_add(1, Ordering::Relaxed);
         if batch.len() >= BATCH {
             flush(&mut batch);
         }
@@ -269,72 +345,166 @@ fn decode(src: &dyn filmagic_media::MediaSource, rate: FrameRate, f: i64, scale:
     Ok(signature(&frame.to_rgba8(), frame.width as usize, frame.height as usize))
 }
 
+/// The next chunk of work, taken from the queue; `None` when there is none (or the worker was
+/// stopped), and then the worker is gone, decided under the same lock a new request takes.
+fn next_chunk(cache: &Cache, progress: &filmagic_export::Progress) -> Option<(Target, filmagic_media::SharedSource, i64, i64)> {
+    let mut inner = cache.lock();
+    if progress.cancel.load(Ordering::Relaxed) {
+        inner.queue.clear();
+    }
+    inner.queue.retain(|r| !r.ranges.is_empty());
+    let Some(r) = inner.queue.first_mut() else {
+        inner.worker = None;
+        return None;
+    };
+    let (a, b) = r.ranges.first().copied()?;
+    let end = b.min(a.saturating_add(CHUNK - 1));
+    if end >= b {
+        r.ranges.remove(0);
+    } else if let Some(first) = r.ranges.first_mut() {
+        first.0 = end + 1;
+    }
+    let target = Target { cache: cache.clone(), root: r.root, key: r.key.clone(), rate: r.rate };
+    Some((target, r.src.clone(), a, end))
+}
+
+/// The worker: drains the queue chunk by chunk, then ends.
+fn work(cache: Cache, progress: Arc<filmagic_export::Progress>, result: Arc<Mutex<Option<std::result::Result<filmagic_export::Report, String>>>>) {
+    let t0 = web_time::Instant::now();
+    let mut errors: Vec<String> = Vec::new();
+    while let Some((target, src, a, b)) = next_chunk(&cache, &progress) {
+        *progress.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = format!("frames {a}–{b} of item {}", target.root.0);
+        if let Err(e) = fill(&target, &*src, a, b, &progress) {
+            if e == "stopped" {
+                continue;
+            }
+            // this item's media cannot be read: the rest of its ranges would fail too
+            cache.lock().queue.retain(|r| r.root != target.root);
+            errors.push(format!("item {}: {e}", target.root.0));
+        }
+    }
+    let secs = t0.elapsed().as_secs_f64();
+    let n = progress.done.load(Ordering::Relaxed);
+    // frames already known were skipped: the job is done at what it decoded
+    progress.total.store(n, Ordering::Relaxed);
+    let stopped = progress.cancel.load(Ordering::Relaxed);
+    *progress.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = if stopped {
+        "stopped".into()
+    } else if errors.is_empty() {
+        format!("checked {n} frame(s) in {secs:.1}s")
+    } else {
+        errors.join("; ")
+    };
+    let out = if stopped {
+        Err("stopped".to_string())
+    } else {
+        Ok(filmagic_export::Report { path: String::new(), frames: n, seconds: secs, bytes: 0, render_fps: n as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    };
+    *result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(out);
+    progress.finished.store(true, Ordering::Relaxed);
+}
+
 /// A check that was started, or why none could be.
 enum Queued {
-    /// A background job (new, or one already covering the range).
+    /// Queued for the session's background worker (its job id).
     Job(u64),
-    /// It ran before returning (`wait`, or a host without threads).
+    /// It ran before returning (`wait`).
     Ran,
     /// Nothing to do: the range is known.
     Known,
+    /// Not queued: the queue is full, or this host has no threads (the web build).
+    Not(String),
 }
 
-/// Start checking media frames `lo..=hi` of `item` (with context) in the background, unless a job
-/// already covers them; `wait` runs it before returning.
+/// Queue media frames `lo..=hi` of `item` (with context) for the session's one background worker,
+/// starting it if it is not running; `wait` checks them here before returning instead.
 fn queue(s: &mut Session, item: ItemId, lo: i64, hi: i64, wait: bool) -> Result<Queued> {
     let m = media_of(&s.project, item).ok_or_else(|| bad(CMD, "the item has no moving picture"))?;
     let Some((_, (a, b))) = spans(&m, lo, hi) else { return Ok(Queued::Known) };
     if cached(s, item, lo, hi).is_some_and(|f| f.complete) {
         return Ok(Queued::Known);
     }
-    {
-        let mut inner = s.source_cuts.lock();
-        inner.pending.retain(|p| !p.progress.finished.load(Ordering::Relaxed));
-        if !wait && let Some(p) = inner.pending.iter().find(|p| p.item == m.root && p.lo <= a && p.hi >= b) {
-            return Ok(Queued::Job(p.job));
-        }
-    }
+    prune_jobs(s);
     let src = s
         .source(m.root)
         .ok_or_else(|| EngineError::Other(format!("{CMD}: the media of item {} is offline or cannot be read; relink it (`media.relink`)", item.0)))?;
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
-    let name = s.project.item(m.root).map_or_else(String::new, |i| i.name.clone());
-    let job = crate::Job { id, label: format!("Find Cuts in Source ({name})"), progress: Default::default(), result: Default::default() };
-    let (prog, res) = (job.progress.clone(), job.result.clone());
-    let target = Target { cache: s.source_cuts.clone(), root: m.root, key: m.key.clone(), rate: m.rate };
-    let run = move || {
-        let t0 = web_time::Instant::now();
-        let r = fill(&target, &*src, a, b, &prog);
-        let secs = t0.elapsed().as_secs_f64();
-        *prog.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = match &r {
-            Ok(n) => format!("checked {n} frame(s) in {secs:.1}s"),
-            Err(e) => e.clone(),
-        };
-        let out = r.map(|n| filmagic_export::Report {
-            path: String::new(),
-            frames: n,
-            seconds: secs,
-            bytes: 0,
-            render_fps: n as f64 / secs.max(1e-6),
-            extra_files: Vec::new(),
-        });
-        *res.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(out);
-        prog.finished.store(true, Ordering::Relaxed);
-    };
-    let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
-    let progress = job.progress.clone();
-    s.jobs.push(job);
-    if wait || cfg!(target_arch = "wasm32") {
-        run();
-        if let Some(Err(e)) = s.jobs.iter().find(|j| j.id == id).and_then(|j| j.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) {
-            return Err(EngineError::Other(format!("{CMD}: {e}")));
-        }
+    if wait {
+        let target = Target { cache: s.source_cuts.clone(), root: m.root, key: m.key.clone(), rate: m.rate };
+        fill(&target, &*src, a, b, &filmagic_export::Progress::default()).map_err(|e| EngineError::Other(format!("{CMD}: {e}")))?;
         return Ok(Queued::Ran);
     }
-    s.source_cuts.lock().pending.push(Pending { item: m.root, lo: a, hi: b, job: id, progress });
-    std::thread::Builder::new().name("filmagic-source-cuts".into()).spawn(run).map_err(|e| EngineError::Other(e.to_string()))?;
+    if !background_threads() {
+        return Ok(Queued::Not("the web build has no background threads: call `media.sourceCuts` with `\"wait\": true` to look for them".into()));
+    }
+    let new_frames = b - a + 1;
+    let mut inner = s.source_cuts.lock();
+    if queued_frames(&inner) + new_frames > MAX_QUEUED_FRAMES {
+        return Ok(Queued::Not(format!(
+            "{MAX_QUEUED_FRAMES} frames are already waiting to be checked: try again when job {} has finished",
+            inner.worker.as_ref().map_or(0, |w| w.job)
+        )));
+    }
+    match inner.queue.iter_mut().find(|r| r.root == m.root && r.key == m.key) {
+        Some(r) => merge_range(&mut r.ranges, a, b),
+        None => inner.queue.push(Request { root: m.root, key: m.key.clone(), rate: m.rate, src, ranges: vec![(a, b)] }),
+    }
+    if let Some(w) = &inner.worker {
+        w.progress.total.fetch_add(new_frames.max(0) as u64, Ordering::Relaxed);
+        return Ok(Queued::Job(w.job));
+    }
+    // no worker: start the one
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let job = crate::Job { id, label: JOB_LABEL.into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store(new_frames.max(0) as u64, Ordering::Relaxed);
+    inner.worker = Some(Worker { job: id, progress: job.progress.clone() });
+    inner.jobs.push(id);
+    inner.live += 1;
+    inner.most_live = inner.most_live.max(inner.live);
+    drop(inner);
+    let (cache, prog, res) = (s.source_cuts.clone(), job.progress.clone(), job.result.clone());
+    let run = move || {
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(cache.clone(), prog.clone(), res.clone()))).is_ok();
+        let mut inner = cache.lock();
+        inner.live = inner.live.saturating_sub(1);
+        if !ok {
+            // a panic while decoding: the next request starts a new worker
+            inner.worker = None;
+            inner.queue.clear();
+            drop(inner);
+            let msg = "internal error while looking for cuts (see the crash log); the check was stopped".to_string();
+            *prog.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg.clone());
+            *res.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(msg));
+            prog.finished.store(true, Ordering::Relaxed);
+        }
+    };
+    s.jobs.push(job);
+    if let Err(e) = std::thread::Builder::new().name("filmagic-source-cuts".into()).spawn(run) {
+        let mut inner = s.source_cuts.lock();
+        inner.worker = None;
+        inner.live = inner.live.saturating_sub(1);
+        return Err(EngineError::Other(e.to_string()));
+    }
     Ok(Queued::Job(id))
 }
+
+thread_local! {
+    /// Tests: behave as the web build does, which has no background threads.
+    static NO_THREADS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the cut finder may run in the background here. The web build has no threads: there an
+/// edit or a board only says how to look for the cuts, and never decodes on the caller's thread.
+fn background_threads() -> bool {
+    !cfg!(target_arch = "wasm32") && !NO_THREADS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn pretend_no_threads(on: bool) {
+    NO_THREADS.with(|c| c.set(on));
+}
+
+/// The label of the cut finder's job (translated by the interface).
+pub const JOB_LABEL: &str = "Find Cuts in Source";
 
 fn secs(rate: FrameRate, f: i64) -> f64 {
     (rate.tick_of(f).seconds() * 1000.0).round() / 1000.0
@@ -407,7 +577,10 @@ fn known_for(s: &Session, it: &TrackItem, lo: i64, hi: i64, r: &mut Report) -> O
 }
 
 /// An edit point at media frame `at` of `it`.
-fn check_point(s: &Session, it: &TrackItem, at: i64, t: Tick, r: &mut Report) {
+/// `whole` is the clip as it was before the edit split it: a cut on either side of the edit maps
+/// to the timeline through it (the new piece starts at the edit, so a cut before it would be
+/// clamped to the edit itself).
+fn check_point(s: &Session, it: &TrackItem, whole: &TrackItem, at: i64, t: Tick, r: &mut Report) {
     let Some(f) = known_for(s, it, at - NEAR_FRAMES, at + NEAR_FRAMES, r) else { return };
     let Some(&c) = f.cuts.iter().min_by_key(|c| (**c - at).abs()) else { return };
     let off = at - c;
@@ -424,7 +597,7 @@ fn check_point(s: &Session, it: &TrackItem, at: i64, t: Tick, r: &mut Report) {
     r.warnings.push(format!(
         "the edit at {ts:.3} s on {} lands {side} a cut in its source at {ms:.3} s of media: {what}. Move the edit onto the cut (timeline {:.3} s) if a clean shot change was meant",
         label(it),
-        timeline_at(it, f.rate.tick_of(c)).seconds()
+        timeline_at(whole, f.rate.tick_of(c)).seconds()
     ));
 }
 
@@ -475,7 +648,8 @@ pub(crate) fn annotate(s: &mut Session, id: &str, before: &Project, result: &mut
     let old: HashMap<ClipId, &TrackItem> =
         before.sequence(seq).map(|q| q.video_tracks.iter().flat_map(|t| t.items.iter()).map(|it| (it.id, it)).collect()).unwrap_or_default();
     let razor = RAZORS.contains(&id);
-    let mut points: Vec<(TrackItem, i64, Tick)> = Vec::new();
+    // a new piece, where it starts in its media, the timeline time, and the clip it was cut from
+    let mut points: Vec<(TrackItem, i64, Tick, TrackItem)> = Vec::new();
     let mut ranges: Vec<TrackItem> = Vec::new();
     for it in q.video_tracks.iter().flat_map(|t| t.items.iter()) {
         let Some(m) = media_of(&s.project, it.item) else { continue };
@@ -483,7 +657,9 @@ pub(crate) fn annotate(s: &mut Session, id: &str, before: &Project, result: &mut
             // a new piece: its start is the edit point
             None if razor => {
                 let (a, b) = shown(it, m.rate);
-                points.push((it.clone(), if it.reverse { b + 1 } else { a }, it.start));
+                // the clip it was cut from: the same media, on screen where the edit is
+                let whole = old.values().find(|o| o.item == it.item && o.start < it.start && it.start < o.end()).map_or_else(|| it.clone(), |o| (*o).clone());
+                points.push((it.clone(), if it.reverse { b + 1 } else { a }, it.start, whole));
             }
             // retimed now (a clip set back to 100 % plays its frames once: nothing to say)
             None if retimed(it) => ranges.push(it.clone()),
@@ -495,8 +671,8 @@ pub(crate) fn annotate(s: &mut Session, id: &str, before: &Project, result: &mut
         return;
     }
     let mut r = Report::default();
-    for (it, at, t) in &points {
-        check_point(s, it, *at, *t, &mut r);
+    for (it, at, t, whole) in &points {
+        check_point(s, it, whole, *at, *t, &mut r);
     }
     for it in &ranges {
         check_range(s, it, &mut r);
@@ -504,9 +680,10 @@ pub(crate) fn annotate(s: &mut Session, id: &str, before: &Project, result: &mut
     for (item, lo, hi, clip) in std::mem::take(&mut r.unknown) {
         match queue(s, item, lo, hi, false) {
             Ok(Queued::Job(job)) => r.notes.push(format!(
-                "cuts inside the source of clip {} are not known yet for this range: a background check is running (job {job}, `jobs.list`); when it finishes, `media.sourceCuts` {{\"clip\":{}}} lists them and the next edit warns about them",
+                "cuts inside the source of clip {} are not known yet for this range: the background check (job {job}, `jobs.list`) looks for them; once it is finished or no longer listed, `media.sourceCuts` {{\"clip\":{}}} lists them and the next edit warns about them",
                 clip.0, clip.0
             )),
+            Ok(Queued::Not(why)) => r.notes.push(format!("cuts inside the source of clip {} are not known yet for this range: {why}", clip.0)),
             Ok(_) => {}
             Err(e) => r.notes.push(format!("cuts inside the source of clip {} could not be checked: {e}", clip.0)),
         }
@@ -649,9 +826,10 @@ fn source_cuts_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             Queued::Job(job) => {
                 out["job"] = json!(job);
                 out["hint"] = json!(format!(
-                    "a background check is running (job {job}): poll `jobs.list` until it is finished, then call `media.sourceCuts` again with the same parameters"
+                    "the background check (job {job}) looks for them: poll `jobs.list` until it is finished or no longer listed, then call `media.sourceCuts` again with the same parameters"
                 ));
             }
+            Queued::Not(why) => out["hint"] = json!(why),
             _ => {
                 out["hint"] = json!(format!("{MAX_JOB_FRAMES} frames are checked per job; call again from `next` for the rest"));
             }
@@ -676,7 +854,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Find Cuts in Source",
         menu: &[],
         shortcut: None,
-        params: r#"{"item":id | "clip":id (a timeline clip: the media it shows, with timelineSeconds),"fromSeconds":f64? (media seconds),"toSeconds":f64?,"wait":bool=false (false: report what is known and check the rest in a background job, `jobs.list`; true: check up to 7200 frames before answering, which can take minutes on long-GOP H.264)} -> {cuts:[{mediaSeconds,frame,timelineSeconds?}],checked,complete,job?,next?}"#,
+        params: r#"{"item":id | "clip":id (a timeline clip: the media it shows, with timelineSeconds),"fromSeconds":f64? (media seconds),"toSeconds":f64?,"wait":bool=false (false: report what is known and queue the rest for the session's one background checker, `jobs.list`; true: check up to 7200 frames before answering, which can take minutes on long-GOP H.264; the web build has no background checker and needs true)} -> {cuts:[{mediaSeconds,frame,timelineSeconds?}],checked,complete,job?,next?}"#,
         enabled: always,
         run: source_cuts_cmd,
         journal: false,

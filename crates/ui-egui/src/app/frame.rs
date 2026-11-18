@@ -126,7 +126,7 @@ impl FilmagicApp {
     /// render completes. Runs every frame, with or without the status bar.
     pub(super) fn poll_jobs(&mut self, ctx: &egui::Context) -> Option<filmagic_engine::Job> {
         use std::sync::atomic::Ordering;
-        let running = self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned();
+        let running = self.session.status_job().cloned();
         // Play after rendering previews.
         if let Some((id, from)) = self.watched_render
             && let Some(j) = self.session.jobs.iter().find(|j| j.id == id)
@@ -150,8 +150,7 @@ impl FilmagicApp {
 
     /// The running job for drawing only; polling/play-after-render stays in logic.
     fn running_job(&self) -> Option<filmagic_engine::Job> {
-        use std::sync::atomic::Ordering;
-        self.session.jobs.iter().rev().find(|j| !j.progress.finished.load(Ordering::Relaxed)).cloned()
+        self.session.status_job().cloned()
     }
 
     /// Right side of the status bar: the running job (export / render previews) with a progress
@@ -171,7 +170,13 @@ impl FilmagicApp {
         let shown = match self.job_text.take().filter(|s| s.job == job.id) {
             Some(s) if (s.at..s.at + panels::JobText::EVERY).contains(&now) => s,
             old => {
-                let verb = if job.label.starts_with("Rendering") { crate::i18n::t(&job.label).to_string() } else { tl!("Exporting").to_string() };
+                let verb = if job.label.starts_with("Rendering") {
+                    crate::i18n::t(&job.label).to_string()
+                } else if job.label == filmagic_engine::source_cuts::JOB_LABEL {
+                    tl!("Find Cuts in Source").to_string()
+                } else {
+                    tl!("Exporting").to_string()
+                };
                 let label = format!("{:.0}%{}", f * 100.0, eta.map(panels::left_text).unwrap_or_default());
                 let text = format!("{verb}… {label}");
                 // room from the start for 100 % and the longest time shown (99:59:59), so no estimate

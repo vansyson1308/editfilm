@@ -308,14 +308,17 @@ the gaps:
   at 12 frames per second (up to 96 frames). `render_motion` makes a short GIF (or MP4) of a range
   for a person to watch: many vision models see only the first frame of an animated GIF. It is
   capped at 10 s, 640 px on the longest side, 60 GIF frames (the frame rate is lowered to fit) and
-  4 MB; an MP4 stays where it was written until you delete it.
+  4 MB; an MP4 stays where it was written until you delete it. It renders before it answers
+  (seconds; up to about 30 s for 10 s at 640 px, longer in bridge mode), so keep the range short.
 - **Cuts inside a source file.** Long recordings and compilations hold shot changes of their own.
   Finding them decodes every frame, which on long-GOP H.264 costs tens of milliseconds a frame, so
   it runs in the background. `media.sourceCuts {item|clip, fromSeconds?, toSeconds?}` lists what is
-  known (media seconds, and timeline seconds for a `clip`) and starts a background job for the rest
-  (`job`; follow it with `jobs.list`, stop it with `jobs.cancel`); call it again when the job has
-  finished. `wait: true` checks before answering, which can take minutes. A job checks at most 7200
-  frames; `next` says where to continue. After `timeline.razor`, `sequence.addEdit`,
+  known (media seconds, and timeline seconds for a `clip`) and queues the rest for the session's one
+  background checker (`job`; follow it with `jobs.list`, stop it with `jobs.cancel`). Every edit and
+  call adds to the same queue and the same job, and the job leaves the list once it has finished:
+  call `media.sourceCuts` again then. `wait: true` checks before answering, which can take minutes
+  (the web build has no background checker and needs it). A call checks at most 7200 frames; `next`
+  says where to continue. The status bar shows the checker only when no export or other job runs. After `timeline.razor`, `sequence.addEdit`,
   `sequence.addEditAllTracks`, `clip.speedDuration`, `timeline.rateStretch`, `clip.frameHold`,
   `clip.frameHoldOptions`, `clip.insertFrameHoldSegment` or a Time Remapping change, the result's
   `warnings` say when the edit lands within 3 frames of a known cut, or the retimed clip straddles

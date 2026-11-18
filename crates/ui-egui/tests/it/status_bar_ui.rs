@@ -171,3 +171,29 @@ fn a_long_message_ends_before_the_job_progress() {
     let cancelled = d.app().session.jobs.iter().find(|j| j.id == 901).map(|j| j.progress.cancel.load(Ordering::Relaxed));
     assert_eq!(cancelled, Some(true));
 }
+
+/// A cut finder running in the background (#16) does not take the status bar from an export: the
+/// export's progress and its Cancel button stay; the cut finder shows only when nothing else runs.
+#[test]
+fn a_background_cut_finder_leaves_the_export_in_the_status_bar() {
+    let mut d = Driver::new();
+    let export = Job { id: 901, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    export.progress.total.store(1000, Ordering::Relaxed);
+    export.progress.done.store(250, Ordering::Relaxed);
+    d.app().session.jobs.push(export);
+    // a cut finder started after it, on the demo's first clip
+    let clip = d.app().session.active_sequence().map(|q| q.video_tracks[0].items[0].id.0).unwrap();
+    let r = d.app().session.execute("media.sourceCuts", json!({"clip": clip})).unwrap();
+    let cuts = r["job"].as_u64().expect("a background job was started");
+    d.frames(3);
+    let (_, label) = d.element("status.job.cancel");
+    assert_eq!(label, "Cancel Exporting", "the export keeps the bar");
+    assert_eq!(d.app().session.status_job().map(|j| j.id), Some(901));
+    // once the export is done, the cut finder may show
+    d.app().session.jobs.iter().find(|j| j.id == 901).unwrap().progress.finished.store(true, Ordering::Relaxed);
+    let shown = d.app().session.status_job().map(|j| j.id);
+    assert!(shown == Some(cuts) || shown.is_none(), "{shown:?}");
+    if let Some(j) = d.app().session.jobs.iter().find(|j| j.id == cuts) {
+        j.progress.cancel.store(true, Ordering::Relaxed);
+    }
+}

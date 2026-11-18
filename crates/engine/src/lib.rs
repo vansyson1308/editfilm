@@ -707,6 +707,15 @@ impl Session {
         p.last_sent = Some(cur);
     }
 
+    /// The job the status bar shows: the newest running one, but a background cut finder
+    /// (`media.sourceCuts`) only when nothing else runs, so an export's progress and its Cancel
+    /// button stay in view.
+    pub fn status_job(&self) -> Option<&Job> {
+        use std::sync::atomic::Ordering;
+        let running = || self.jobs.iter().rev().filter(|j| !j.progress.finished.load(Ordering::Relaxed));
+        running().find(|j| !self.source_cuts.is_background_job(j.id)).or_else(|| running().next())
+    }
+
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
@@ -715,6 +724,8 @@ impl Session {
         scene_detect::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
+        // a finished cut finder leaves the job list once the Events panel has had it
+        source_cuts::prune_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {

@@ -82,7 +82,7 @@ fn an_edit_never_decodes_it_queues_the_check_and_the_next_edit_warns() {
     let r = s.execute("timeline.razor", json!({"clip": clip.0, "frame": 22})).unwrap();
     assert!(warnings(&r).is_empty(), "nothing is known yet: {r}");
     let note = r["notes"][0].as_str().unwrap();
-    assert!(note.contains("background check is running"), "{r}");
+    assert!(note.contains("background check (job"), "{r}");
     let job: u64 = s.jobs.iter().map(|j| j.id).max().unwrap();
     wait_job(&s, job);
     // the next edit near the same cut knows it
@@ -330,4 +330,89 @@ fn mixed_rates_count_in_the_media_frames() {
     let r = s.execute("timeline.razor", json!({"clip": clip.0, "seconds": at})).unwrap();
     let w = warnings(&r);
     assert!(w.iter().any(|w| w.contains("frame(s) after a cut in its source at 0.834 s")), "{r}");
+}
+
+/// #16 re-review: 100 edits each started a thread and a job, all decoding the same file. Now one
+/// worker drains one queue under one job, and a finished job leaves the list.
+#[test]
+fn a_hundred_razors_share_one_worker_and_one_job() {
+    let (mut s, item, _) = three_shots("srccuts-hundred");
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    for k in 0..100 {
+        // a razor somewhere in the clip, each a new piece
+        let f = 2 + (k % 45);
+        let t = rate.tick_of(f).0 + k;
+        let _ = s.execute("timeline.razor", json!({"time": t}));
+    }
+    let cut_jobs: Vec<u64> = s.jobs.iter().filter(|j| s.source_cuts.is_background_job(j.id)).map(|j| j.id).collect();
+    assert!(cut_jobs.len() <= 1, "one job for the lot: {cut_jobs:?}");
+    assert_eq!(s.source_cuts.most_workers(), 1, "never more than one worker thread at once");
+    if let Some(&id) = cut_jobs.first() {
+        wait_job(&s, id);
+    }
+    // the queue drained: the cuts are known, and the finished job is pruned
+    assert!(cached(&s, item, 0, 49).unwrap().complete);
+    s.poll_persistence();
+    assert!(!s.jobs.iter().any(|j| s.source_cuts.is_background_job(j.id)), "the finished job left the list");
+    let _ = seq;
+}
+
+#[test]
+fn an_export_keeps_the_status_bar_from_the_cut_finder() {
+    let (mut s, item, _) = three_shots("srccuts-status");
+    let export = crate::Job { id: 500, label: "Exporting".into(), progress: Default::default(), result: Default::default() };
+    s.jobs.push(export);
+    let r = s.execute("media.sourceCuts", json!({"item": item.0})).unwrap();
+    let cuts = r["job"].as_u64().unwrap();
+    assert!(cuts > 500, "the cut finder is the newest job");
+    assert_eq!(s.status_job().map(|j| j.id), Some(500), "the export stays in view");
+    s.jobs.iter().find(|j| j.id == 500).unwrap().progress.finished.store(true, std::sync::atomic::Ordering::Relaxed);
+    let shown = s.status_job().map(|j| j.id);
+    assert!(shown == Some(cuts) || shown.is_none(), "with nothing else running the cut finder may show: {shown:?}");
+    wait_job(&s, cuts);
+}
+
+/// A razor 2 frames after a cut in a clip placed later in the sequence: "move the edit onto the
+/// cut" names the cut's timeline time, through the clip as it was, not the new piece's start.
+#[test]
+fn the_move_onto_the_cut_time_is_where_the_cut_plays() {
+    let (mut s, _, clip) = known_shots("srccuts-move-to");
+    let seq = s.state.active_sequence.unwrap();
+    let rate = s.sequence_rate();
+    let start = rate.tick_of(240); // 10 s
+    if let Some((_, it)) = std::sync::Arc::make_mut(&mut s.project).sequence_mut(seq).and_then(|q| q.find_item_mut(clip)) {
+        it.start = start;
+    }
+    let r = s.execute("timeline.razor", json!({"clip": clip.0, "time": (start + rate.tick_of(22)).0})).unwrap();
+    let w = warnings(&r);
+    // the cut is media frame 20: timeline 10 s + 20 frames = 10.833 s, not the edit's 10.917 s
+    assert!(w.iter().any(|w| w.contains("2 frame(s) after") && w.contains("(timeline 10.833 s)")), "{w:?}");
+}
+
+#[test]
+fn the_web_build_never_decodes_from_an_edit_or_a_board() {
+    let (mut s, item, clip) = three_shots("srccuts-web");
+    super::pretend_no_threads(true);
+    let r = s.execute("timeline.razor", json!({"clip": clip.0, "frame": 22})).unwrap();
+    let dir = tmp_dir("srccuts-web-out");
+    let path = dir.join("b.png").to_string_lossy().into_owned();
+    let b = s.execute("story.board", json!({"path": path, "item": item.0, "count": 3})).unwrap();
+    super::pretend_no_threads(false);
+    assert!(r["notes"][0].as_str().unwrap().contains("\"wait\": true"), "{r}");
+    assert_eq!(b["sourceCutsComplete"], false, "{b}");
+    assert!(s.jobs.is_empty(), "nothing was started");
+    assert!(!cached(&s, item, 0, 49).unwrap().complete, "and nothing was decoded");
+}
+
+#[test]
+fn a_new_or_opened_project_stops_the_cut_finder() {
+    let (mut s, item, _) = three_shots("srccuts-reset");
+    let r = s.execute("media.sourceCuts", json!({"item": item.0})).unwrap();
+    let job = r["job"].as_u64().unwrap();
+    let progress = s.jobs.iter().find(|j| j.id == job).unwrap().progress.clone();
+    s.execute("file.newProject", json!({})).unwrap();
+    assert!(!s.jobs.iter().any(|j| j.id == job), "the old project's cut job is gone");
+    assert!(progress.cancel.load(std::sync::atomic::Ordering::Relaxed) || progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(s.source_cuts.most_workers(), 0, "a fresh cache for the new project");
 }
