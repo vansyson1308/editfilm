@@ -9,13 +9,14 @@
 //! command works on, saying what it is and which clip ids to pass instead.
 //!
 //! What is checked, and against which sequence:
-//! - the keys a command's params doc declares as `"clips":[id]` or `"clip":id` (also `"clip":[id]`),
-//!   at the outermost call only (commands that run other commands pass ids they already hold);
+//! - the keys a command's params doc declares as `"clips":[id]` or `"clip":id`, at the outermost
+//!   call only; `clip` holds a list only where the doc says `"clip":id|[id]` (elsewhere a list is
+//!   refused, since those commands read one id and would ignore it) (commands that run other commands pass ids they already hold);
 //!   keys a doc does not declare, and ids nested in other values (`moves[].clip`), are the
 //!   command's own business;
-//! - against the sequence named by the command's `sequence` (`edit.label` from the custom-colour
-//!   dialog), or by a query's `item` when that is a sequence (`sequence.inspect`), else the active
-//!   one;
+//! - against the sequence named by the command's `sequence` where its doc declares one
+//!   (`edit.label` from the custom-colour dialog), or by the `item` of a command whose `item` is
+//!   the sequence it inspects ([`INSPECTS_ITEM`]: `sequence.inspect`), else the active one;
 //! - not at all when the command takes `item` *instead of* `clip` ([`ITEM_OR_CLIP`]) and an
 //!   `item` is given, since the clip is then ignored;
 //! - caption ids count only for commands that act on captions ([`takes_captions`]): today none of
@@ -54,8 +55,16 @@ fn join(parts: &[String]) -> String {
     }
 }
 
-/// Commands whose `item` and `clip` are alternatives: with `item` given, `clip` is not read.
-const ITEM_OR_CLIP: &[&str] = &["clip.rename", "clip.makeSubclip", "source.open", "story.blinkPoints", "metadata.get", "metadata.set", "tts.inspect"];
+/// Commands whose `item` and `clip` are alternatives and `item` wins: with `item` given, `clip` is
+/// not read. (`source.open` and `clip.makeSubclip` read `clip` first; `story.blinkPoints` refuses
+/// both together: their `clip` is checked.)
+const ITEM_OR_CLIP: &[&str] = &["clip.rename", "metadata.get", "metadata.set", "tts.inspect"];
+
+/// Commands whose `item` is the sequence they look at, so their clip ids belong to it.
+const INSPECTS_ITEM: &[&str] = &["sequence.inspect"];
+
+/// The doc form of a `clip` that takes one id or a list.
+const CLIP_OR_LIST: &str = r#""clip":id|[id]"#;
 
 /// Whether `spec` acts on captions named under `clips` / `clip`, so a caption id is one of its
 /// targets. Commands on captions are `captions.*`; none of them documents `clips` / `clip` today.
@@ -63,20 +72,21 @@ pub fn takes_captions(spec: &CommandSpec) -> bool {
     spec.id.starts_with("captions.")
 }
 
-/// The sequence a command's clip ids belong to: its `sequence`, or a query's `item` when that is a
-/// sequence, else the active one. `None` when there is none (the command then decides), and also
+/// The sequence a command's clip ids belong to: its documented `sequence`, or the `item` of an
+/// [`INSPECTS_ITEM`] command when that is a sequence, else the active one. `None` when there is none (the command then decides), and also
 /// when `sequence` names no sequence (the command reports that itself).
 fn target_sequence<'a>(s: &'a Session, spec: &CommandSpec, p: &Value) -> Option<(&'a Sequence, Option<&'a str>)> {
     let named = |k: &str| p.get(k).and_then(Value::as_u64).map(ItemId);
-    if p.get("sequence").is_some_and(|v| !v.is_null()) {
+    if spec.params.contains(r#""sequence":id"#) && p.get("sequence").is_some_and(|v| !v.is_null()) {
         let id = named("sequence")?;
         let q = s.project.sequence(id)?;
         let name = s.project.item(id).map(|i| i.name.as_str());
         return Some((q, if s.state.active_sequence == Some(id) { None } else { name }));
     }
-    // a query's `item` is what it looks at (`sequence.inspect`); an edit's `item` is a source or a
-    // replacement (`clip.replaceFromBin` puts a sequence in place of clips of the active one)
-    if !spec.journal
+    // `sequence.inspect`'s `item` is the sequence it looks at; elsewhere `item` is a source, a
+    // replacement (`clip.replaceFromBin` can put a sequence in place of clips) or an alternative
+    // the command reads after `clip` (`audio.speechSegments`)
+    if INSPECTS_ITEM.contains(&spec.id)
         && let Some(id) = named("item")
         && let Some(q) = s.project.sequence(id)
     {
@@ -148,8 +158,25 @@ pub fn describe_non_clip(s: &Session, q: &Sequence, other: Option<&str>, id: u64
     }
 }
 
+/// A `clip` list sent to a command that reads one id: refused, with what to send instead.
+fn clip_list_refused(spec: &CommandSpec, p: &Value) -> Option<String> {
+    if !spec.named.contains(NamedKeys::CLIP) || spec.params.contains(CLIP_OR_LIST) {
+        return None;
+    }
+    if ITEM_OR_CLIP.contains(&spec.id) && p.get("item").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    let a = p.get("clip")?.as_array()?;
+    let one = match a.first().and_then(Value::as_u64) {
+        Some(id) => format!("pass {id}"),
+        None => "pass one clip id".to_string(),
+    };
+    let many = if spec.named.contains(NamedKeys::CLIPS) { ", or use `clips:[...]` for several" } else { "" };
+    Some(format!("`clip` takes one id here, not a list; {one}{many}"))
+}
+
 /// The clip ids a caller named under the `clips` / `clip` keys `spec` documents, raw. `clip` may
-/// hold one id or a list of them.
+/// hold a list where the doc says so ([`CLIP_OR_LIST`]).
 fn named_values<'a>(spec: &CommandSpec, p: &'a Value) -> Vec<(&'static str, &'a Value)> {
     let mut out = Vec::new();
     if spec.named.contains(NamedKeys::CLIPS)
@@ -189,6 +216,10 @@ fn not_an_id(key: &str, v: &Value) -> String {
 /// `[clip, link]` changed only the clip, and some failed with an unrelated reason. Without a
 /// sequence to check against the command decides (most then say none is open).
 pub fn check_named_clips(s: &Session, spec: &CommandSpec, p: &Value) -> Result<()> {
+    if let Some(why) = clip_list_refused(spec, p) {
+        let tail = if spec.journal { ". Nothing was changed" } else { "" };
+        return Err(EngineError::BadParams { cmd: spec.id.to_string(), msg: format!("{why}{tail}") });
+    }
     let named = named_values(spec, p);
     if named.is_empty() {
         return Ok(());

@@ -181,8 +181,11 @@ For example, setting opacity `blend` to `"Screen"` returns
 `{"keyframes": 0, "param": "blend", "value": 8}`.
 
 With `clips` (a list of clip ids) instead of `clip`, `effects.setParam` sets the same value on every
-listed clip as one undo step, and the reply adds `"clips": [{"clip", "keyframes", "value"}]`. Each
-clip must already have the effect; if one does not, or a value is refused, none of them changes.
+listed clip as one undo step, and the reply adds `"clips": [{"clip", "keyframes", "value",
+"mediaTime", "mediaSeconds"}]` (the media times where a keyframe was written). Each clip must
+already have the effect; if one does not, or a value is refused, none of them changes. One timeline
+`time` keys every clip at that moment: a clip that is not under it gets its key outside its range,
+and `warnings` names each such clip and where its key landed.
 
 `effects.addKeyframe` toggles: it returns `{"added": true, "mediaTime": t}` when it added a keyframe and
 `{"added": false, "mediaTime": t}` when it removed the one already there; `mediaTime` is where the keyframe
@@ -267,17 +270,19 @@ There is no trim option: an end card may run on past the last shot on purpose.
 - **Clip ids are the `clip` numbers** of the items in `sequence_inspect` (or `sequence.clips`).
   Clips, links, groups, tracks, transitions, markers, captions and project items share one id
   counter, so the `link` value of a clip looks like a clip id but is not one. A command whose
-  params doc declares `"clips":[id]` or `"clip":id` (one id or a list) refuses an id that is no clip
+  params doc declares `"clips":[id]` or `"clip":id` refuses an id that is no clip
   of the sequence it works on, before it changes anything, and says what the id is and what to pass
   instead: `53 is a link id, not a clip id; its linked clips are 52 (video, V1) and 54 (audio, A1).
   Pass those clip ids`. The same goes for group, track, caption-track, caption, transition, marker
   and project-item ids, clips of another sequence, and values that are not ids (`29.0` is refused
   with "pass 29": the commands read ids as whole numbers).
-  - The sequence is the command's `sequence` (`edit.label`), or a query's `item` when that is a
-    sequence (`sequence.inspect`), else the active one.
-  - When a command takes `item` instead of `clip` (`metadata.*`, `source.open`, `clip.rename`,
-    `clip.makeSubclip`, `story.blinkPoints`, `tts.inspect`) and you pass `item`, `clip` is not read
-    and not checked.
+  - `clip` holds one id. A list is refused ("`clip` takes one id here"), except where a doc says
+    `"clip":id|[id]`; use `clips:[...]` for several.
+  - The sequence is the command's `sequence` where it documents one (`edit.label`), or the `item`
+    of `sequence.inspect`, else the active one.
+  - When a command reads `item` instead of `clip` (`metadata.*`, `clip.rename`, `tts.inspect`) and
+    you pass `item`, `clip` is not read and not checked. Where `clip` is read first
+    (`source.open`, `clip.makeSubclip`, `audio.speechSegments`), it is checked.
   - Only those declared keys are checked. Ids inside other values (`timeline.move`'s
     `moves[].clip`, `captions`, `transitions`) are checked by the command itself.
 - **Linked clips.** While Linked Selection is on (the default; `sequence.linkedSelection`), a video

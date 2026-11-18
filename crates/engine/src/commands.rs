@@ -4068,6 +4068,30 @@ fn build() -> Vec<CommandSpec> {
                         e
                     };
                     reply["clips"] = json!(results.iter().map(entry).collect::<Vec<_>>());
+                    // one timeline `time` for clips at other places: a clip that is not under it
+                    // gets its key outside its own range (kept there, as for one clip, #1055)
+                    if let (Some(t), Some(q)) = (at, s.active_sequence()) {
+                        let warnings: Vec<String> = results
+                            .iter()
+                            .filter_map(|(c, _, _, keyed)| {
+                                let mt = (*keyed)?;
+                                let (_, it) = q.find_item(*c)?;
+                                (t < it.start || t >= it.end()).then(|| {
+                                    format!(
+                                        "time {:.3} s is outside clip {} ({:.3}–{:.3} s); its key lands at {:.3} s of its source",
+                                        crate::time_params::secs(t),
+                                        c.0,
+                                        crate::time_params::secs(it.start),
+                                        crate::time_params::secs(it.end()),
+                                        crate::time_params::secs(mt)
+                                    )
+                                })
+                            })
+                            .collect();
+                        if !warnings.is_empty() {
+                            reply["warnings"] = json!(warnings);
+                        }
+                    }
                 }
                 if let (Some(ease), Some(mt)) = (ease, keyed_at) {
                     reply["mediaTime"] = json!(mt.0);

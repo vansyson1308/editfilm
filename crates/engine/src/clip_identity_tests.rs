@@ -558,3 +558,67 @@ fn new_sequence_settings_only_takes_a_subclip_and_one_item() {
     let why = refused(s.execute("file.newSequence", json!({"fromItem": 5, "fromItems": [5], "place": false})));
     assert!(why.contains("without `fromItems`"), "{why}");
 }
+
+// ---------------------------------------------------------------- re-review of #24 (d4cf229)
+
+/// A list under `clip` for a command that reads one id would be ignored (a razor without its
+/// clip cuts every track): it is refused with the id to send.
+#[test]
+fn a_list_under_clip_is_refused_where_clip_takes_one_id() {
+    let mut s = demo();
+    let (v, _) = linked_pair(&s);
+    let before = s.project.clone();
+    let at = json!({"seconds": (v.start.0 as f64 / filmagic_time::TICKS_PER_SECOND as f64) + 0.5});
+    let why = refused(s.execute("timeline.razor", json!({"time": at, "clip": [v.id.0]})));
+    assert!(why.starts_with(&format!("`clip` takes one id here, not a list; pass {}", v.id.0)), "{why}");
+    assert!(Arc::ptr_eq(&before, &s.project), "nothing was cut");
+    let why = refused(s.execute("clip.revealInProject", json!({"clip": [v.id.0]})));
+    assert!(why.contains("`clip` takes one id here"), "{why}");
+    // the single id still works
+    s.execute("timeline.razor", json!({"time": at, "clip": v.id.0})).unwrap();
+    assert!(!Arc::ptr_eq(&before, &s.project));
+}
+
+/// `item` moves the check to another sequence only for `sequence.inspect`; `sequence` only for a
+/// command that documents it; `source.open` reads `clip` before `item`, so its `clip` is checked.
+#[test]
+fn item_and_sequence_move_the_check_only_where_the_command_says_so() {
+    let mut s = demo();
+    let c = video_clips(&s)[0].id.0;
+    let (v, _) = linked_pair(&s);
+    let link = v.link.unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let other = s.execute("file.newSequence", json!({"name": "Other"})).unwrap()["sequence"].as_u64().unwrap();
+    s.execute("sequence.open", json!({"item": seq.0})).unwrap();
+    let check = |s: &Session, id: &str, p: Value| crate::clip_ids::check_named_clips(s, crate::commands::find(id).unwrap(), &p);
+    // speechSegments reads `clip` first: a clip of the active sequence passes beside another sequence's item
+    check(&s, "audio.speechSegments", json!({"clip": c, "item": other})).unwrap();
+    // `sequence` on a command that does not document it does not move the check
+    check(&s, "clip.enable", json!({"clips": [c], "sequence": other})).unwrap();
+    // source.open reads `clip` first: a link id there is refused even with an `item`
+    let e = check(&s, "source.open", json!({"clip": link, "item": v.item.0})).unwrap_err().to_string();
+    assert!(e.contains(&format!("{link} is a link id")), "{e}");
+}
+
+/// One timeline `time` for several clips: each clip not under it is named in `warnings`.
+#[test]
+fn set_param_warns_for_clips_outside_the_time() {
+    let mut s = demo();
+    let clips = video_clips(&s);
+    let (a, b) = (&clips[0], &clips[1]);
+    let inside_a = a.start + Tick((a.duration.0 / 2).max(1));
+    let r = s
+        .execute(
+            "effects.setParam",
+            json!({"clips": [a.id.0, b.id.0], "effect": "opacity", "param": "opacity", "value": 40.0, "keyframe": true, "time": inside_a.0}),
+        )
+        .unwrap();
+    let w = r["warnings"].as_array().unwrap();
+    assert_eq!(w.len(), 1, "{r}");
+    assert!(w[0].as_str().unwrap().contains(&format!("is outside clip {}", b.id.0)), "{r}");
+    // every clip under the time: no warning
+    let r = s
+        .execute("effects.setParam", json!({"clips": [a.id.0], "effect": "opacity", "param": "opacity", "value": 50.0, "keyframe": true, "time": inside_a.0}))
+        .unwrap();
+    assert!(r.get("warnings").is_none(), "{r}");
+}
