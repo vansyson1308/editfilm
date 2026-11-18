@@ -138,7 +138,7 @@ pub fn videotoolbox_encoder_factory(
         Ok(c) => c,
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmagic_export::note_hw_encode_declined();
+            filmagic_export::note_hw_encode_declined_because(&format!("VideoToolbox {name}: {why}"));
             return None;
         }
     };
@@ -149,7 +149,7 @@ pub fn videotoolbox_encoder_factory(
         }
         Err(why) => {
             log::info!("hardware {name} encoding declined: {why}");
-            filmagic_export::note_hw_encode_declined();
+            filmagic_export::note_hw_encode_declined_because(&format!("VideoToolbox {name}: {why}"));
             None
         }
     }
@@ -242,6 +242,17 @@ impl HardwareEncoder {
 }
 
 impl VideoEncoder for HardwareEncoder {
+    fn name(&self) -> &str {
+        match self.vt.config().profile.codec() {
+            VtCodec::H264 => "VideoToolbox H.264",
+            VtCodec::Hevc => "VideoToolbox HEVC",
+        }
+    }
+
+    fn hardware(&self) -> bool {
+        true
+    }
+
     fn sample_entry(&self) -> SampleEntry {
         let c = self.vt.config();
         let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);
