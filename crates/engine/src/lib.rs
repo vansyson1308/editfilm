@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod assets;
 pub mod audio_check;
 pub mod autosave;
 pub mod captions;
@@ -512,6 +513,8 @@ pub struct Session {
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
     pub export_presets: export_tools::ExportPresetLibrary,
+    /// Installed asset packs (`<data dir>/Packs`, `assets.*`).
+    pub packs: assets::PackStore,
     /// The export queue (session state, not saved with the project).
     pub export_queue: export_tools::ExportQueue,
     /// Exports run a batch at a time by [`Session::pump_jobs`] (hosts without threads: web).
@@ -640,6 +643,7 @@ impl Session {
             sports_reports: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
+            packs: Default::default(),
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
@@ -695,6 +699,7 @@ impl Session {
         self.shortcuts.set_dir(&cfg.data_dir);
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
+        self.packs.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);

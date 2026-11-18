@@ -16,30 +16,57 @@ use serde_json::{Value, json};
 
 use crate::server::FilmagicMcp;
 
-/// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "clip.autoReframe", "sports.trackPoint", "sports.ballTrail", "sports.groundRing", "sports.pathLine"];
+/// Engine commands that block until their job is done when called with `wait: true`: a render
+/// is written, an asset pack is downloaded (`assets.install` from a URL or the catalogue,
+/// `assets.fetch`), or a sports analysis is applied (`clip.autoReframe`, `sports.*`). Over MCP and
+/// the bridge they run as jobs that are polled, so a waiting call never holds up the app's UI
+/// thread or the session.
+pub const LONG_COMMANDS: &[&str] = &[
+    "file.exportMedia",
+    "assets.install",
+    "assets.fetch",
+    "clip.autoReframe",
+    "sports.trackPoint",
+    "sports.ballTrail",
+    "sports.groundRing",
+    "sports.pathLine",
+];
 
-/// The reply to a finished long job `job` (its `jobs.list` entry) started by `start`: an
-/// analysis job's `report` (what `wait: true` answers in the engine, with the job id), else an
-/// export's `start` with its `result` and `offlineMedia`. `Err` holds the failure to report.
+/// What a failed long command was doing, for its error: `export failed: …`.
+pub fn what(id: &str) -> &str {
+    match id {
+        "file.exportMedia" => "export",
+        "assets.install" => "asset pack install",
+        "assets.fetch" => "asset download",
+        other => other,
+    }
+}
+
+/// The reply to a finished long job `job` (its `jobs.list` entry) started by `start`: a sports
+/// analysis's `report` (what `wait: true` answers in the engine, with the job id), else `start`
+/// with the job's `result`, its `status` (not for exports) and `offlineMedia`. `Err` holds the
+/// failure to report.
 pub fn finished_reply(id: &str, mut start: Value, job: Option<&Value>) -> Result<Value, String> {
     let report = job.and_then(|j| j.get("report")).filter(|r| r.is_object()).cloned();
     let result = job.map(|j| j["result"].clone()).unwrap_or(Value::Null);
     if let Some(e) = report.as_ref().and_then(|r| r.get("error")).and_then(Value::as_str).or_else(|| result.get("error").and_then(Value::as_str)) {
-        return Err(if id == "file.exportMedia" { format!("export failed: {e}") } else { format!("{id}: {e}") });
+        return Err(format!("{} failed: {e}", what(id)));
     }
     if let Some(mut r) = report {
         r["job"] = start.get("job").cloned().unwrap_or(Value::Null);
         return Ok(r);
     }
+    let status = job.and_then(|j| j.get("status")).cloned().filter(|v| id != "file.exportMedia" && v.as_str().is_some_and(|s| !s.is_empty()));
     if let Some(o) = start.as_object_mut() {
         o.insert("result".into(), result);
+        if let Some(st) = status {
+            o.insert("status".into(), st);
+        }
         if let Some(off) = job.and_then(|j| j.get("offlineMedia")).cloned() {
             o.insert("offlineMedia".into(), off);
         }
     }
-    Ok(start)
-}
+    Ok(start)}
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
@@ -83,12 +110,9 @@ impl FilmagicMcp {
             Ok(v) => v,
             Err(e) => return CallToolResult::error(vec![Content::text(e.to_string())]),
         };
+        // a command that finished at once (an asset pack installed from a local folder) started no job
         let Some(job) = start.get("job").and_then(Value::as_u64) else {
-            // a sports overlay given its `points` draws at once, without a job
-            if id != "file.exportMedia" {
-                return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&start).unwrap_or_default())]);
-            }
-            return CallToolResult::error(vec![Content::text(format!("{id} started no job: {start}"))]);
+            return CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&start).unwrap_or_default())]);
         };
         let out = partial_output(&start);
         let mut rep = Reporter { peer: context.peer.clone(), token: context.meta.get_progress_token(), last: 0.0 };
@@ -118,8 +142,8 @@ impl FilmagicMcp {
             }
             tokio::time::sleep(POLL).await;
         }
-        // an analysis job writes no file, and a cancelled one changes nothing
-        if id == "file.exportMedia" {
+        // a sports analysis writes no file, and a cancelled one changes nothing
+        if id != "clip.autoReframe" && !id.starts_with("sports.") {
             remove_partial(&out, started);
         }
         CallToolResult::error(vec![Content::text("cancelled")])
@@ -381,7 +405,7 @@ mod tests {
         let failed = serde_json::json!({"id": 7, "finished": true, "result": {"error": "stopped"}});
         assert_eq!(finished_reply("file.exportMedia", start.clone(), Some(&failed)), Err("export failed: stopped".into()));
         let bad = serde_json::json!({"id": 7, "finished": true, "result": {}, "report": {"error": "the clip is gone"}});
-        assert_eq!(finished_reply("clip.autoReframe", start, Some(&bad)), Err("clip.autoReframe: the clip is gone".into()));
+        assert_eq!(finished_reply("clip.autoReframe", start, Some(&bad)), Err("clip.autoReframe failed: the clip is gone".into()));
         for id in ["clip.autoReframe", "sports.trackPoint", "sports.ballTrail", "sports.groundRing", "sports.pathLine"] {
             assert!(is_long(id, &serde_json::json!({"wait": true})) && !is_long(id, &serde_json::json!({})), "{id}");
         }
