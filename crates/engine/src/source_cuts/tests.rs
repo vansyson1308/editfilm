@@ -427,3 +427,63 @@ fn source_cut_warnings_are_added_to_the_commands_own() {
     assert_eq!(result["notes"], json!(["one note", "second"]));
     assert_eq!(result["cuts"], 1);
 }
+
+/// A check of a later part of the source counts: a cut found by `media.sourceCuts` over 30–45
+/// (frames) is reported, and warned about, for a range that starts before what was checked.
+#[test]
+fn cuts_found_past_the_start_of_a_range_are_reported() {
+    let (mut s, item, clip) = three_shots("srccuts-later-run");
+    let r = s.execute("media.sourceCuts", json!({"item": item.0, "fromSeconds": 30.0 / 24.0, "toSeconds": 45.0 / 24.0, "wait": true})).unwrap();
+    let frames: Vec<i64> = r["cuts"].as_array().unwrap().iter().map(|c| c["frame"].as_i64().unwrap()).collect();
+    assert_eq!(frames, vec![36], "{r}");
+    // the whole clip: frames 0..30 are not known, the cut at 36 is
+    let f = cached(&s, item, 0, 49).unwrap();
+    assert_eq!((f.cuts.clone(), f.complete), (vec![36], false), "{f:?}");
+    let r = s.execute("clip.speedDuration", json!({"clips": [clip.0], "speed": 50, "ripple": true})).unwrap();
+    let w = warnings(&r);
+    assert!(w.iter().any(|w| w.contains("straddles a cut in its source at 1.500 s")), "{r}");
+    // the rest is still queued
+    if let Some(id) = s.jobs.iter().map(|j| j.id).find(|id| s.source_cuts.is_background_job(*id)) {
+        wait_job(&s, id);
+    }
+}
+
+/// A pruned cut-finder job's id is not handed out again: a later job gets a new number.
+#[test]
+fn job_ids_are_not_reused_after_pruning() {
+    let (mut s, item, _) = three_shots("srccuts-job-ids");
+    let r = s.execute("media.sourceCuts", json!({"item": item.0})).unwrap();
+    let first = r["job"].as_u64().unwrap();
+    wait_job(&s, first);
+    s.poll_persistence();
+    assert!(s.jobs.iter().all(|j| j.id != first), "pruned");
+    // forget what was found, so the next request starts a job again
+    let root = s.project.resolve_media(item).unwrap().0;
+    s.source_cuts.forget(root);
+    let r = s.execute("media.sourceCuts", json!({"item": item.0})).unwrap();
+    let second = r["job"].as_u64().unwrap();
+    assert!(second > first, "{second} after {first}");
+    wait_job(&s, second);
+    assert!(s.next_job_id() > second);
+}
+
+/// A range that overlaps one already waiting adds only its new frames to the job's total.
+#[test]
+fn an_overlapping_request_adds_only_its_new_frames_to_the_total() {
+    let (mut s, item, _) = three_shots("srccuts-total");
+    s.source_cuts.hold(true);
+    // frames 0..=29 with context: 0..=35
+    let r = s.execute("media.sourceCuts", json!({"item": item.0, "toSeconds": 30.0 / 24.0})).unwrap();
+    let job = r["job"].as_u64().unwrap();
+    let total = |s: &Session| s.jobs.iter().find(|j| j.id == job).unwrap().progress.total.load(std::sync::atomic::Ordering::Relaxed);
+    let t1 = total(&s);
+    // the same range again adds nothing; the whole media adds only frames 36..=49
+    let r = s.execute("media.sourceCuts", json!({"item": item.0, "toSeconds": 30.0 / 24.0})).unwrap();
+    assert_eq!(r["job"].as_u64(), Some(job), "{r}");
+    assert_eq!(total(&s), t1, "a range already waiting adds nothing");
+    s.execute("media.sourceCuts", json!({"item": item.0})).unwrap();
+    assert_eq!(total(&s), 50, "the whole movie is 50 frames, counted once");
+    s.source_cuts.hold(false);
+    wait_job(&s, job);
+    assert!(cached(&s, item, 0, 49).unwrap().complete);
+}

@@ -94,6 +94,9 @@ struct Inner {
     /// Worker threads running now, and the most ever running at once.
     live: usize,
     most_live: usize,
+    /// Tests: the worker waits before its next chunk while this is set.
+    #[cfg(test)]
+    held: bool,
 }
 
 /// Source-cut analysis per media item (session state, not saved), shared with the one background
@@ -106,6 +109,12 @@ pub struct Cache {
 impl Cache {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Tests: hold the worker before its next chunk (`true`) or let it go on.
+    #[cfg(test)]
+    pub(crate) fn hold(&self, on: bool) {
+        self.lock().held = on;
     }
     /// Forget what was found in `item`'s media (its file changed).
     pub fn forget(&self, item: ItemId) {
@@ -269,10 +278,34 @@ pub fn cached(s: &Session, item: ItemId, lo: i64, hi: i64) -> Option<Found> {
     let through = known.map(|k| if k >= b { hi } else { k.saturating_sub(CONTEXT) });
     found.checked = through.filter(|t| *t >= lo).map(|t| (lo, t.min(hi)));
     found.complete = known.is_some_and(|k| k >= b);
-    if let Some((x, y)) = found.checked {
-        found.cuts = cuts_known(entry, x, y);
+    // cuts from every known run inside the range, not only the one from its start: a check of
+    // a later part (an earlier `media.sourceCuts` over it) counts too
+    for (x, y) in known_spans(entry, lo, hi, a, b) {
+        found.cuts.extend(cuts_known(entry, x, y));
     }
+    found.cuts.sort_unstable();
+    found.cuts.dedup();
     Some(found)
+}
+
+/// The parts of `lo..=hi` whose frames are known together with their context: each contiguous
+/// run of known differences inside `a..=b` (the range with its context), less [`CONTEXT`] frames
+/// at an end that is not the end of `a..=b`.
+fn known_spans(entry: &Entry, lo: i64, hi: i64, a: i64, b: i64) -> Vec<(i64, i64)> {
+    let mut runs: Vec<(i64, i64)> = Vec::new();
+    for (&f, _) in entry.diffs.range(a..=b) {
+        match runs.last_mut() {
+            Some(r) if r.1.checked_add(1) == Some(f) => r.1 = f,
+            _ => runs.push((f, f)),
+        }
+    }
+    runs.into_iter()
+        .filter_map(|(rs, re)| {
+            let x = if rs <= a { lo } else { rs.saturating_add(CONTEXT).max(lo) };
+            let y = if re >= b { hi } else { re.saturating_sub(CONTEXT).min(hi) };
+            (x <= y).then_some((x, y))
+        })
+        .collect()
 }
 
 /// The cache entry a check fills: its item, media key and frame rate.
@@ -348,6 +381,10 @@ fn decode(src: &dyn filmagic_media::MediaSource, rate: FrameRate, f: i64, scale:
 /// The next chunk of work, taken from the queue; `None` when there is none (or the worker was
 /// stopped), and then the worker is gone, decided under the same lock a new request takes.
 fn next_chunk(cache: &Cache, progress: &filmagic_export::Progress) -> Option<(Target, filmagic_media::SharedSource, i64, i64)> {
+    #[cfg(test)]
+    while cache.lock().held {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let mut inner = cache.lock();
     if progress.cancel.load(Ordering::Relaxed) {
         inner.queue.clear();
@@ -444,18 +481,22 @@ fn queue(s: &mut Session, item: ItemId, lo: i64, hi: i64, wait: bool) -> Result<
             inner.worker.as_ref().map_or(0, |w| w.job)
         )));
     }
+    let before = queued_frames(&inner);
     match inner.queue.iter_mut().find(|r| r.root == m.root && r.key == m.key) {
         Some(r) => merge_range(&mut r.ranges, a, b),
         None => inner.queue.push(Request { root: m.root, key: m.key.clone(), rate: m.rate, src, ranges: vec![(a, b)] }),
     }
+    // a range that overlaps one already waiting adds only its new frames to the job's total
+    let added = queued_frames(&inner).saturating_sub(before).max(0) as u64;
     if let Some(w) = &inner.worker {
-        w.progress.total.fetch_add(new_frames.max(0) as u64, Ordering::Relaxed);
+        w.progress.total.fetch_add(added, Ordering::Relaxed);
         return Ok(Queued::Job(w.job));
     }
     // no worker: start the one
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    // `inner` holds `s.source_cuts`: take the id from the session's counter field by field
+    let id = crate::next_job_id(&s.jobs, &mut s.job_ids);
     let job = crate::Job { id, label: JOB_LABEL.into(), progress: Default::default(), result: Default::default() };
-    job.progress.total.store(new_frames.max(0) as u64, Ordering::Relaxed);
+    job.progress.total.store(added, Ordering::Relaxed);
     inner.worker = Some(Worker { job: id, progress: job.progress.clone() });
     inner.jobs.push(id);
     inner.live += 1;

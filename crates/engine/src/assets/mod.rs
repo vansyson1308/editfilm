@@ -445,7 +445,7 @@ fn run_job(
 ) -> Result<Value> {
     use std::sync::PoisonError;
     use std::sync::atomic::Ordering;
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let job = crate::Job { id, label, progress: Default::default(), result: Default::default() };
     let (prog, res) = (job.progress.clone(), job.result.clone());
     let out: std::sync::Arc<std::sync::Mutex<Option<std::result::Result<Value, String>>>> = Default::default();
