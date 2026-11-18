@@ -228,7 +228,10 @@ The doc says which time base each value is in:
   falls back to: the selection, the Source Monitor's item), at that media's frame rate. A timecode
   is the media's own: its start timecode (10:00:00:00 on many cameras) is subtracted. A relative
   timecode counts from the Source Monitor's playhead when the item is open there, else from the
-  media's first frame.
+  media's first frame. This includes `timeline.place` `sourceIn`: a `{"timecode": …}` there now
+  subtracts the media's start timecode. A frame or timecode for several `clips` at once must mean
+  the same in each (same frame rate and start timecode); otherwise give seconds, or one call per
+  clip.
 - `delta` and `timelineTicks`: a signed offset of sequence time.
 - `duration` and the graphics roll and responsive timings (`preroll`, `easeIn`, `intro`, …): a
   length of sequence time.
