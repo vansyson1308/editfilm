@@ -126,15 +126,41 @@ impl Dirs {
         if cfg!(windows) { self.venv().join("Scripts").join("python.exe") } else { self.venv().join("bin").join("python") }
     }
 
-    /// Written by [`install`] once it has created [`Dirs::venv`]: an environment without it was
-    /// not made by Filmagic and is never run.
+    /// Written by [`install`] inside [`Dirs::venv`] once it has created it: an environment
+    /// without it was not made by Filmagic and is never run. Inside, so deleting the environment
+    /// deletes the marker too and a later folder of that name is not trusted.
     fn venv_marker(&self) -> PathBuf {
+        self.venv().join(".created-by-filmagic")
+    }
+
+    /// Where earlier builds put the marker: beside the environment.
+    fn legacy_venv_marker(&self) -> PathBuf {
         self.engine.join("venv.created-by-filmagic")
+    }
+
+    /// Move a marker from the old place into the environment it stood beside; a stale one (the
+    /// environment is gone) is removed, so it cannot vouch for a folder made later.
+    fn migrate_venv_marker(&self) {
+        let old = self.legacy_venv_marker();
+        if !old.is_file() {
+            return;
+        }
+        if self.venv().is_dir() && !self.venv_marker().is_file() && std::fs::rename(&old, self.venv_marker()).is_ok() {
+            return;
+        }
+        let _ = std::fs::remove_file(&old);
+    }
+
+    /// The environment exists and Filmagic made it.
+    fn own_venv(&self) -> bool {
+        self.migrate_venv_marker();
+        self.venv().is_dir() && self.venv_marker().is_file()
     }
 
     /// A `venv` folder Filmagic did not create (no marker): refused until it is removed.
     pub fn foreign_venv(&self) -> bool {
-        self.venv().exists() && !self.venv_marker().is_file()
+        let own = self.own_venv();
+        self.venv().exists() && !own
     }
 
     fn bridge(&self) -> PathBuf {
@@ -265,7 +291,7 @@ pub fn candidates(dirs: &Dirs, host: Option<&Python>) -> Vec<Python> {
         out.push(Python::new(p, &[], "env"));
     }
     let v = dirs.venv_python();
-    if v.is_file() && dirs.venv_marker().is_file() {
+    if v.is_file() && dirs.own_venv() {
         out.push(Python::new(v, &[], "venv"));
     }
     if cfg!(windows) {
@@ -610,7 +636,11 @@ pub fn install(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>, log: &
             return Err(e);
         }
         let marker = dirs.venv_marker();
-        std::fs::write(&marker, b"This Python environment was created by Filmagic.\n").map_err(|e| format!("{}: {e}", marker.display()))?;
+        if let Err(e) = std::fs::write(&marker, b"This Python environment was created by Filmagic.\n") {
+            // without its marker the environment would be refused as not Filmagic's: remove it
+            let _ = std::fs::remove_dir_all(dirs.venv());
+            return Err(format!("{}: {e}", marker.display()));
+        }
     }
     log(&format!("Installing {PACKAGE_SPEC} with pip (this can take several minutes)"));
     let mut cmd = command(&vpy, dirs, false)?;
@@ -1158,6 +1188,52 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
             assert!(d.check().unwrap_err().contains("overlap"), "{}", models.display());
         }
         assert!(!engine.exists(), "the engine folder need not exist, and is not created");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_marker_goes_with_its_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        let vpy = d.venv_python();
+        std::fs::create_dir_all(vpy.parent().unwrap()).unwrap();
+        std::fs::write(&vpy, "#!/bin/sh\n").unwrap();
+        // an earlier build's marker beside the environment is moved into it
+        std::fs::write(d.legacy_venv_marker(), b"x").unwrap();
+        assert!(!d.foreign_venv());
+        assert!(d.venv_marker().is_file() && !d.legacy_venv_marker().exists());
+        // deleting the environment deletes its marker: a folder made later is not trusted
+        std::fs::remove_dir_all(d.venv()).unwrap();
+        std::fs::create_dir_all(vpy.parent().unwrap()).unwrap();
+        std::fs::write(&vpy, "#!/bin/sh\n").unwrap();
+        assert!(d.foreign_venv());
+        assert!(candidates(&d, None).iter().all(|p| p.source != "venv"));
+        // a stale old-place marker (its environment gone) vouches for nothing and is removed
+        std::fs::remove_dir_all(d.venv()).unwrap();
+        std::fs::write(d.legacy_venv_marker(), b"x").unwrap();
+        assert!(!d.foreign_venv(), "no environment at all");
+        assert!(!d.legacy_venv_marker().exists());
+        std::fs::create_dir_all(vpy.parent().unwrap()).unwrap();
+        std::fs::write(&vpy, "#!/bin/sh\n").unwrap();
+        assert!(d.foreign_venv());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_environment_whose_marker_cannot_be_written_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        // makes the environment, with a folder where the marker goes, so writing it fails
+        let script = root.path().join("venv.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nmkdir -p \"$last/bin\" \"$last/.created-by-filmagic\"\nprintf '#!/bin/sh\\n' > \"$last/bin/python\"\n",
+        )
+        .unwrap();
+        let py = Python::new("sh", &[&*script.to_string_lossy()], "host");
+        let e = install(&py, &d, None, &mut |_| {}).unwrap_err();
+        assert!(e.contains(".created-by-filmagic"), "{e}");
+        assert!(!d.venv().exists(), "removed rather than left to be refused later");
     }
 
     #[cfg(unix)]
