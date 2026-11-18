@@ -8,9 +8,11 @@ pub const USAGE: &str = "\
 Usage: filmagic [options] [project.fcproj | media files...]
 
 Options:
-  --control <port>   start the localhost JSON-lines control server
-                     (also: FILMAGIC_CONTROL_PORT; requires FILMAGIC_CONTROL_TOKEN,
-                     64 random hex characters; see docs/control-protocol.md)
+  --control <port>   start the localhost JSON-lines control server (0: a free
+                     port; also: FILMAGIC_CONTROL_PORT). The credential is
+                     FILMAGIC_CONTROL_TOKEN (64 hex characters) when set, else a
+                     random one; `filmagic-cli mcp` finds the app through its
+                     per-user control folder (see docs/control-protocol.md)
   --control-input-only  accept widget input only from the control server
                      (requires --control or FILMAGIC_CONTROL_PORT)
   --demo             open the demo project

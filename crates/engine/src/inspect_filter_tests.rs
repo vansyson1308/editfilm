@@ -84,9 +84,33 @@ fn hostile_inspect_filters_are_refused() {
     ] {
         assert!(s.execute("sequence.inspect", p.clone()).is_err(), "{p}");
     }
-    // an unknown clip id is simply not there
-    let r = s.execute("sequence.inspect", json!({"compact": true, "clip": 987_654_321})).unwrap();
-    assert!(compact_clips(&r).is_empty());
+    // an id that is no clip of the sequence is refused, and the refusal says so
+    let e = s.execute("sequence.inspect", json!({"compact": true, "clip": 987_654_321})).unwrap_err().to_string();
+    assert!(e.contains("987654321"), "{e}");
+}
+
+#[test]
+fn clips_of_the_inspected_item_are_accepted_while_another_sequence_is_active() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap().0;
+    let v = &s.active_sequence().unwrap().video_tracks[0].items;
+    let (a, b) = (v[0].id.0, v[1].id.0);
+    // the doc form the clip-id check reads to accept a list under `clip`
+    let spec = crate::commands::command_specs().iter().find(|c| c.id == "sequence.inspect").unwrap();
+    assert!(spec.params.contains(r#""clip":id|[id]"#), "{}", spec.params);
+    let r = s.execute("sequence.inspect", json!({"compact": true, "clip": [a, b]})).unwrap();
+    let got: Vec<u64> = compact_clips(&r).iter().map(|c| c["clip"].as_u64().unwrap()).collect();
+    assert_eq!(got, vec![a, b], "{r}");
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    // with the other sequence active, a and b are no clips of it
+    let e = s.execute("sequence.inspect", json!({"compact": true, "clip": [a, b]})).unwrap_err().to_string();
+    assert!(e.contains(&a.to_string()), "{e}");
+    assert_ne!(s.state.active_sequence.unwrap().0, seq);
+    let r = s.execute("sequence.inspect", json!({"item": seq, "compact": true, "clip": [a, b]})).unwrap();
+    let got: Vec<u64> = compact_clips(&r).iter().map(|c| c["clip"].as_u64().unwrap()).collect();
+    assert_eq!(got, vec![a, b], "{r}");
+    let r = s.execute("sequence.inspect", json!({"item": seq, "clip": a})).unwrap();
+    assert_eq!(items(&r, "video"), vec![a], "{r}");
 }
 
 #[test]
