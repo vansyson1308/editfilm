@@ -26,6 +26,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+pub mod highlights;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
@@ -66,6 +67,7 @@ pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod source_cuts;
 pub mod source_monitor;
+pub mod speed_ramp;
 pub mod story;
 pub mod sync;
 pub mod time_params;
@@ -507,6 +509,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// `story.highlights`: running jobs, finished results and the cue cache.
+    pub highlights: highlights::State,
     /// Cuts found inside source files, per media item ([`source_cuts`]).
     pub source_cuts: source_cuts::Cache,
     /// The highest job id handed out ([`Session::next_job_id`]).
@@ -648,6 +652,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            highlights: Default::default(),
             source_cuts: Default::default(),
             job_ids: 0,
             presets: Default::default(),
@@ -767,6 +772,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        highlights::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         // a finished cut finder leaves the job list once the Events panel has had it
@@ -1469,6 +1475,8 @@ mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
+mod highlights_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod image_sequence_tests;
@@ -1552,6 +1560,8 @@ mod sequence_tools_tests;
 mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod speed_ramp_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]

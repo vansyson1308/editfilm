@@ -17,9 +17,9 @@ use crate::server::FilmagicMcp;
 
 /// Engine commands that block until their job is done when called with `wait: true`: a render
 /// is written, or an asset pack is downloaded (`assets.install` from a URL or the catalogue,
-/// `assets.fetch`). Over MCP and the bridge they run as jobs that are polled, so a waiting call
+/// `assets.fetch`), or footage is analysed (`story.highlights`). Over MCP and the bridge they run as jobs that are polled, so a waiting call
 /// never holds up the app's UI thread or the session.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch"];
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch", "story.highlights"];
 
 /// What a failed long command was doing, for its error: `export failed: …`.
 pub fn what(id: &str) -> &str {
@@ -33,6 +33,20 @@ pub fn what(id: &str) -> &str {
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
+
+/// The command that reads a finished job's answer, when its start reply names one
+/// (`"resultCommand": {"command", "params"}`); otherwise the job's report is the answer.
+pub fn result_command(start: &Value) -> Option<(String, Value)> {
+    let rc = start.get("resultCommand")?;
+    Some((rc.get("command")?.as_str()?.to_string(), rc.get("params").cloned().unwrap_or(Value::Null)))
+}
+
+/// A job's answer that says it did not finish (`"status": "failed"` or `"cancelled"`): the error
+/// to report instead of a success.
+pub fn unfinished(id: &str, answer: &Value) -> Option<String> {
+    let status = answer.get("status").and_then(Value::as_str)?;
+    matches!(status, "failed" | "cancelled").then(|| format!("{id} {status}: {}", answer.get("error").and_then(Value::as_str).unwrap_or(status)))
+}
 
 /// Whether `command_run {id, params}` is a long call this module runs.
 pub fn is_long(id: &str, params: &Value) -> bool {
@@ -93,6 +107,16 @@ impl FilmagicMcp {
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
                     return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", what(id)))]);
                 }
+                // a job whose answer is not its report says which command reads it (story.highlights)
+                if let Some((cmd, p)) = result_command(&start) {
+                    return match self.run(&cmd, p).await {
+                        Ok(v) => match unfinished(id, &v) {
+                            Some(e) => CallToolResult::error(vec![Content::text(e)]),
+                            None => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
+                        },
+                        Err(e) => CallToolResult::error(vec![Content::text(e.to_string())]),
+                    };
+                }
                 let mut out = start;
                 if let Some(o) = out.as_object_mut() {
                     o.insert("result".into(), result);
@@ -118,7 +142,10 @@ impl FilmagicMcp {
             }
             tokio::time::sleep(POLL).await;
         }
-        remove_partial(&out, started);
+        // only an export leaves a partial file
+        if id == "file.exportMedia" {
+            remove_partial(&out, started);
+        }
         CallToolResult::error(vec![Content::text("cancelled")])
     }
 

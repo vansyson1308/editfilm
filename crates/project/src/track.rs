@@ -190,7 +190,8 @@ impl TrackItem {
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
     }
-    /// Media time displayed at timeline time `t` (ignores time remapping keyframes).
+    /// Media time displayed at timeline time `t`: the frame hold, else the clip's speed and
+    /// direction through its Time Remapping curve ([`crate::remap`]).
     pub fn source_time_at(&self, t: Tick) -> Tick {
         if let Some(h) = self.frame_hold {
             return h;
@@ -199,15 +200,28 @@ impl TrackItem {
     }
     /// Media time at which effects and intrinsic attributes are evaluated at timeline time `t`: a
     /// frame hold freezes them only with Hold Filters on; otherwise they animate through the hold.
+    ///
+    /// Clip keyframes (Motion, Opacity, effects, masks, and Time Remapping's own Speed) are timed
+    /// in the clip's *linear* media time: Time Remapping changes which frame is shown, not when
+    /// an effect keyframe happens, so effects stay where they are on the timeline and animate
+    /// through a freeze.
     pub fn effect_time_at(&self, t: Tick) -> Tick {
         match self.frame_hold {
             Some(h) if self.hold_filters => h,
-            Some(_) => self.moving_source_time_at(t),
-            None => self.source_time_at(t),
+            _ => self.linear_source_time_at(t),
         }
     }
-    /// Media time at timeline time `t` ignoring any frame hold.
+    /// Media time at timeline time `t` ignoring any frame hold (through the Time Remapping curve).
     pub fn moving_source_time_at(&self, t: Tick) -> Tick {
+        let b = self.linear_source_time_at(t);
+        match self.remap() {
+            Some(r) => r.shown(b),
+            None => b,
+        }
+    }
+    /// Media time at timeline time `t` at the clip's constant speed: no frame hold and no Time
+    /// Remapping. Time Remapping keyframes are timed in this clock.
+    pub fn linear_source_time_at(&self, t: Tick) -> Tick {
         let rel = t - self.start;
         let scaled = Tick((rel.0 as f64 * self.speed.abs()).round() as i64);
         if self.reverse {
@@ -216,9 +230,21 @@ impl TrackItem {
             self.source_in + scaled
         }
     }
-    /// Media time consumed by the item (the source out point).
+    /// Media time consumed by the item (the source out point), through the Time Remapping curve.
     pub fn source_out(&self) -> Tick {
+        let b = self.linear_source_out();
+        match self.remap() {
+            Some(r) => r.shown(b),
+            None => b,
+        }
+    }
+    /// The source out point at the clip's constant speed, without Time Remapping.
+    pub fn linear_source_out(&self) -> Tick {
         self.source_in + Tick((self.duration.0 as f64 * self.speed.abs()).round() as i64)
+    }
+    /// Whether the clip's speed varies (Time Remapping keyframes that change its speed).
+    pub fn has_speed_ramp(&self) -> bool {
+        self.remap().is_some()
     }
     pub fn effect(&self, id: &str) -> Option<&EffectInstance> {
         self.effects.iter().find(|e| e.effect == id)

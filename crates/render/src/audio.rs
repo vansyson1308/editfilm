@@ -377,7 +377,10 @@ fn raw_channels(item: &TrackItem, src: SourceAudio, x0: i64, len: usize, sr: u32
     let item_s1 = item.end().to_units_floor(sr as i64);
     let a0 = x0.max(item_s0);
     let a1 = (x0 + len as i64).min(item_s1);
-    if a1 <= a0 {
+    // Time Remapping is a picture effect: sound does not follow a varying speed, so a sound clip
+    // that carries a ramp (a hand-edited project) is silent rather than read at a speed that
+    // would depend on how the mix is cut into blocks
+    if a1 <= a0 || item.has_speed_ramp() {
         return out;
     }
     let n = (a1 - a0) as usize;

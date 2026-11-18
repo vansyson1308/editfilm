@@ -37,7 +37,7 @@ const PROPS_VALUE_R: f32 = PROPS_NAV_X + NAV_STEP + 12.0;
 
 /// Timeline time at which the clip shows media time `m` (where a keyframe sits in the sequence).
 fn timeline_time_of(it: &TrackItem, m: Tick) -> Tick {
-    let offset = if it.reverse { it.source_out() - m - Tick(1) } else { m - it.source_in };
+    let offset = if it.reverse { it.linear_source_out() - m - Tick(1) } else { m - it.source_in };
     it.start + Tick((offset.0 as f64 / it.speed.abs().max(1e-6)).round() as i64)
 }
 

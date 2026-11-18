@@ -323,7 +323,12 @@ pub fn timeline_time_of(it: &TrackItem, src: Tick) -> Option<Tick> {
     if speed <= 0.0 {
         return None;
     }
-    let total = it.source_out() - it.source_in;
+    // a ramped clip shows `src` at the linear media time its Time Remapping maps to it
+    let src = match it.remap() {
+        Some(r) => r.linear_reaching(it.linear_source_time_at(it.start), src, it.reverse)?,
+        None => src,
+    };
+    let total = it.linear_source_out() - it.source_in;
     let rel_src = if it.reverse { it.source_in + total - Tick(1) - src } else { src - it.source_in };
     if rel_src < Tick::ZERO || rel_src >= total {
         return None;

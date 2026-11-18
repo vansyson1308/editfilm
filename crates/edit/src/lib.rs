@@ -1163,7 +1163,7 @@ pub fn rate_stretch_items(seq: &mut Sequence, clips: &[ClipId], edge: Edge, delt
     let mut speed = 1.0;
     for c in clips {
         let (_, it) = seq.find_item(*c).ok_or(EditError::NoItem(*c))?;
-        let src_len = it.source_out() - it.source_in;
+        let src_len = it.linear_source_out() - it.source_in;
         let new_dur = match edge {
             Edge::Out => it.duration + d,
             Edge::In => it.duration - d,
@@ -1205,7 +1205,7 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         if origins.iter().any(|o| o.0 == tid) {
             return Err(EditError::Other("clips on one track change speed one at a time".into()));
         }
-        let src_len = it.source_out() - it.source_in;
+        let src_len = it.linear_source_out() - it.source_in;
         // a tiny speed saturates the cast: keep the clip's end representable
         let room = Tick(Tick::MAX.0.saturating_sub(it.start.0.max(0)));
         let mut new_dur = Tick((src_len.0 as f64 / speed).round() as i64).min(room).max(ctx.min_duration);
@@ -1251,6 +1251,67 @@ pub fn set_speed_group(seq: &mut Sequence, clips: &[ClipId], speed: f64, reverse
         }
     }
     if ripple {
+        transitions_follow_cuts(seq, &mut work);
+    }
+    work.check().map_err(EditError::Other)?;
+    *seq = work;
+    Ok(())
+}
+
+/// Replace clips by retimed versions of themselves (same id, track and start; new duration,
+/// source In, effects…) as one edit: `clip.speedRamp`. With `ripple` the later material moves by
+/// the largest change in length, once, on the members' tracks and on sync-locked tracks, as
+/// [`set_speed_group`] moves it; without, a member may not grow over the clip after it. Nothing
+/// changes when the edit fails.
+pub fn retime_group(seq: &mut Sequence, retimed: &[TrackItem], ripple: bool) -> Result<()> {
+    let mut work = seq.clone();
+    let mut origins: Vec<(TrackId, Tick, Tick)> = Vec::new();
+    let ids: Vec<ClipId> = retimed.iter().map(|r| r.id).collect();
+    for new in retimed {
+        let tid = unlocked_track(&work, new.id)?;
+        if origins.iter().any(|o| o.0 == tid) {
+            return Err(EditError::Other("clips on one track are retimed one at a time".into()));
+        }
+        let tr = work.track(tid).ok_or(EditError::NoTrack(tid))?;
+        let (_, next_start) = neighbours(tr, new.id);
+        let (_, old) = work.find_item(new.id).ok_or(EditError::NoItem(new.id))?;
+        if new.start != old.start || new.duration <= Tick::ZERO || new.start.0.checked_add(new.duration.0).is_none() {
+            return Err(EditError::Other("a retimed clip keeps its start and needs a length".into()));
+        }
+        if !ripple && new.end() > next_start {
+            return Err(EditError::Other("the clip would grow over the clip after it; ripple moves the later clips instead".into()));
+        }
+        let (old_end, delta) = (old.end(), new.duration - old.duration);
+        let (_, it) = work.find_item_mut(new.id).ok_or(EditError::NoItem(new.id))?;
+        *it = new.clone();
+        let frame = work.settings.frame_rate.frame_duration();
+        let track = work.track_mut(tid).ok_or(EditError::NoTrack(tid))?;
+        fades_follow_edges(track, new.id);
+        if !ripple {
+            transitions_stay_within_clips(track, new.id, frame);
+        }
+        origins.push((tid, old_end, delta));
+    }
+    let main_from = origins.first().map(|o| o.1).unwrap_or_default();
+    let shift = origins.iter().map(|o| o.2).max().unwrap_or_default();
+    if ripple && shift != Tick::ZERO {
+        for tr in work.all_tracks_mut() {
+            if tr.locked {
+                continue;
+            }
+            let member = origins.iter().find(|o| o.0 == tr.id).map(|o| o.1);
+            if member.is_none() && !tr.sync_lock {
+                continue;
+            }
+            let from = member.unwrap_or(main_from);
+            for i in &mut tr.items {
+                if !ids.contains(&i.id) && i.start >= from {
+                    let start = i.start.0.checked_add(shift.0).filter(|s| *s >= 0 && s.checked_add(i.duration.0).is_some());
+                    i.start = Tick(start.ok_or_else(|| EditError::Other("the retime would move later clips off the timeline".into()))?);
+                }
+            }
+            tr.sort();
+        }
         transitions_follow_cuts(seq, &mut work);
     }
     work.check().map_err(EditError::Other)?;

@@ -52,7 +52,8 @@ const BATCH: usize = 24;
 /// Commands after which an edit point is checked against the source's cuts.
 const RAZORS: [&str; 3] = ["timeline.razor", "sequence.addEdit", "sequence.addEditAllTracks"];
 /// Commands after which a retimed or held clip is checked.
-const RETIMES: [&str; 5] = ["clip.speedDuration", "timeline.rateStretch", "clip.frameHold", "clip.frameHoldOptions", "clip.insertFrameHoldSegment"];
+const RETIMES: [&str; 6] =
+    ["clip.speedDuration", "timeline.rateStretch", "clip.frameHold", "clip.frameHoldOptions", "clip.insertFrameHoldSegment", "clip.speedRamp"];
 
 /// Whether [`annotate`] looks at the result of `id`.
 pub(crate) fn watches(id: &str) -> bool {
@@ -557,14 +558,29 @@ fn shown(it: &TrackItem, rate: FrameRate) -> (i64, i64) {
         let f = rate.frame_at(h);
         return (f, f);
     }
+    if it.has_speed_ramp() {
+        // the curve only moves one way (its speed is never below 0): its ends are the clip's ends
+        let (a, b) = (it.source_time_at(it.start), it.source_time_at(it.end() - Tick(1)));
+        let (a, b) = (rate.frame_at(a.min(b)), rate.frame_at(a.max(b)));
+        return (a, b.max(a));
+    }
     let (a, b) = (it.source_in, it.source_out());
     let (a, b) = (a.min(b), a.max(b));
     (rate.frame_at(a), rate.frame_at(b - Tick(1)).max(rate.frame_at(a)))
 }
 
-/// Timeline time at which a (moving) clip shows media time `mt`, at its clip speed (an animated
-/// Time Remapping curve is not followed: see [`remapped`]).
+/// Timeline time at which a (moving) clip first shows media time `mt`, through its Time
+/// Remapping curve when it has one.
 fn timeline_at(it: &TrackItem, mt: Tick) -> Tick {
+    if it.has_speed_ramp() {
+        if let Some(t) = crate::sequence_tools::timeline_time_of(it, mt) {
+            return t;
+        }
+        // not shown: the end of the clip on the side `mt` lies
+        let first = it.source_time_at(it.start);
+        let before = if it.reverse { mt > first } else { mt < first };
+        return if before { it.start } else { it.end() };
+    }
     let speed = it.speed.abs();
     if !speed.is_finite() || speed <= 1e-9 {
         return it.start;
@@ -579,19 +595,11 @@ fn timing(it: &TrackItem) -> (f64, bool, Option<Tick>, Option<&filmagic_project:
     (it.speed, it.reverse, it.frame_hold, it.effect("time_remap"))
 }
 
-/// The clip's Time Remapping speed is not 100 % somewhere (a constant 100 %, keyframed or not, is
-/// no retiming).
-fn remapped(it: &TrackItem) -> bool {
-    let not_100 = |v: &filmagic_project::ParamValue| v.as_f64().is_some_and(|x| (x - 100.0).abs() > 1e-3);
-    it.effect("time_remap")
-        .filter(|e| e.enabled)
-        .and_then(|e| e.param("speed"))
-        .is_some_and(|p| not_100(&p.value) || p.keyframes.iter().any(|k| not_100(&k.value)))
-}
-
-/// A clip that plays its media other than once through at normal speed.
+/// A clip that plays its media other than once through at normal speed. Time Remapping retimes
+/// a clip when its speed is keyframed and not 100 % throughout (an unkeyed speed plays nothing
+/// differently: see [`filmagic_project::remap`]).
 fn retimed(it: &TrackItem) -> bool {
-    it.frame_hold.is_some() || it.reverse || (it.speed - 1.0).abs() > 1e-9 || remapped(it)
+    it.frame_hold.is_some() || it.reverse || (it.speed - 1.0).abs() > 1e-9 || it.has_speed_ramp()
 }
 
 /// What one check adds to a result.
@@ -663,19 +671,13 @@ fn check_range(s: &Session, it: &TrackItem, r: &mut Report) {
         return;
     }
     let Some(f) = known_for(s, it, lo, hi, r) else { return };
-    // with an animated remap curve the clip speed does not say where on the timeline a frame plays
-    let approx = remapped(it);
     for &c in f.cuts.iter().filter(|c| **c > lo) {
         let (ms, ts) = (secs(rate, c), timeline_at(it, rate.tick_of(c)).seconds());
         let (before, after) = (c - lo, hi + 1 - c);
-        let mut v = json!({"clip": it.id.0, "item": it.item.0, "kind": "inside", "mediaSeconds": ms, "timelineSeconds": (ts * 1000.0).round() / 1000.0, "framesBefore": before, "framesAfter": after});
-        if approx {
-            v["timelineApproximate"] = json!(true);
-        }
+        let v = json!({"clip": it.id.0, "item": it.item.0, "kind": "inside", "mediaSeconds": ms, "timelineSeconds": (ts * 1000.0).round() / 1000.0, "framesBefore": before, "framesAfter": after});
         r.cuts.push(v);
-        let about = if approx { "about " } else { "" };
         r.warnings.push(format!(
-            "{} straddles a cut in its source at {ms:.3} s of media (timeline {about}{ts:.3} s): it plays {before} frame(s) of one shot and {after} of the next. Razor at the cut, or trim the clip to one side of it",
+            "{} straddles a cut in its source at {ms:.3} s of media (timeline {ts:.3} s): it plays {before} frame(s) of one shot and {after} of the next. Razor at the cut, or trim the clip to one side of it",
             label(it)
         ));
     }
@@ -839,9 +841,6 @@ fn source_cuts_cmd(s: &mut Session, p: &Value) -> Result<Value> {
             let mut v = json!({"mediaSeconds": secs(rate, c), "frame": c, "time": rate.tick_of(c).0});
             if let Some(it) = it.as_ref().filter(|it| it.frame_hold.is_none()) {
                 v["timelineSeconds"] = json!((timeline_at(it, rate.tick_of(c)).seconds() * 1000.0).round() / 1000.0);
-                if remapped(it) {
-                    v["timelineApproximate"] = json!(true);
-                }
             }
             v
         })
