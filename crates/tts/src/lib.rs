@@ -6,16 +6,24 @@
 //! - [`formant`]: the built-in voices, an original source–filter formant synthesizer. They need
 //!   no download and work everywhere (also in the web build); they sound robotic. The neural voices
 //!   (Kokoro-82M, downloaded on first use) are added behind a feature in a later milestone.
+//! - [`vieneu`]: Vietnamese voices from VieNeu-TTS, an optional external engine run through a
+//!   Python interpreter (never linked or bundled; the owner approved the Python bridge in #20).
+//!   Generative, so not deterministic.
 //!
-//! Everything is deterministic: the same script and settings give the same samples.
+//! The built-in and neural voices are deterministic: the same script and settings give the same
+//! samples.
+
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod catalog;
+pub mod dsp;
 pub mod formant;
 #[cfg(feature = "kokoro")]
 pub mod kokoro;
 #[cfg(feature = "kokoro")]
 pub mod neural;
 pub mod script;
+pub mod vieneu;
 
 use serde::Serialize;
 
@@ -49,6 +57,15 @@ pub enum TtsError {
     NotInstalled,
     #[error("natural voices are not available in this build (built without the `kokoro` feature)")]
     Unavailable,
+    /// The natural voice's own voice file is not downloaded (the shared model is).
+    #[error("the natural voice `{0}` is not downloaded yet")]
+    VoiceNotInstalled(String),
+    /// An external engine (VieNeu-TTS) failed.
+    #[error("VieNeu-TTS: {0}")]
+    Engine(String),
+    /// An external engine (VieNeu-TTS) is not installed.
+    #[error("VieNeu-TTS is not installed: {0}")]
+    EngineMissing(String),
 }
 
 /// How a voice speaks.
@@ -78,7 +95,8 @@ impl Params {
     }
 }
 
-/// Mono audio at [`SAMPLE_RATE`].
+/// Mono audio at `sample_rate`: [`SAMPLE_RATE`] for the built-in and natural voices, the model's
+/// own rate for VieNeu (48 kHz, or 24 kHz with `v3nano`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Audio {
     pub samples: Vec<f32>,
@@ -122,14 +140,19 @@ pub trait Voice: Send + Sync {
     fn synthesize(&self, text: &str, params: &Params) -> Result<Audio, TtsError>;
 }
 
-/// Languages offered (English only for now).
-pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)")];
+/// Languages offered. Vietnamese voices come from VieNeu-TTS ([`vieneu`]), when it is installed.
+pub const LANGUAGES: &[(&str, &str)] = &[("en-US", "English (United States)"), ("vi-VN", "Vietnamese (VieNeu-TTS)")];
 
-/// Every voice Filmagic knows: the built-in voices, then the neural voices (installed when their
-/// package is downloaded into `models_dir`).
+/// Every built-in and neural voice: the built-in voices, then the neural voices (each installed
+/// when the shared model and its own voice file are downloaded into `models_dir`). VieNeu voices
+/// are listed by the engine ([`vieneu::cached_voices`]).
 pub fn voices_in(models_dir: Option<&std::path::Path>) -> Vec<VoiceInfo> {
-    let installed = models_dir.is_some_and(catalog::installed) && cfg!(feature = "kokoro");
-    formant::VOICES.iter().map(|v| v.info).chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed, ..v.info })).collect()
+    let usable = cfg!(feature = "kokoro");
+    formant::VOICES
+        .iter()
+        .map(|v| v.info)
+        .chain(catalog::VOICES.iter().map(|v| VoiceInfo { installed: usable && models_dir.is_some_and(|d| catalog::voice_installed(d, v)), ..v.info }))
+        .collect()
 }
 
 /// The built-in voices (always available).

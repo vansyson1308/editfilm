@@ -2551,9 +2551,11 @@ dependencies = [
  "candle-nn",
  "filmagic-audio-dsp",
  "filmagic-tts-text",
+ "icu_normalizer",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "zip 7.2.0",
 ]

@@ -66,6 +66,116 @@ impl From<std::io::Error> for SpeechError {
     }
 }
 
+/// The languages Whisper recognises: (code, English name), in the order of the model's language
+/// tokens. Every multilingual model knows the first 99; Cantonese (`yue`) needs a large-v3 model.
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("zh", "Chinese"),
+    ("de", "German"),
+    ("es", "Spanish"),
+    ("ru", "Russian"),
+    ("ko", "Korean"),
+    ("fr", "French"),
+    ("ja", "Japanese"),
+    ("pt", "Portuguese"),
+    ("tr", "Turkish"),
+    ("pl", "Polish"),
+    ("ca", "Catalan"),
+    ("nl", "Dutch"),
+    ("ar", "Arabic"),
+    ("sv", "Swedish"),
+    ("it", "Italian"),
+    ("id", "Indonesian"),
+    ("hi", "Hindi"),
+    ("fi", "Finnish"),
+    ("vi", "Vietnamese"),
+    ("he", "Hebrew"),
+    ("uk", "Ukrainian"),
+    ("el", "Greek"),
+    ("ms", "Malay"),
+    ("cs", "Czech"),
+    ("ro", "Romanian"),
+    ("da", "Danish"),
+    ("hu", "Hungarian"),
+    ("ta", "Tamil"),
+    ("no", "Norwegian"),
+    ("th", "Thai"),
+    ("ur", "Urdu"),
+    ("hr", "Croatian"),
+    ("bg", "Bulgarian"),
+    ("lt", "Lithuanian"),
+    ("la", "Latin"),
+    ("mi", "Maori"),
+    ("ml", "Malayalam"),
+    ("cy", "Welsh"),
+    ("sk", "Slovak"),
+    ("te", "Telugu"),
+    ("fa", "Persian"),
+    ("lv", "Latvian"),
+    ("bn", "Bengali"),
+    ("sr", "Serbian"),
+    ("az", "Azerbaijani"),
+    ("sl", "Slovenian"),
+    ("kn", "Kannada"),
+    ("et", "Estonian"),
+    ("mk", "Macedonian"),
+    ("br", "Breton"),
+    ("eu", "Basque"),
+    ("is", "Icelandic"),
+    ("hy", "Armenian"),
+    ("ne", "Nepali"),
+    ("mn", "Mongolian"),
+    ("bs", "Bosnian"),
+    ("kk", "Kazakh"),
+    ("sq", "Albanian"),
+    ("sw", "Swahili"),
+    ("gl", "Galician"),
+    ("mr", "Marathi"),
+    ("pa", "Punjabi"),
+    ("si", "Sinhala"),
+    ("km", "Khmer"),
+    ("sn", "Shona"),
+    ("yo", "Yoruba"),
+    ("so", "Somali"),
+    ("af", "Afrikaans"),
+    ("oc", "Occitan"),
+    ("ka", "Georgian"),
+    ("be", "Belarusian"),
+    ("tg", "Tajik"),
+    ("sd", "Sindhi"),
+    ("gu", "Gujarati"),
+    ("am", "Amharic"),
+    ("yi", "Yiddish"),
+    ("lo", "Lao"),
+    ("uz", "Uzbek"),
+    ("fo", "Faroese"),
+    ("ht", "Haitian Creole"),
+    ("ps", "Pashto"),
+    ("tk", "Turkmen"),
+    ("nn", "Nynorsk"),
+    ("mt", "Maltese"),
+    ("sa", "Sanskrit"),
+    ("lb", "Luxembourgish"),
+    ("my", "Myanmar"),
+    ("bo", "Tibetan"),
+    ("tl", "Tagalog"),
+    ("mg", "Malagasy"),
+    ("as", "Assamese"),
+    ("tt", "Tatar"),
+    ("haw", "Hawaiian"),
+    ("ln", "Lingala"),
+    ("ha", "Hausa"),
+    ("ba", "Bashkir"),
+    ("jw", "Javanese"),
+    ("su", "Sundanese"),
+    ("yue", "Cantonese"),
+];
+
+/// Whether `code` is a language Whisper recognises ([`LANGUAGES`]).
+pub fn is_language(code: &str) -> bool {
+    LANGUAGES.iter().any(|(c, _)| *c == code)
+}
+
 /// Transcription options.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Options {
@@ -175,6 +285,16 @@ pub fn word_error_rate(reference: &str, hypothesis: &str) -> f64 {
 mod tests {
     use super::*;
     use filmagic_project::Word;
+
+    #[test]
+    fn languages_are_unique_and_include_vietnamese() {
+        assert_eq!(LANGUAGES.len(), 100);
+        for (i, (c, _)) in LANGUAGES.iter().enumerate() {
+            assert!(LANGUAGES.iter().skip(i + 1).all(|(d, _)| d != c), "duplicate {c}");
+        }
+        assert!(is_language("vi") && is_language("en") && is_language("yue"));
+        assert!(!is_language("auto") && !is_language("") && !is_language("VI") && !is_language("vi-VN"));
+    }
 
     #[test]
     fn sample_ticks_are_exact() {

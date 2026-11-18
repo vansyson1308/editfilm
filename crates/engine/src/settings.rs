@@ -60,6 +60,7 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("zh", "Chinese"),
     ("ru", "Russian"),
     ("hi", "Hindi"),
+    ("vi", "Vietnamese"),
 ];
 const CACHE_MGMT: &[(&str, &str)] = &[
     ("never", "Do not delete cache files automatically"),
