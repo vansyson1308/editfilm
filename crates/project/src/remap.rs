@@ -21,8 +21,11 @@
 //! A constant (unkeyed) remap speed has no anchor and changes nothing: a constant speed is the
 //! clip's own Speed (Speed/Duration), which every importer maps a constant remap to.
 //!
-//! The integral is exact (closed form) on linear and hold segments, and Simpson's rule on 64
-//! panels on eased (Bezier) segments, which is far below a tick on any segment of a day or less.
+//! The integral is exact (closed form) on linear and hold segments, up to f64 rounding (tick
+//! counts are exact below 2^53, about 410 days). Eased (Bezier) segments use Simpson's rule on
+//! 64 panels of a curve whose ease is solved to a residual of 1e-7: the error is then of the
+//! order of 1e-7 of the segment's length (about 60 ns on a 1 s eased segment), well under a
+//! frame at any rate.
 
 use filmagic_time::Tick;
 
@@ -46,8 +49,9 @@ pub struct Remap<'a> {
     reverse: bool,
 }
 
-/// Speed factor (1.0 = the clip's own speed) of a stored remap value: hostile values (NaN,
-/// infinities, negative) are read as a hold (0) or the cap.
+/// Speed factor (1.0 = the clip's own speed) of a stored remap value. Hostile values: NaN and
+/// anything that is not a number read as 100 % (1.0), negative values and -∞ as a hold (0), and
+/// values over the cap (+∞ included) as the cap.
 fn factor(v: &ParamValue) -> f64 {
     let p = v.as_f64().unwrap_or(100.0);
     if p.is_nan() {
@@ -66,6 +70,10 @@ impl<'a> Remap<'a> {
         let keys = param.keyframes.get(..param.keyframes.len().min(MAX_REMAP_KEYS))?;
         if !keys.windows(2).all(|w| w[0].time < w[1].time) {
             // a hand-edited file out of order: not a curve we can integrate
+            return None;
+        }
+        // keys that all say 100 % change nothing (and must not turn on frame blending)
+        if keys.iter().all(|k| factor(&k.value) == 1.0) {
             return None;
         }
         Some(Remap { keys, reverse })
@@ -155,7 +163,7 @@ impl<'a> Remap<'a> {
         loop {
             let next = if down { lo.0.checked_sub(step) } else { lo.0.checked_add(step) }?;
             hi = Tick(next);
-            if hi.0.abs() > Tick::MAX.0 / 4 {
+            if hi.0.unsigned_abs() > (Tick::MAX.0 / 4) as u64 {
                 return None;
             }
             if reached(hi) {
@@ -166,7 +174,7 @@ impl<'a> Remap<'a> {
         }
         // invariant: !reached(lo), reached(hi)
         for _ in 0..80 {
-            let gap = (hi.0 - lo.0).abs();
+            let gap = hi.0.abs_diff(lo.0);
             if gap <= 1 {
                 break;
             }

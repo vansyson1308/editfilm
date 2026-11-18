@@ -16,10 +16,17 @@ use serde_json::{Value, json};
 use crate::server::FilmagicMcp;
 
 /// Engine commands that block until a render is written when called with `wait: true`.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia"];
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "story.highlights"];
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
+
+/// The command that reads a finished job's answer, when its start reply names one
+/// (`"resultCommand": {"command", "params"}`); otherwise the job's report is the answer.
+pub fn result_command(start: &Value) -> Option<(String, Value)> {
+    let rc = start.get("resultCommand")?;
+    Some((rc.get("command")?.as_str()?.to_string(), rc.get("params").cloned().unwrap_or(Value::Null)))
+}
 
 /// Whether `command_run {id, params}` is a long call this module runs.
 pub fn is_long(id: &str, params: &Value) -> bool {
@@ -76,7 +83,14 @@ impl FilmagicMcp {
                 let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
                 if let Some(e) = result.get("error").and_then(Value::as_str) {
-                    return CallToolResult::error(vec![Content::text(format!("export failed: {e}"))]);
+                    return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", if id == "file.exportMedia" { "export" } else { id }))]);
+                }
+                // a job whose answer is not its report says which command reads it (story.highlights)
+                if let Some((cmd, p)) = result_command(&start) {
+                    return match self.run(&cmd, p).await {
+                        Ok(v) => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
+                        Err(e) => CallToolResult::error(vec![Content::text(e.to_string())]),
+                    };
                 }
                 let mut out = start;
                 if let Some(o) = out.as_object_mut() {
@@ -100,7 +114,10 @@ impl FilmagicMcp {
             }
             tokio::time::sleep(POLL).await;
         }
-        remove_partial(&out, started);
+        // only an export leaves a partial file
+        if id == "file.exportMedia" {
+            remove_partial(&out, started);
+        }
         CallToolResult::error(vec![Content::text("cancelled")])
     }
 

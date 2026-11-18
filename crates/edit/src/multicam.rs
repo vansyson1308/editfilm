@@ -63,7 +63,7 @@ fn continuous(a: &TrackItem, b: &TrackItem) -> bool {
         && !b.reverse
         && a.frame_hold.is_none()
         && b.frame_hold.is_none()
-        && a.source_out() == b.source_in
+        && a.linear_source_out() == b.source_in
         && a.enabled == b.enabled
         && a.gain_db == b.gain_db
         && a.effects == b.effects

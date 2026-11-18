@@ -680,10 +680,11 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
     // peaks of cheering or of a burst of impacts that is no rally
     if o.mode != Mode::Rally {
         for c in &cheers {
-            if found.iter().any(|h| h.start < c.1 && h.end > c.0) {
+            let (a, b) = ((c.0 - 3.0).max(0.0), (c.1 + 1.0).min(span));
+            // the padded span: a peak never reaches into a moment already found
+            if found.iter().any(|h| h.start < b && h.end > a) {
                 continue;
             }
-            let (a, b) = ((c.0 - 3.0).max(0.0), (c.1 + 1.0).min(span));
             let hits: Vec<Onset> = impacts.iter().copied().filter(|x| x.t >= a && x.t <= b).collect();
             found.push(describe(a, b, false, &hits));
         }
@@ -702,17 +703,19 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
                     k += 1;
                 }
                 let (ta, tb) = (times[a], times.get(k.min(m.len() - 1)).copied().unwrap_or(span));
-                if tb - ta >= 1.0 && !found.iter().any(|h| h.start < tb && h.end > ta) {
+                let (pa, pb) = ((ta - 0.5).max(0.0), (tb + 0.5).min(span));
+                if tb - ta >= 1.0 && !found.iter().any(|h| h.start < pb && h.end > pa) {
                     let hits: Vec<Onset> = impacts.iter().copied().filter(|x| x.t >= ta && x.t <= tb).collect();
-                    found.push(describe((ta - 0.5).max(0.0), (tb + 0.5).min(span), false, &hits));
+                    found.push(describe(pa, pb, false, &hits));
                 }
             }
         }
     }
 
     // lengths, In and Out
-    let rallies: Vec<(f64, f64)> = found.iter().filter(|h| h.rally).map(|h| (h.start + o.lead, h.end)).collect();
-    for h in &mut found {
+    // every rally, whole (lead to tail), by its index
+    let rallies: Vec<(usize, f64, f64)> = found.iter().enumerate().filter(|(_, h)| h.rally).map(|(k, h)| (k, h.start, h.end)).collect();
+    for (k, h) in found.iter_mut().enumerate() {
         if h.end - h.start < o.min_len {
             let pad = (o.min_len - (h.end - h.start)) / 2.0;
             h.start = (h.start - pad).max(0.0);
@@ -721,9 +724,13 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
         if h.end - h.start > o.max_len {
             h.end = h.start + o.max_len;
         }
-        // never into another rally: the previous one's end and the next one's first impact bound the reach
-        let before = rallies.iter().map(|r| r.1).filter(|e| *e <= h.start + 1e-9).fold(0.0f64, f64::max);
-        let after = rallies.iter().map(|r| r.0).filter(|s| *s >= h.end - 1e-9).fold(span, f64::min);
+        // never into another rally: a rally that starts before this moment bounds its In, one that
+        // ends after it bounds its Out, and the moment itself is cut back to them
+        let others = || rallies.iter().filter(move |r| r.0 != k);
+        let before = others().filter(|r| r.1 < h.start).map(|r| r.2).fold(0.0f64, f64::max);
+        let after = others().filter(|r| r.2 > h.end).map(|r| r.1).fold(span, f64::min);
+        h.start = h.start.max(before);
+        h.end = h.end.min(after).max(h.start);
         let mut i = quiet_near(motion.as_ref(), h.start, 1.5, -1.0, before);
         let mut out = quiet_near(motion.as_ref(), h.end, 1.5, 1.0, after);
         // a cut inside a sentence moves out to its edge, up to 3 s, never into another rally
@@ -736,6 +743,8 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
         h.speech = speech.iter().any(|g| g.0 < out && g.1 > i);
         h.suggested = (i.max(0.0).min(h.start), out.min(span).max(h.end));
     }
+    // a moment cut back to almost nothing by the rallies around it is no moment
+    found.retain(|h| h.end - h.start >= 0.5);
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.start.total_cmp(&b.start)));
     found
 }
@@ -879,6 +888,22 @@ mod tests {
         // rally mode: the lone hits are no moment
         let only = find_highlights(&cues, &Options { mode: Mode::Rally, ..Options::default() });
         assert!(only.iter().all(|x| x.rally));
+    }
+
+    #[test]
+    fn a_peak_never_reaches_into_a_rally() {
+        // a rally at 1.0–3.4 s whose cheering runs to 6.5 s, and more cheering at 7–8 s
+        let clicks = [1.0, 1.8, 2.6, 3.4];
+        let mut x = signal(14.0, &clicks, Some((5.5, 6.5)));
+        let more = signal(14.0, &[], Some((7.0, 8.0)));
+        x.iter_mut().zip(&more).for_each(|(a, b)| *a += b);
+        let audio = analyse(&x);
+        let h = find_highlights(&Cues { span: 14.0, audio: Some(audio), picture: None }, &Options::default());
+        let rally = h.iter().find(|x| x.rally).expect("the rally");
+        for p in h.iter().filter(|x| !x.rally) {
+            assert!(p.start >= rally.end - 1e-9 || p.end <= rally.start + 1e-9, "{p:?} overlaps {rally:?}");
+            assert!(p.suggested.0 >= rally.end - 1e-9 || p.suggested.1 <= rally.start + 1e-9, "{p:?} cuts into {rally:?}");
+        }
     }
 
     /// A voice-like sound: harmonics of 140 Hz swelling at a syllable rate of 4 Hz.

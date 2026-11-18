@@ -40,7 +40,8 @@ pub fn is_through_edit(a: &TrackItem, b: &TrackItem) -> bool {
         (Some(x), Some(y)) => return x == y,
         _ => return false,
     }
-    let diff = if a.reverse { b.source_out() - a.source_in } else { b.source_in - a.source_out() };
+    // in the linear clock both pieces of a cut share, whatever their Time Remapping
+    let diff = if a.reverse { b.linear_source_out() - a.source_in } else { b.source_in - a.linear_source_out() };
     diff.0.abs() <= MEDIA_SLACK
 }
 

@@ -200,11 +200,15 @@ impl TrackItem {
     }
     /// Media time at which effects and intrinsic attributes are evaluated at timeline time `t`: a
     /// frame hold freezes them only with Hold Filters on; otherwise they animate through the hold.
+    ///
+    /// Clip keyframes (Motion, Opacity, effects, masks, and Time Remapping's own Speed) are timed
+    /// in the clip's *linear* media time: Time Remapping changes which frame is shown, not when
+    /// an effect keyframe happens, so effects stay where they are on the timeline and animate
+    /// through a freeze.
     pub fn effect_time_at(&self, t: Tick) -> Tick {
         match self.frame_hold {
             Some(h) if self.hold_filters => h,
-            Some(_) => self.moving_source_time_at(t),
-            None => self.source_time_at(t),
+            _ => self.linear_source_time_at(t),
         }
     }
     /// Media time at timeline time `t` ignoring any frame hold (through the Time Remapping curve).

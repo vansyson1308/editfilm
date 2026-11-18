@@ -712,6 +712,11 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         "backward" => true,
         d => return Err(bad("masks.track", format!("direction `{d}`: forward or backward"))),
     };
+    if it.has_speed_ramp() {
+        // tracked keys are timed at the media frames tracked; on a ramped clip those are not the
+        // clip's keyframe clock
+        return Err(bad("masks.track", "the clip has a speed ramp: track the mask first and ramp afterwards, or remove the ramp (clip.speedRamp clear:true)"));
+    }
     let rate = s.project.item(it.item).map(|i| i.frame_rate()).unwrap_or(seq.settings.frame_rate);
     let fd = rate.frame_duration();
     let ph = time_p(s, p, "").unwrap_or(s.playhead());

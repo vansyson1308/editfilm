@@ -187,28 +187,51 @@ fn points(p: &Value, it: &TrackItem) -> Result<Vec<Point>> {
     if first.at > it.start {
         pts.insert(0, Point { at: it.start, speed: first.speed, ease: Ease::Linear });
     }
-    // a hold is a jump: the old speed up to a tick before the point
-    let mut out: Vec<Point> = Vec::with_capacity(pts.len() * 2);
+    Ok(pts)
+}
+
+/// One remap keyframe before interpolation is chosen: its linear media time, speed (per cent of
+/// normal speed) and how it is reached from the one before.
+#[derive(Clone, Copy, Debug)]
+struct Key {
+    lin: Tick,
+    speed: f64,
+    ease: Ease,
+}
+
+/// The keys of `pts` on `it`, in timeline order, timed in linear media ticks. A hold is a jump:
+/// the old speed up to one linear tick before the point. Two points that fall on one linear tick
+/// (a slowed clip has fewer linear ticks than sequence ticks) keep the later point.
+fn keys_of(it: &TrackItem, pts: &[Point]) -> Vec<Key> {
+    let dir: i64 = if it.reverse { -1 } else { 1 };
+    let mut ks: Vec<Key> = Vec::with_capacity(pts.len() * 2);
+    let mut push = |ks: &mut Vec<Key>, k: Key| match ks.last_mut() {
+        Some(last) if (k.lin.0 - last.lin.0).saturating_mul(dir) <= 0 => *last = k,
+        _ => ks.push(k),
+    };
     for (i, pt) in pts.iter().enumerate() {
+        let lin = it.linear_source_time_at(pt.at);
         if i > 0 && pt.ease == Ease::Hold {
-            let prev = out.last().copied().unwrap_or(*pt);
-            let just_before = pt.at - Tick(1);
-            if just_before > prev.at {
-                out.push(Point { at: just_before, speed: prev.speed, ease: Ease::Linear });
+            if let Some(prev) = ks.last().copied() {
+                let before = Tick(lin.0.saturating_sub(dir));
+                if (before.0 - prev.lin.0).saturating_mul(dir) > 0 {
+                    push(&mut ks, Key { lin: before, speed: prev.speed, ease: Ease::Linear });
+                }
             }
-            out.push(Point { ease: Ease::Linear, ..*pt });
+            push(&mut ks, Key { lin, speed: pt.speed, ease: Ease::Linear });
         } else {
-            out.push(*pt);
+            push(&mut ks, Key { lin, speed: pt.speed, ease: pt.ease });
         }
     }
-    Ok(out)
+    ks
 }
 
 /// Remap keyframes (linear media time, per cent of the clip's own speed) for `pts` on `it`.
 fn keyframes(it: &TrackItem, pts: &[Point]) -> Vec<Keyframe> {
     let base = it.speed.abs().max(1e-9);
+    let pts = keys_of(it, pts);
     let n = pts.len();
-    // ease flags per point, in timeline order: (leaves gently, arrives gently)
+    // ease flags per key, in timeline order: (leaves gently, arrives gently)
     let mut leaves = vec![false; n];
     let mut arrives = vec![false; n];
     for i in 1..n {
@@ -226,7 +249,7 @@ fn keyframes(it: &TrackItem, pts: &[Point]) -> Vec<Keyframe> {
         .iter()
         .enumerate()
         .map(|(i, pt)| {
-            let mut k = Keyframe::new(it.linear_source_time_at(pt.at), ParamValue::Float(pt.speed / base));
+            let mut k = Keyframe::new(pt.lin, ParamValue::Float(pt.speed / base));
             // in media order a reversed clip's timeline segments run the other way
             let (out_ease, in_ease) = if it.reverse { (arrives[i], leaves[i]) } else { (leaves[i], arrives[i]) };
             k.interp = match (out_ease, in_ease) {
@@ -239,8 +262,21 @@ fn keyframes(it: &TrackItem, pts: &[Point]) -> Vec<Keyframe> {
         })
         .collect();
     keys.sort_by_key(|k| k.time);
-    keys.dedup_by_key(|k| k.time);
     keys
+}
+
+/// Move every keyframe of the clip's effects other than Time Remapping by `delta` (linear media
+/// ticks): when the clip's linear clock is shifted by `delta`, they stay where they are on the
+/// timeline.
+fn shift_effect_keys(it: &mut TrackItem, delta: Tick) {
+    for e in it.effects.iter_mut().filter(|e| e.effect != "time_remap") {
+        let params = e.params.values_mut().chain(e.masks.iter_mut().flat_map(|m| m.params_mut()));
+        for p in params {
+            for k in &mut p.keyframes {
+                k.time = Tick(k.time.0.saturating_add(delta.0));
+            }
+        }
+    }
 }
 
 fn time_json(t: Tick, rate: FrameRate) -> Value {
@@ -303,9 +339,10 @@ fn shown_media(it: &TrackItem) -> (Tick, Tick) {
     }
 }
 
-fn retime(old: &TrackItem, keys: Option<Vec<Keyframe>>, ripple: bool, fd: Tick, media_end: Option<Tick>) -> Result<Retimed> {
+/// `old` (with its new linear clock, see [`rebased`]) with the ramp `keys`, showing the media
+/// `(lo, hi)` the clip showed before.
+fn retime(old: &TrackItem, (lo, hi): (Tick, Tick), keys: Option<Vec<Keyframe>>, ripple: bool, fd: Tick, media_end: Option<Tick>) -> Result<Retimed> {
     let s = old.speed.abs();
-    let (lo, hi) = shown_media(old);
     let mut it = old.clone();
     // the linear media time of the clip's first frame: fixed, so the ramp's keyframes stay put
     let top = old.linear_source_time_at(old.start);
@@ -381,6 +418,22 @@ fn retime_partner(p: &TrackItem, delta: Tick, ripple: bool, mute: bool, fd: Tick
     n
 }
 
+/// `it` whose linear clock starts on the frame it shows: a clip that already has a ramp (a razored
+/// right piece shows media its linear clock is not at) keeps its first frame when it is ramped
+/// again or cleared. Its other keyframes move with the clock, so they stay put on the timeline.
+fn rebased(it: &TrackItem) -> TrackItem {
+    let mut b = it.clone();
+    if it.remap().is_none() {
+        return b;
+    }
+    let delta = it.source_time_at(it.start) - it.linear_source_time_at(it.start);
+    if delta != Tick::ZERO {
+        b.source_in = Tick(b.source_in.0.saturating_add(delta.0));
+        shift_effect_keys(&mut b, delta);
+    }
+    b
+}
+
 fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     if !p.is_object() && !p.is_null() {
         return Err(bad(CMD, "params must be an object"));
@@ -405,6 +458,12 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     if track.locked {
         return Err(EngineError::Edit(filmagic_edit::EditError::Locked));
     }
+    match s.project.item(old.item).map(|i| &i.kind) {
+        Some(filmagic_project::ItemKind::Graphic { .. } | filmagic_project::ItemKind::AdjustmentLayer { .. }) => {
+            return Err(bad(CMD, "a graphic or adjustment layer has no frames to ramp: animate its layers or effects with keyframes instead"));
+        }
+        _ => {}
+    }
     if old.frame_hold.is_some() {
         return Err(bad(CMD, "the clip is a frame hold (it shows one frame): remove the hold (clip.frameHoldOptions) before ramping its speed"));
     }
@@ -420,10 +479,29 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(a)) if a == "keep" => false,
         Some(_) => return Err(bad(CMD, "`audio` must be \"mute\" or \"keep\"")),
     };
+    let had_ramp = old.has_speed_ramp();
+    if clear && !had_ramp {
+        return Ok(json!({
+            "clip": clip.0, "cleared": false, "points": [], "keyframes": 0,
+            "duration": time_json(old.duration, rate), "previousDuration": time_json(old.duration, rate), "end": time_json(old.end(), rate),
+            "rippled": false, "laterClipsMoved": 0.0, "audio": {"clips": [], "action": "none"},
+            "warnings": [], "notes": ["the clip has no speed ramp: nothing was changed"], "pictureChange": Value::Null,
+        }));
+    }
     let pts = if clear { Vec::new() } else { points(p, &old)? };
+    // a ramp is a factor of the clip's own speed, capped at 1000×
+    let base = old.speed.abs() * 100.0;
+    if let Some(pt) = pts.iter().find(|pt| pt.speed / base * 100.0 > filmagic_project::remap::MAX_REMAP_PERCENT) {
+        return Err(bad(
+            CMD,
+            format!("{} % is more than 1000 times the clip's own speed ({base:.2} %); raise the clip's speed with clip.speedDuration first", pt.speed),
+        ));
+    }
     let media_end = crate::media_duration(&s.project, &s.media, old.item);
-    let keys = (!clear).then(|| keyframes(&old, &pts));
-    let new = retime(&old, keys, ripple, fd, media_end)?;
+    let shown = shown_media(&old);
+    let base_item = rebased(&old);
+    let keys = (!clear).then(|| keyframes(&base_item, &pts));
+    let new = retime(&base_item, shown, keys, ripple, fd, media_end)?;
     let delta = new.item.duration - old.duration;
     // linked sound on unlocked tracks follows; on a locked track it stays as it is
     let mut partners: Vec<TrackItem> = Vec::new();
@@ -466,8 +544,11 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     if locked_partners > 0 {
         warnings.push(format!("{locked_partners} linked sound clip(s) on locked tracks were left as they are"));
     }
+    if had_ramp && !clear {
+        notes.push("the clip's earlier speed ramp was replaced by this one".into());
+    }
     if new.item.effects.iter().any(|e| e.effect != "time_remap" && e.is_animated()) {
-        notes.push("keyframes of the clip's other effects follow its media, so they move with the ramp".into());
+        notes.push("keyframes of the clip's other effects stay where they are on the timeline (they keep animating through a freeze)".into());
     }
     if !clear {
         notes.push("the ramp is Time Remapping keyframes on the clip's Speed; clip.speedRamp with clear:true removes it".into());

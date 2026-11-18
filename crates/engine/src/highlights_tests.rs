@@ -252,3 +252,42 @@ fn hostile_parameters_are_refused_without_a_change() {
     assert!(crate::highlights::span(&json!({"toSeconds": 7200.0}), filmagic_time::Tick::ZERO, filmagic_time::Tick::from_seconds_f64(7300.0)).is_ok());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_replaced_project_or_a_late_cancel_keeps_no_result() {
+    let dir = tmp_dir("highlights-epoch");
+    let path = wav(&dir, "match.wav", &sound(12.0, &[2.0, 2.8, 3.6, 4.4], None, SR), SR);
+    // the job finishes, then the project is replaced before its result is polled
+    let mut s = Session::default();
+    let item = import(&mut s, &path);
+    let job = run(&mut s, json!({"item": item, "markers": true}))["job"].as_u64().unwrap();
+    let finished = |s: &Session| s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed));
+    for _ in 0..4000 {
+        if finished(&s) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(finished(&s));
+    s.document_epoch = s.document_epoch.wrapping_add(1);
+    let again = import(&mut s, &path);
+    let r = run(&mut s, json!({"job": job}));
+    assert_eq!(r["status"], "failed", "{r}");
+    assert!(r["error"].as_str().unwrap().contains("replaced"), "{r}");
+    for id in [item, again] {
+        assert!(s.project.item(filmagic_project::ItemId(id)).is_none_or(|i| i.as_media().is_none_or(|m| m.markers.is_empty())), "no markers were written");
+    }
+    // cancelled after its cues were stored: dropped
+    let job = run(&mut s, json!({"item": again, "markers": true}))["job"].as_u64().unwrap();
+    for _ in 0..4000 {
+        if s.jobs.iter().find(|j| j.id == job).is_some_and(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    let r = run(&mut s, json!({"job": job}));
+    assert_eq!(r["status"], "cancelled", "{r}");
+    assert!(s.project.item(filmagic_project::ItemId(again)).unwrap().as_media().unwrap().markers.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -293,6 +293,12 @@ fn hostile_parameters_are_refused_without_a_change() {
         assert_eq!(*s.project, snap, "{p} changed the project");
         assert_eq!(s.history.undo.len(), undo, "{p} left an undo step");
     }
+    // a graphic has no frames to ramp
+    let title = s.execute("graphics.newText", json!({"text": "x"})).unwrap()["clip"].as_u64().unwrap();
+    let snap = (*s.project).clone();
+    let e = s.execute("clip.speedRamp", json!({"clip": title, "to": 50})).unwrap_err().to_string();
+    assert!(e.contains("no frames to ramp"), "{e}");
+    assert_eq!(*s.project, snap);
     // a locked track is refused too
     s.execute("timeline.setTrack", json!({"track": "V1", "locked": true})).unwrap();
     assert!(s.active_sequence().unwrap().video_tracks[0].locked);
@@ -332,4 +338,98 @@ fn smart_render_exports_the_ramped_pictures() {
     let red = f64::from(px[((f.height as usize / 2) * f.width as usize + f.width as usize / 2) * 4]);
     assert!((red / 4.0 - 48.0).abs() <= 1.5, "frame 80 shows media frame {}", red / 4.0);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The remap keys of a clip: (linear media seconds, per cent of its own speed).
+fn remap_keys(it: &TrackItem) -> Vec<(f64, f64)> {
+    let p = it.effect("time_remap").and_then(|e| e.param("speed")).unwrap();
+    p.keyframes.iter().map(|k| ((k.time.seconds() * 1e6).round() / 1e6, k.value.as_f64().unwrap())).collect()
+}
+
+#[test]
+fn a_hold_survives_a_slowed_clip() {
+    // at 50 % and 25 % two sequence times a tick apart fall on one linear tick: the hold kept
+    // only the earlier key, and the speed after the jump stayed the old one
+    for base in [50.0, 25.0] {
+        let (mut s, c, _) = numbered();
+        s.execute("clip.speedDuration", json!({"clips": [c], "speed": base, "ripple": true})).unwrap();
+        ramp(&mut s, json!({"clip": c, "segments": [{"at": {"seconds": 0}, "speed": base}, {"at": {"seconds": 2}, "speed": 20, "ease": "hold"}]}));
+        let it = clip(&s, c);
+        let keys = remap_keys(&it);
+        let last = keys.last().unwrap();
+        assert!((last.1 - 20.0 / base * 100.0).abs() < 1e-9, "base {base}: {keys:?}");
+        // the speed jumps at 2 s: 0.2 media seconds a second after it, the base speed before
+        let fd = rate().frame_duration();
+        let per_frame = |k: i64| (it.source_time_at(rate().tick_of(k + 1)) - it.source_time_at(rate().tick_of(k))).0 as f64 / fd.0 as f64;
+        assert!((per_frame(25) - base / 100.0).abs() < 1e-6, "base {base}: {}", per_frame(25));
+        assert!((per_frame(55) - 0.2).abs() < 1e-6, "base {base}: {}", per_frame(55));
+    }
+}
+
+#[test]
+fn keyframes_are_set_and_played_on_the_linear_clock() {
+    let (mut s, c, _) = numbered();
+    // a freeze from 1 s to 3 s, then normal speed
+    ramp(
+        &mut s,
+        json!({"clip": c, "segments": [{"at": {"seconds": 0}, "speed": 100}, {"at": {"seconds": 1}, "speed": 0, "ease": "hold"}, {"at": {"seconds": 2.0}, "speed": 100, "ease": "hold"}], "ripple": true}),
+    );
+    // a Time Remapping key set at 2.4 s lands at the linear time of 2.4 s, not where its media is
+    s.execute("effects.setParam", json!({"clip": c, "effect": "time_remap", "param": "speed", "value": 50.0, "time": {"seconds": 2.4}})).unwrap();
+    let it = clip(&s, c);
+    assert!(remap_keys(&it).iter().any(|k| (k.0 - 2.4).abs() < 1e-6 && k.1 == 50.0), "{:?}", remap_keys(&it));
+    // Motion keys inside the freeze both stay, and animate through it
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 50.0, "time": {"seconds": 1.2}, "keyframe": true})).unwrap();
+    s.execute("effects.setParam", json!({"clip": c, "effect": "motion", "param": "scale", "value": 150.0, "time": {"seconds": 1.8}, "keyframe": true}))
+        .unwrap();
+    let it = clip(&s, c);
+    let scale = it.effect("motion").and_then(|e| e.param("scale")).unwrap();
+    assert_eq!(scale.keyframes.len(), 2, "{:?}", scale.keyframes);
+    let at = |sec: f64| scale.f64_at(it.effect_time_at(Tick::from_seconds_f64(sec)));
+    assert!((at(1.2) - 50.0).abs() < 1e-6 && (at(1.8) - 150.0).abs() < 1e-6);
+    assert!((at(1.5) - 100.0).abs() < 1e-6, "it animates while the frame is frozen: {}", at(1.5));
+    assert_eq!(it.source_time_at(Tick::from_seconds_f64(1.2)), it.source_time_at(Tick::from_seconds_f64(1.8)), "the frame is frozen");
+}
+
+#[test]
+fn razored_ramps_join_and_re_ramp_from_their_first_frame() {
+    let (mut s, c, _) = numbered();
+    ramp(&mut s, json!({"clip": c, "from": 100, "to": 50, "at": {"seconds": 0}, "duration": {"seconds": 1}, "ripple": true}));
+    s.execute("timeline.razor", json!({"time": {"seconds": 1.6}, "track": "V1"})).unwrap();
+    let q = s.active_sequence().unwrap().clone();
+    let (a, b) = (q.video_tracks[0].items[0].clone(), q.video_tracks[0].items[1].clone());
+    assert!(filmagic_edit::through::is_through_edit(&a, &b), "the cut through a ramp is a through edit");
+    // the right piece, ramped again, starts on the frame it showed
+    let first = b.source_time_at(b.start);
+    assert_ne!(first, b.linear_source_time_at(b.start), "the piece's linear clock is ahead of its first frame");
+    ramp(&mut s, json!({"clip": b.id.0, "from": 50, "to": 100, "duration": {"seconds": 0.5}, "ripple": true}));
+    let nb = clip(&s, b.id.0);
+    assert_eq!(nb.source_time_at(nb.start), first);
+    // and so does it cleared
+    s.execute("edit.undo", json!({})).unwrap();
+    ramp(&mut s, json!({"clip": b.id.0, "clear": true, "ripple": true}));
+    let nb = clip(&s, b.id.0);
+    assert!(!nb.has_speed_ramp());
+    assert_eq!(nb.source_time_at(nb.start), first);
+}
+
+#[test]
+fn clearing_nothing_changes_nothing_and_over_cap_speeds_are_refused() {
+    let (mut s, c, _) = numbered();
+    let undo = s.history.undo.len();
+    let r = ramp(&mut s, json!({"clip": c, "clear": true}));
+    assert_eq!(r["cleared"], false);
+    assert_eq!(s.history.undo.len(), undo, "no undo step");
+    // all-100 % keys are no ramp
+    ramp(&mut s, json!({"clip": c, "from": 100, "to": 100}));
+    assert!(!clip(&s, c).has_speed_ramp());
+    // a speed over 1000× the clip's own is refused, not capped in silence
+    s.execute("clip.speedDuration", json!({"clips": [c], "speed": 1, "ripple": true})).unwrap();
+    let e = s.execute("clip.speedRamp", json!({"clip": c, "to": 5000})).unwrap_err().to_string();
+    assert!(e.contains("1000 times"), "{e}");
+    // a second ramp says it replaced the first
+    let (mut s, c, _) = numbered();
+    ramp(&mut s, json!({"clip": c, "to": 50}));
+    let r = ramp(&mut s, json!({"clip": c, "to": 70}));
+    assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("replaced")), "{r}");
 }

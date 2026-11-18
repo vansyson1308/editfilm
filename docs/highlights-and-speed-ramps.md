@@ -14,8 +14,9 @@ command scores a timeline clip (`clip`, with its linked sound) or a project item
 over time from four cues, and returns ranked segments.
 
 ```json
-{"command": "story.highlights", "params": {"item": 12, "wait": true}}
-{"command": "story.highlights", "params": {"clip": 40, "mode": "rally", "cadence": [0.4, 2.0], "markers": true, "wait": true}}
+{"command": "story.highlights", "params": {"item": 12, "picture": false, "fromSeconds": 0, "toSeconds": 600, "wait": true}}
+{"command": "story.highlights", "params": {"clip": 40, "mode": "rally", "cadence": [0.4, 2.0], "markers": true}}
+{"command": "story.highlights", "params": {"job": 7}}
 ```
 
 | Param | Default | Meaning |
@@ -37,6 +38,15 @@ The analysis runs as a job. Without `wait` the reply holds the `job` id at once.
 its progress, `jobs.cancel` stops it without changing anything, and
 `story.highlights {"job": id}` answers `running` until it can give the result. The results of the
 last 16 calls are kept.
+
+Over MCP (headless or through the app), `wait:true` does not hold the session: the server runs
+the call as a job, polls it, reports its progress and stops it when the request is cancelled, then
+answers with the result, as it does for long exports. Called directly on the engine, `wait:true`
+blocks until the analysis ends, which for two hours of video with the picture read takes minutes:
+there, start the job without `wait` and read it with `{"job": id}`.
+
+A job whose project is closed or replaced before its result is read keeps nothing (its markers are
+not written), and so does one cancelled after its analysis finished.
 
 Each segment has:
 
@@ -117,11 +127,19 @@ the clip would never end.
 
 The ramp is Time Remapping keyframes on the clip's Speed (the intrinsic `time_remap` effect). The
 renderer plays them: the media time shown at each moment is the integral of the speed curve. On
-linear and hold segments this is exact (closed form). On eased ones it uses Simpson's rule, which
-is far below a tick. So the speed glides instead of jumping between razored pieces.
+linear and hold segments this is exact (closed form). On eased ones it uses Simpson's rule, with
+an error of the order of 1e-7 of the segment's length (about 60 ns on a 1 s eased segment). So the
+speed glides instead of jumping between razored pieces.
 
-The keyframes are timed in the clip's media time at its constant speed, like every other clip
-keyframe. The curve is anchored at its first keyframe in play order, which `clip.speedRamp` puts on
+**Which clock keyframes use.** Every clip keyframe, Time Remapping's own Speed included, is timed
+and evaluated in the clip's *linear* media time: its media time at its constant speed, as if there
+were no ramp (`effect_time_at`). Time Remapping changes which frame is shown, not when a keyframe
+happens: Motion, Opacity, effect and mask keyframes stay where they are on the timeline, and keep
+animating through a freeze. A keyframe set at a time (`effects.setParam`, `effects.addKeyframe`,
+Effect Controls) lands at that time's linear media time. Graphics and adjustment layers have no frames to
+ramp: `clip.speedRamp` refuses them.
+
+The curve is anchored at its first keyframe in play order, which `clip.speedRamp` puts on
 the clip's first frame, so that frame stays where it was. Razoring the clip or trimming its head
 keeps every remaining frame where it was, on both pieces.
 
@@ -136,8 +154,17 @@ keeps every remaining frame where it was, on both pieces.
 - **Sound.** Sound does not follow a varying speed, so linked sound is switched off by default,
   and its length follows the picture's with `ripple`. `audio:"keep"` keeps it on, and it drifts
   from the picture after the ramp starts.
-- **Other keyframes.** The clip's other keyframes (opacity, Motion…) follow its media, so they
-  move with the ramp.
+- **Other keyframes.** The clip's other keyframes (opacity, Motion…) stay on the timeline (see
+  *Which clock keyframes use*).
+- **Ramping again.** A second `clip.speedRamp` replaces the first, and the reply says so. A clip
+  that already had a ramp (a razored right piece) keeps the frame it starts on; `clear:true` does
+  too. `clear:true` on a clip without a ramp changes nothing and adds no undo step.
+- **Limits.** A ramp's speeds are a factor of the clip's own speed, at most 1000×: a point above
+  that is refused (raise the clip's speed with `clip.speedDuration` first). Keys that all say
+  100 % are no ramp.
+- **Mask tracking.** `masks.track` is refused on a ramped clip: track first, then ramp.
+- **Sound clips.** Time Remapping is a picture effect. A sound clip that carries a ramp (only a
+  hand-edited project makes one) is silent.
 - **Speed/Duration.** Changing a ramped clip's speed with `clip.speedDuration` scales the ramp
   with it.
 - **Constant remap speeds.** A Time Remapping speed that is not keyframed changes nothing. A

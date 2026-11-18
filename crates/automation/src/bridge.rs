@@ -81,7 +81,10 @@ impl BridgeClient {
             }
         };
         if let Some(e) = result.get("error").and_then(Value::as_str) {
-            return Err(AutomationError::App(format!("export failed: {e}")));
+            return Err(AutomationError::App(format!("{} failed: {e}", if id == "file.exportMedia" { "export" } else { id })));
+        }
+        if let Some((cmd, p)) = crate::long_job::result_command(&start) {
+            return self.call("engine.execute", json!({"command": cmd, "params": p})).await;
         }
         if let Some(o) = start.as_object_mut() {
             o.insert("result".into(), result);

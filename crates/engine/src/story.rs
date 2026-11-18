@@ -470,7 +470,7 @@ fn carries_on(a: &TrackItem, b: &TrackItem) -> bool {
         && a.frame_hold.is_none()
         && b.frame_hold.is_none()
         && a.audio_stream == b.audio_stream
-        && a.source_out() == b.source_in
+        && a.linear_source_out() == b.source_in
 }
 
 /// The stretches of unbroken sound linked to a picture clip, one for each audio track that holds

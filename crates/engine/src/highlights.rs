@@ -67,6 +67,9 @@ struct Pending {
     key: u64,
     ask: Ask,
     cues: Arc<Mutex<Option<Cues>>>,
+    /// `Session::document_epoch` when the job started: another project since, and the result
+    /// (its markers, its clip and item ids) belongs to no document here.
+    epoch: u64,
 }
 
 /// Everything about one call except the media: how to read the cues, where they sit, markers.
@@ -434,7 +437,7 @@ fn highlights(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let run = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), run);
     s.jobs.push(job);
-    s.highlights.pending.push(Pending { job: id, key, ask, cues });
+    s.highlights.pending.push(Pending { job: id, key, ask, cues, epoch: s.document_epoch });
     if wait || cfg!(target_arch = "wasm32") {
         run();
         poll(s);
@@ -452,6 +455,7 @@ fn highlights(s: &mut Session, p: &Value) -> Result<Value> {
         "poll": "jobs.list",
         "cancel": "jobs.cancel",
         "result": format!("story.highlights {{\"job\": {id}}} once it has finished"),
+        "resultCommand": {"command": CMD, "params": {"job": id}},
     }))
 }
 
@@ -482,8 +486,18 @@ pub fn poll(s: &mut Session) {
             continue;
         }
         let failure = job.and_then(|j| lock(&j.result).clone()).and_then(|r| r.err());
+        // cancelled, even after its cues were stored: nothing is kept or marked
+        let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
         let pj = s.highlights.pending.remove(i);
-        let taken = lock(&pj.cues).take();
+        let replaced = pj.epoch != s.document_epoch;
+        let taken = lock(&pj.cues).take().filter(|_| !cancelled && !replaced);
+        let failure = if replaced {
+            Some("the project was closed or replaced while the analysis ran: its result was dropped".to_string())
+        } else if cancelled {
+            Some("stopped".to_string())
+        } else {
+            failure
+        };
         let value = match (taken, failure) {
             (Some(cues), _) => {
                 let cues = Arc::new(cues);
