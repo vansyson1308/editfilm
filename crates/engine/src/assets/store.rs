@@ -207,7 +207,11 @@ impl PackStore {
             return Err(format!("cannot move the pack into {}: {e}", dest.display()));
         }
         if let Some(t) = old {
-            let _ = std::fs::remove_dir_all(t);
+            // marked for deletion before it is deleted: if a locked file (Windows) stops the
+            // deletion halfway, a later sweep deletes the rest instead of restoring a broken copy
+            let del = trash_path(root, Trashed::Removed, id).unwrap_or_else(|_| t.clone());
+            let gone = if std::fs::rename(&t, &del).is_ok() { del } else { t };
+            let _ = std::fs::remove_dir_all(gone);
         }
         self.rebuild_index()
     }
@@ -565,7 +569,8 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
                 .build(),
         )
         .https_only(https_only)
-        .max_redirects(5)
+        // redirects are followed below, one hop at a time, so each hop's host is checked too
+        .max_redirects(0)
         .timeout_connect(Some(Duration::from_secs(30)))
         .timeout_recv_response(Some(Duration::from_secs(STALL_SECONDS)))
         .timeout_per_read(Some(Duration::from_secs(STALL_SECONDS)))
@@ -573,7 +578,22 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
         .user_agent("filmagic-asset-packs")
         .build()
         .into();
-    let resp = agent.get(url).call().map_err(|e| format!("downloading {url}: {e}"))?;
+    let mut at = url.to_string();
+    let mut hops = 0;
+    let resp = loop {
+        let resp = agent.get(&at).call().map_err(|e| format!("downloading {at}: {e}"))?;
+        if !resp.status().is_redirection() {
+            break resp;
+        }
+        hops += 1;
+        let loc = resp.headers().get("location").and_then(|v| v.to_str().ok()).ok_or_else(|| format!("{at} redirects without a location"))?;
+        let next = redirect_target(&at, loc);
+        manifest::check_url(&next).map_err(|e| format!("{url} redirects to {}: {e}", manifest::truncate(&next)))?;
+        if hops > 5 {
+            return Err(format!("{url} redirects more than 5 times"));
+        }
+        at = next;
+    };
     let mut body = resp.into_body();
     let cap = size.unwrap_or(max).min(max);
     let mut reader = body.as_reader().take(cap.saturating_add(1));
@@ -627,6 +647,27 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
     }
     std::fs::rename(&part, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     Ok(got)
+}
+
+/// Where a redirect from `from` to `location` (absolute, scheme-relative, absolute-path or
+/// relative) leads.
+pub(crate) fn redirect_target(from: &str, location: &str) -> String {
+    let l = location.trim();
+    let lower = l.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return l.to_string();
+    }
+    let (scheme, rest) = from.split_once("://").unwrap_or(("https", from));
+    if let Some(r) = l.strip_prefix("//") {
+        return format!("{scheme}://{r}");
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if l.starts_with('/') {
+        return format!("{scheme}://{authority}{l}");
+    }
+    let path = rest.get(authority.len()..).unwrap_or("").split(['?', '#']).next().unwrap_or("");
+    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    format!("{scheme}://{authority}{dir}/{l}")
 }
 
 #[cfg(not(all(feature = "pack-download", not(target_arch = "wasm32"))))]

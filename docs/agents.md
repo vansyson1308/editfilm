@@ -382,7 +382,7 @@ of it is left in a project or in this repository. Use packs rather than synthesi
 | Command | Does |
 |---|---|
 | `assets.catalog` | the packs Filmagic can download (licence checked, pinned by SHA-256), and which are installed |
-| `assets.install` | `{"catalog": id}`, `{"path": folder \| file.zip \| pack.json}`, or `{"url": …, "sha256": …}`; `replace: true` updates an installed pack. A download (`catalog`, `url`) runs as a job: poll `jobs.list` until it is finished (`wait: true` blocks; the CLI always waits) |
+| `assets.install` | `{"catalog": id}`, `{"path": folder \| file.zip \| pack.json}`, or `{"url": …, "sha256": …}`; `replace: true` updates an installed pack. A download (`catalog`, `url`) runs as a job: poll `jobs.list` until it is finished. With `wait: true`, the MCP server and the bridge poll the job for you and reply when it is done (the app keeps responding); the CLI always waits; the app's control channel itself never waits |
 | `assets.fetch` | `{"asset": "pack/item"}` or `{"pack": id}`: download items a manifest lists by URL but that are not on disk yet, as a job |
 | `assets.list` | installed packs (`{"pack": id}`: that pack's items) |
 | `assets.search` | `query` (words; accents optional: `nhac` finds `Nhạc`), `kind`, `mood`, `pack`, `alpha`, `minSeconds`, `maxSeconds`, `limit` |
@@ -438,8 +438,8 @@ parameters are not used (a note says so).
 **Light installs.** A `pack.json` may list items with their own `url`, `sha256` and `size`.
 Installing such a manifest (`{"path": "pack.json"}`, or a `url` that serves one) downloads
 nothing. `assets.fetch` downloads the items you need, each checked against its SHA-256;
-`assets.place` of an item not downloaded yet says to fetch it first (a download is never made
-while a command waits for it).
+`assets.place` of an item not downloaded yet says to fetch it first (a download never runs on the
+app's UI thread).
 
 **Untrusted input.** Archives, manifests and downloads are checked before anything is
 installed: entry names must stay inside the pack on every operating system (no `..`, absolute
@@ -447,9 +447,10 @@ paths, drive letters, Windows device names), only media, the manifest and licenc
 sizes and counts are capped (20 000 entries, 2 GiB a file, 4 GiB a pack, counted on the bytes
 really unpacked), and a pack is staged and renamed into place, so it is either installed whole or
 not at all; a pack an interrupted update had moved aside comes back. Downloads must match their
-SHA-256, use HTTPS all the way (redirects included) to a public host (never this machine or a
-private network), and are given up when the server sends nothing for 60 seconds; `jobs.cancel`
-stops one. Builds without the `pack-download` feature cannot download; the error says how to
+SHA-256, use HTTPS all the way to a public host, and are given up when the server sends nothing
+for 60 seconds; `jobs.cancel` stops one. A URL, and every redirect it leads through, is refused
+when its host is written as an address on this machine or a private network (in any spelling:
+`127.1`, `0x7f000001`, `[::1]`, …); a name that resolves to such an address is not detected. Builds without the `pack-download` feature cannot download; the error says how to
 install the file by `path` instead.
 
 ## 2. Control channel

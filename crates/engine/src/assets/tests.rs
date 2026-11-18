@@ -803,6 +803,53 @@ fn urls_to_this_machine_or_a_private_network_are_refused() {
         assert!(manifest::check_url_with(u, false).is_ok(), "{u}");
     }
     assert!(manifest::check_url_with("http://example.com/x", false).is_err(), "plain http");
+    // every spelling an address parser takes for this machine or a private network
+    for u in [
+        "https://127.1/x",
+        "https://2130706433/x",
+        "https://0x7f000001/x",
+        "https://0177.0.0.1/x",
+        "https://0x7f.1/x",
+        "https://10.1/x",
+        "https://3232235777/x",
+        "https://[0:0:0:0:0:0:0:1]/x",
+        "https://[::ffff:127.0.0.1]/x",
+        "https://[::ffff:7f00:1]/x",
+        "https://[fe80::1]/x",
+        "https://[::]/x",
+        "https://0/x",
+    ] {
+        assert!(manifest::check_url_with(u, false).is_err(), "{u}");
+    }
+    for u in ["https://134744072/x", "https://[2606:4700::1111]/x", "https://1e100.net/x", "https://0x.example.com/x"] {
+        assert!(manifest::check_url_with(u, false).is_ok(), "{u} is public");
+    }
+}
+
+#[test]
+fn redirects_resolve_against_the_url_they_come_from() {
+    use super::store::redirect_target as r;
+    assert_eq!(r("https://a.org/files/p.zip", "https://b.org/x.zip"), "https://b.org/x.zip");
+    assert_eq!(r("https://a.org/files/p.zip", "//c.org/y.zip"), "https://c.org/y.zip");
+    assert_eq!(r("https://a.org/files/p.zip?k=1", "/z.zip"), "https://a.org/z.zip");
+    assert_eq!(r("https://a.org/files/p.zip", "q.zip"), "https://a.org/files/q.zip");
+    // a redirect to this machine is checked like the url itself
+    assert!(manifest::check_url_with(&r("https://a.org/p.zip", "https://127.1/admin"), false).is_err());
+}
+
+#[test]
+fn a_replaced_pack_leaves_nothing_in_the_trash() {
+    let root = tmp_dir("assets-replace-trash");
+    let data = root.join("data");
+    let mut s = session(&data);
+    let from = own_folder(&root);
+    s.execute("assets.buildPack", json!({"from": from.to_string_lossy(), "id": "a"})).unwrap();
+    s.execute("assets.buildPack", json!({"from": from.to_string_lossy(), "id": "a", "replace": true})).unwrap();
+    let left: Vec<String> =
+        std::fs::read_dir(data.join("Packs/.trash")).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
+    assert!(data.join("Packs/a/pack.json").is_file());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

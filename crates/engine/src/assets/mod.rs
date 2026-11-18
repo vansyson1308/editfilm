@@ -34,6 +34,23 @@ use crate::{EngineError, MediaPool, Result, Services, Session};
 use manifest::{Kind, MANIFEST, Manifest};
 pub use store::PackStore;
 
+/// The commands that download as a job. The desktop app's control channel answers requests on
+/// its UI thread, so it runs them without `wait` (see [`without_wait`]); the MCP server and the
+/// bridge poll the job when a caller asks to wait.
+pub const BACKGROUND_COMMANDS: &[&str] = &["assets.install", "assets.fetch"];
+
+/// `params` with `wait` turned off when `id` is one of [`BACKGROUND_COMMANDS`]: the app's control
+/// handler calls this so a download never runs on its UI thread, whatever a client asked.
+pub fn without_wait(id: &str, mut params: Value) -> Value {
+    if BACKGROUND_COMMANDS.contains(&id)
+        && let Some(p) = params.as_object_mut()
+        && p.get("wait").and_then(Value::as_bool) == Some(true)
+    {
+        p.insert("wait".into(), json!(false));
+    }
+    params
+}
+
 type Run = fn(&mut Session, &Value) -> Result<Value>;
 type Enabled = fn(&Session) -> std::result::Result<(), String>;
 
@@ -788,7 +805,6 @@ fn split_ref<'a>(r: &'a str, cmd: &str) -> Result<(&'a str, &'a str)> {
         .ok_or_else(|| bad(cmd, format!("`asset` {:?} must be \"pack/item\", as assets.search returns it", manifest::truncate(r))))
 }
 
-/// The item's file on disk, downloaded first when it is a remote item not fetched yet.
 /// The item's file on disk, or what to run first when it is not there.
 fn local_file(s: &Session, pack: &str, it: &manifest::Item, cmd: &str) -> Result<PathBuf> {
     let dir = s.packs.pack_dir(pack).map_err(err(cmd))?;
@@ -987,6 +1003,15 @@ fn free_track(s: &Session, video: bool, start: Tick, end: Tick) -> Option<TrackI
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn the_app_never_waits_for_a_download() {
+    assert_eq!(without_wait("assets.install", json!({"catalog": "x", "wait": true})), json!({"catalog": "x", "wait": false}));
+    assert_eq!(without_wait("assets.fetch", json!({"pack": "x", "wait": true}))["wait"], json!(false));
+    assert_eq!(without_wait("assets.install", json!({"path": "/x"})), json!({"path": "/x"}), "nothing to turn off");
+    assert_eq!(without_wait("file.exportMedia", json!({"wait": true}))["wait"], json!(true), "other commands are left alone");
+}
 
 #[cfg(test)]
 #[test]

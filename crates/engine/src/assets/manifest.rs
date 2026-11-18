@@ -381,16 +381,59 @@ fn is_local_host(host: &str) -> bool {
         return true;
     }
     if let Some(v6) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-        return v6 == "::" || v6 == "::1" || v6.starts_with("fc") || v6.starts_with("fd") || v6.starts_with("fe80") || v6.starts_with("::ffff:");
+        // an address std cannot parse is no public host either
+        return v6.parse::<std::net::Ipv6Addr>().ok().is_none_or(is_local_v6);
     }
-    let parts: Vec<u8> = host.split('.').filter_map(|p| p.parse().ok()).collect();
-    match (parts.len() == 4 && host.split('.').count() == 4, parts.as_slice()) {
-        (true, [0 | 10 | 127, ..]) => true,
-        (true, [169, 254, ..]) | (true, [192, 168, ..]) => true,
-        (true, [172, b, ..]) => (16..=31).contains(b),
-        (true, [100, b, ..]) => (64..=127).contains(b),
-        _ => false,
+    loose_ipv4(host).is_some_and(is_local_v4)
+}
+
+/// An IPv4 address in any spelling an address parser accepts (inet_aton): four, three, two or one
+/// parts, each decimal, `0x` hex or `0`-led octal (`127.1`, `2130706433`, `0x7f000001`,
+/// `0177.0.0.1`). A host that is not one of these is a name.
+fn loose_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
     }
+    let num = |p: &str| -> Option<u64> {
+        let (digits, radix) = match p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            Some(h) => (h, 16),
+            None if p.len() > 1 && p.starts_with('0') => (&p[1..], 8),
+            None => (p, 10),
+        };
+        if digits.is_empty() && radix == 16 {
+            return None;
+        }
+        if digits.is_empty() { Some(0) } else { u64::from_str_radix(digits, radix).ok() }
+    };
+    let nums: Vec<u64> = parts.iter().map(|p| num(p)).collect::<Option<_>>()?;
+    let (last, head) = nums.split_last()?;
+    if head.iter().any(|n| *n > 255) {
+        return None;
+    }
+    let room = 8 * (4 - head.len() as u32);
+    if room < 64 && *last >= 1u64 << room {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for (i, n) in head.iter().enumerate() {
+        v |= n << (24 - 8 * i as u32);
+    }
+    v |= last;
+    u32::try_from(v).ok().map(std::net::Ipv4Addr::from)
+}
+
+fn is_local_v4(a: std::net::Ipv4Addr) -> bool {
+    let [x, y, ..] = a.octets();
+    a.is_loopback() || a.is_private() || a.is_link_local() || a.is_unspecified() || a.is_broadcast() || x == 0 || (x == 100 && (64..=127).contains(&y))
+}
+
+fn is_local_v6(a: std::net::Ipv6Addr) -> bool {
+    let first = a.segments()[0];
+    if let Some(v4) = a.to_ipv4_mapped() {
+        return is_local_v4(v4);
+    }
+    a.is_loopback() || a.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
 }
 
 /// A SHA-256 as 64 hex digits, lower-cased.

@@ -494,7 +494,8 @@ pub fn handle(app: &mut FilmagicApp, ctx: &egui::Context, req: &ControlRequest) 
     match req.method.as_str() {
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
-            let params = p.get("params").cloned().unwrap_or(json!({}));
+            // a download never runs here: this is the UI thread, and the reply limit is 60 s
+            let params = filmagic_engine::assets::without_wait(id, p.get("params").cloned().unwrap_or(json!({})));
             let invoke = if req.method == "engine.execute" { crate::menus::invoke_command } else { crate::menus::invoke };
             match invoke(app, ctx, id, params) {
                 Ok(v) => ok(v),
