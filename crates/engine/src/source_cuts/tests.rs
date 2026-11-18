@@ -416,3 +416,14 @@ fn a_new_or_opened_project_stops_the_cut_finder() {
     assert!(progress.cancel.load(std::sync::atomic::Ordering::Relaxed) || progress.finished.load(std::sync::atomic::Ordering::Relaxed));
     assert_eq!(s.source_cuts.most_workers(), 0, "a fresh cache for the new project");
 }
+
+/// The speech check (#15) and this one both warn after a razor: what the command said stays and
+/// the source cut is added after it.
+#[test]
+fn source_cut_warnings_are_added_to_the_commands_own() {
+    let mut result = json!({"cuts": 1, "warnings": ["the cut at 2.000 s is inside speech"], "notes": "one note"});
+    super::merge_into(&mut result, super::Report { warnings: vec!["near a cut in its source".into()], notes: vec!["second".into()], ..Default::default() });
+    assert_eq!(result["warnings"], json!(["the cut at 2.000 s is inside speech", "near a cut in its source"]));
+    assert_eq!(result["notes"], json!(["one note", "second"]));
+    assert_eq!(result["cuts"], 1);
+}
