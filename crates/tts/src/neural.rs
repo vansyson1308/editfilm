@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use filmagic_audio_dsp::AudioEffect;
 use filmagic_tts_text::{Chunk, Lang, Lexicon, Overrides};
 
 use crate::catalog;
@@ -42,8 +41,11 @@ pub struct NeuralVoice {
 /// Load (or reuse) the package in `models_dir` and the voice `id`.
 pub fn load(id: &str, models_dir: &Path) -> Result<NeuralVoice, TtsError> {
     let v = catalog::find(id).ok_or_else(|| TtsError::UnknownVoice(id.to_string()))?;
-    if !catalog::installed(models_dir) {
+    if !catalog::core_installed(models_dir) {
         return Err(TtsError::NotInstalled);
+    }
+    if !catalog::voice_installed(models_dir, v) {
+        return Err(TtsError::VoiceNotInstalled(id.to_string()));
     }
     let dir = catalog::package_dir(models_dir);
     let mut guard = cache().lock().unwrap_or_else(PoisonError::into_inner);
@@ -104,30 +106,10 @@ impl Voice for NeuralVoice {
             return Err(TtsError::Empty);
         }
         if params.semitones.abs() > 1e-6 {
-            out = pitch_shift(out, params.semitones, rate);
+            out = crate::dsp::pitch_shift(out, params.semitones, rate);
         }
         // headroom: never clip
-        let peak = out.iter().fold(0f32, |m, x| m.max(x.abs()));
-        if peak > 0.98 {
-            let g = 0.98 / peak;
-            out.iter_mut().for_each(|x| *x *= g);
-        }
+        crate::dsp::headroom(&mut out);
         Ok(Audio { samples: out, sample_rate: rate })
     }
-}
-
-/// Shift pitch by `semitones` keeping the length (latency compensated).
-fn pitch_shift(mut x: Vec<f32>, semitones: f64, rate: u32) -> Vec<f32> {
-    let mut ps = filmagic_audio_dsp::effects::PitchShifter::new(rate as f32, 1);
-    ps.set_param("semitones", semitones as f32);
-    ps.reset();
-    let lat = ps.latency();
-    let n = x.len();
-    x.resize(n + lat, 0.0);
-    for block in x.chunks_mut(4096) {
-        ps.process(&mut [block]);
-    }
-    x.drain(..lat.min(x.len()));
-    x.truncate(n);
-    x
 }

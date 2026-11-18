@@ -465,3 +465,439 @@ fn unique_wav_path_gives_up_instead_of_looping_forever() {
     }
     assert!(crate::voiceover::unique_wav_path(&s, "/nonexistent-dir", "Narration").is_err());
 }
+
+// ------------------------------------------------------------------ VieNeu-TTS (mocked)
+
+/// A session whose models and engine directories are fresh temporary folders and whose VieNeu
+/// interpreter is a shell script speaking the bridge protocol (no Python, no model), given the way
+/// only a host program can: `Session::vieneu_host`. `voices`: run `tts.setupVieneu` first.
+#[cfg(unix)]
+fn vieneu_session(root: &std::path::Path, voices: bool) -> Session {
+    let script = root.join("fake-python.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+R() { printf 'FILMAGIC-REPLY %s\n' "$1"; }
+for a in "$@"; do op="$a"; done
+if [ "$op" = probe ]; then R '{"ok":true,"python":"3.12.1","vieneu":"3.8.4"}'; exit 0; fi
+req=$(cat)
+printf '%s' "$req" > last-request.json
+if [ "$op" = voices ]; then R '{"ok":true,"sampleRate":48000,"voices":[{"name":"Hải Đăng","gender":"male"},{"name":"Mai Anh","gender":"female"}]}'; exit 0; fi
+out=$(printf '%s' "$req" | sed -n 's/.*"out":"\([^"]*\)".*/\1/p')
+n=$(printf '%s' "$req" | grep -o '"expectedSeconds"' | wc -l)
+i=0; segs=""
+while [ "$i" -lt "$n" ]; do
+  head -c 192000 /dev/zero > "$out/seg-$i.f32"
+  segs="$segs${segs:+,}{\"samples\":48000,\"takes\":1}"
+  i=$((i+1))
+done
+R "{\"ok\":true,\"sampleRate\":48000,\"segments\":[$segs]}"
+"#,
+    )
+    .unwrap();
+    let mut s = demo();
+    s.prefs.media_analysis.models_location = root.join("models").to_string_lossy().into_owned();
+    s.vieneu_host = crate::narration::VieneuHost {
+        python: Some(filmagic_tts::vieneu::Python::new("sh", &[&*script.to_string_lossy()], "host")),
+        engine_dir: Some(root.join("engine")),
+    };
+    if voices {
+        s.execute("tts.setupVieneu", json!({"wait": true})).unwrap();
+    }
+    s
+}
+
+/// The last request the stand-in received.
+#[cfg(unix)]
+fn last_request(root: &std::path::Path) -> Value {
+    serde_json::from_slice(&std::fs::read(root.join("engine/work/last-request.json")).unwrap()).unwrap()
+}
+
+/// The result of job `job` (a `tts.render` with `wait: true`).
+fn job_result(s: &Session, r: &Value) -> std::result::Result<(), String> {
+    let j = s.jobs.iter().find(|j| Some(j.id) == r["job"].as_u64()).unwrap();
+    match &*j.result.lock().unwrap() {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(e)) => Err(e.clone()),
+        None => Err("not finished".into()),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn vieneu_voices_are_listed_once_set_up() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let r = s.execute("tts.voices", json!({})).unwrap();
+    assert_eq!(r["vieneu"]["ready"], false);
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("tts.engines")), "{r}");
+    assert!(r["languages"].as_array().unwrap().iter().any(|l| l["id"] == "vi-VN"));
+
+    let e = s.execute("tts.engines", json!({})).unwrap();
+    assert_eq!(e["vieneu"]["available"], true, "{e}");
+    assert_eq!(e["vieneu"]["ready"], false);
+    assert_eq!(e["vieneu"]["python"]["vieneu"], "3.8.4");
+    assert_eq!(e["vieneu"]["package"], "vieneu==3.8.4");
+    assert!(e["vieneu"]["next"].as_str().unwrap().contains("tts.setupVieneu"));
+    let engine = e["vieneu"]["engineDir"].as_str().unwrap();
+    assert!(e["vieneu"]["venv"].as_str().unwrap().starts_with(engine), "the environment is in the engine directory");
+    assert!(!engine.starts_with(&*root.path().join("models").to_string_lossy()), "not in the models directory");
+
+    let job = s.execute("tts.setupVieneu", json!({"wait": true})).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+
+    let r = s.execute("tts.voices", json!({})).unwrap();
+    assert_eq!(r["vieneu"]["ready"], true, "{r}");
+    let vi: Vec<&Value> = r["voices"].as_array().unwrap().iter().filter(|v| v["language"] == "vi-VN").collect();
+    let ids: Vec<&str> = vi.iter().map(|v| v["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["vieneu:Hải Đăng", "vieneu:Mai Anh", "vieneu-clone"]);
+    assert!(vi.iter().all(|v| v["engine"] == "vieneu" && v["installed"] == true));
+    assert_eq!(s.execute("tts.engines", json!({})).unwrap()["vieneu"]["ready"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn vieneu_narration_is_rendered_then_created_and_edited() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), true);
+    let dir = root.path().join("out").to_string_lossy().into_owned();
+    let p = json!({"text": "Xin chào các bạn. [pause 500ms] Hôm nay trời đẹp.", "voice": "vieneu:Hải Đăng", "time": 0, "dir": dir});
+    // minutes of synthesis never run inside a command: a job (tts.render) does it first
+    let e = s.execute("tts.create", p.clone()).unwrap_err().to_string();
+    assert!(e.contains("tts.render") && e.contains("jobs.list"), "{e}");
+    let job = s.execute("tts.render", json!({"text": p["text"], "voice": p["voice"], "wait": true})).unwrap();
+    assert_eq!(job["cached"], false);
+    assert_eq!(job_result(&s, &job), Ok(()));
+    let r = s.execute("tts.create", p).unwrap();
+    assert_eq!(r["sampleRate"], 48_000);
+    let samples = wav_samples(r["path"].as_str().unwrap());
+    assert_eq!(samples.len(), 48_000 * 2 + 24_000, "two 1 s segments and the 0.5 s pause");
+    let clip = clip(&s, r["clip"].as_u64().unwrap());
+    assert_eq!(clip.duration, Tick::from_units(samples.len() as i64, 48_000));
+    let n = s.execute("tts.inspect", json!({"clip": clip.id.0})).unwrap();
+    assert_eq!(n["narration"]["language"], "vi-VN");
+    assert_eq!(n["narration"]["voice"], "vieneu:Hải Đăng");
+    // regenerate with another voice, in place, typed in decomposed form (NFD)
+    let nfd = "vieneu:Mai Anh";
+    let job = s.execute("tts.render", json!({"clip": clip.id.0, "voice": nfd, "text": "Tạm biệt.", "wait": true})).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+    let e = s.execute("tts.edit", json!({"clip": clip.id.0, "voice": nfd, "text": "Tạm biệt."})).unwrap();
+    assert_eq!(s.execute("tts.inspect", json!({"clip": e["clip"]})).unwrap()["narration"]["voice"], "vieneu:Mai Anh");
+    // "Hear this voice" speaks Vietnamese with a VieNeu voice
+    let job = s.execute("tts.render", json!({"sample": true, "voice": "vieneu:Mai Anh", "wait": true})).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+    assert_eq!(last_request(root.path())["segments"][0]["text"], filmagic_tts::vieneu::SAMPLE_SENTENCE);
+    s.execute("tts.preview", json!({"sample": true, "voice": "vieneu:Mai Anh"})).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_decomposed_voice_name_is_the_same_voice() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), true);
+    let nfd = "vieneu:Ha\u{309}i \u{110}a\u{306}ng";
+    let job = s.execute("tts.render", json!({"text": "Xin chào.", "voice": nfd, "wait": true})).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+    assert_eq!(last_request(root.path())["voice"], "Hải Đăng");
+}
+
+#[cfg(unix)]
+#[test]
+fn vieneu_hostile_parameters_are_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), true);
+    let dir = root.path().join("out").to_string_lossy().into_owned();
+    let undo = s.history.undo.len();
+    for (p, want) in [
+        (json!({"text": "Chào.", "voice": "vieneu:Không Có"}), "vieneu:Mai Anh"),
+        (json!({"text": "Chào.", "voice": "vieneu:"}), "not a VieNeu voice"),
+        (json!({"text": "Chào.", "voice": "vieneu:a\nb"}), "not a VieNeu voice"),
+        (json!({"text": "Chào.", "voice": format!("vieneu:{}", "x".repeat(500))}), "not a VieNeu voice"),
+        (json!({"text": "Chào.", "voice": 7}), "must be a string"),
+        (json!({"text": "Chào.", "voice": "nope"}), "unknown voice"),
+        (json!({"text": "Chào.", "voice": "vieneu-clone"}), "referenceAudio"),
+        (json!({"text": "Chào.", "voice": "vieneu-clone", "referenceAudio": "/no/such/clip.wav", "confirmAuthorizedVoice": true}), "reference clip"),
+        (json!({"text": "Chào.", "voice": "vieneu-clone", "referenceAudio": 5, "confirmAuthorizedVoice": true}), "referenceAudio"),
+        (json!({"text": "Chào.", "voice": "vieneu:Mai Anh", "referenceAudio": "/x.wav"}), "only works with"),
+        (json!({"text": "", "voice": "vieneu:Mai Anh"}), "nothing to say"),
+        (json!({"text": "a ".repeat(40_000), "voice": "vieneu:Mai Anh"}), "longer than"),
+        (json!({"text": "Chào.", "voice": "vieneu:Mai Anh", "pace": f64::MAX}), "pace"),
+        (json!({"text": "Chào.", "voice": "vieneu:Mai Anh", "pace": "fast"}), "pace"),
+    ] {
+        let mut q = p.clone();
+        q["dir"] = json!(dir);
+        q["time"] = json!(0);
+        let e = s.execute("tts.create", q.clone()).unwrap_err().to_string();
+        assert!(e.contains(want), "{p}: {e}");
+        assert!(s.execute("tts.render", q).is_err(), "{p}");
+    }
+    assert_eq!(s.history.undo.len(), undo, "nothing was added");
+    // no command chooses a program to run
+    let e = s.execute("tts.setupVieneu", json!({"python": "/bin/sh"})).unwrap_err().to_string();
+    assert!(e.contains("not accepted") && e.contains(filmagic_tts::vieneu::PYTHON_ENV), "{e}");
+    assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.vieneuPython", "value": "/bin/sh"})).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn cloning_needs_consent_and_keeps_its_clip() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), true);
+    let dir = root.path().join("out").to_string_lossy().into_owned();
+    let clip_path = root.path().join("speaker.wav");
+    std::fs::write(&clip_path, b"RIFF....WAVE").unwrap();
+    let reference = clip_path.to_string_lossy().into_owned();
+    let p = json!({"text": "Xin chào.", "voice": "vieneu-clone", "referenceAudio": reference, "time": 0, "dir": dir});
+    for cmd in ["tts.render", "tts.create"] {
+        let e = s.execute(cmd, p.clone()).unwrap_err().to_string();
+        assert!(e.contains("consent"), "{cmd}: {e}");
+    }
+    let mut ok = p.clone();
+    ok["confirmAuthorizedVoice"] = json!(false);
+    assert!(s.execute("tts.render", ok.clone()).unwrap_err().to_string().contains("consent"));
+    ok["confirmAuthorizedVoice"] = json!(true);
+    let mut render = ok.clone();
+    render["wait"] = json!(true);
+    let job = s.execute("tts.render", render.clone()).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+    assert_eq!(last_request(root.path())["reference"], reference);
+    let r = s.execute("tts.create", ok).unwrap();
+    let n = s.execute("tts.inspect", json!({"clip": r["clip"]})).unwrap();
+    assert_eq!(n["narration"]["referenceAudio"], reference);
+    // a clip replaced under the same name is another voice: the cached take is not reused
+    std::fs::write(&clip_path, b"RIFF....WAVE and a different speaker").unwrap();
+    assert_eq!(s.execute("tts.render", render).unwrap()["cached"], false);
+    // an edit of the text keeps the clip (agreed when the narration was made)
+    let job = s.execute("tts.render", json!({"clip": r["clip"], "text": "Tạm biệt.", "wait": true})).unwrap();
+    assert_eq!(job_result(&s, &job), Ok(()));
+    s.execute("tts.edit", json!({"clip": r["clip"], "text": "Tạm biệt."})).unwrap();
+    assert_eq!(last_request(root.path())["reference"], reference);
+}
+
+#[test]
+fn a_missing_vieneu_engine_gives_the_install_steps() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = demo();
+    s.prefs.media_analysis.models_location = root.path().join("models").to_string_lossy().into_owned();
+    s.vieneu_host = crate::narration::VieneuHost {
+        python: Some(filmagic_tts::vieneu::Python::new(root.path().join("no-python-here"), &[], "host")),
+        engine_dir: Some(root.path().join("engine")),
+    };
+    // unless the machine running the tests has vieneu installed for its own Python
+    let e = s.execute("tts.engines", json!({})).unwrap();
+    if e["vieneu"]["available"] == true {
+        return;
+    }
+    assert!(!e["vieneu"]["installSteps"].as_array().unwrap().is_empty(), "{e}");
+    assert!(e["vieneu"]["tried"].as_array().unwrap().iter().any(|t| t["command"].as_str().unwrap().contains("no-python-here")));
+    let job = s.execute("tts.render", json!({"text": "Xin chào.", "voice": "vieneu:Hải Đăng", "wait": true})).unwrap();
+    let err = job_result(&s, &job).unwrap_err();
+    assert!(err.contains("not installed") && err.contains("tts.setupVieneu"), "{err}");
+    let err = s.execute("tts.setupVieneu", json!({})).unwrap_err().to_string();
+    assert!(err.contains("Steps:") && err.contains("pip install vieneu==3.8.4"), "{err}");
+    for bad in [json!({"install": "yes"}), json!({"install": 1}), json!({"python": 3}), json!({"python": ""})] {
+        assert!(s.execute("tts.setupVieneu", bad.clone()).is_err(), "{bad}");
+    }
+    // the built-in voices still work
+    let dir = root.path().join("out").to_string_lossy().into_owned();
+    s.execute("tts.create", json!({"text": "Still fine.", "time": 0, "dir": dir})).unwrap();
+}
+
+#[test]
+fn natural_voices_download_one_by_one() {
+    let mut s = Session::default();
+    let root = tempfile::tempdir().unwrap();
+    s.prefs.media_analysis.models_location = root.path().to_string_lossy().into_owned();
+    let r = s.execute("tts.voices", json!({})).unwrap();
+    let per = r["package"]["perVoice"].as_array().unwrap();
+    assert_eq!(per.len(), filmagic_tts::catalog::VOICES.len());
+    let one = per[0]["missingBytes"].as_u64().unwrap();
+    assert!(one < r["package"]["size"].as_u64().unwrap(), "one voice downloads less than the whole package");
+    for bad in [
+        json!({"voices": ["kokoro-nope"]}),
+        json!({"voices": "kokoro-heart"}),
+        json!({"voices": []}),
+        json!({"voices": [1]}),
+        json!({"voices": ["vieneu:Mai Anh"]}),
+    ] {
+        let e = s.execute("tts.downloadVoices", bad.clone()).unwrap_err().to_string();
+        assert!(e.contains("voice") || e.contains("not available"), "{bad}: {e}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn narrations_are_never_written_into_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    std::fs::create_dir_all(engine.join("bridge")).unwrap();
+    std::fs::create_dir_all(engine.join("venv/lib/python3.12/site-packages")).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    let snap = (*s.project).clone();
+    for dir in [
+        engine.join("bridge"),
+        engine.join("venv/lib/python3.12/site-packages"),
+        engine.join("work/new"),
+        link.join("bridge"),
+        root.path().join("out/../engine/bridge"),
+    ] {
+        let e = s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": dir.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{}: {e}", dir.display());
+    }
+    assert_eq!(*s.project, snap, "nothing imported");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| p.extension().is_some_and(|e| e == "wav")).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // beside the engine folder is fine
+    let ok = root.path().join("engine-narrations");
+    s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": ok.to_string_lossy()})).unwrap();
+}
+
+#[cfg(unix)]
+fn walk(p: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+        let path = e.path();
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+#[test]
+fn host_writes_into_the_vieneu_engine_folder_are_refused() {
+    use crate::Services;
+    let Some(engine) = crate::narration::vieneu_engine_dir() else { return };
+    for p in [engine.join("venv/lib/python3.12/site-packages/evil.pth"), engine.join("bridge/vieneu/__init__.py")] {
+        let path = p.to_string_lossy();
+        let e = crate::FsServices.write_file(&path, b"import os\n").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{path}: {e}");
+        assert_eq!(crate::FsServices.write_file_new(&path, b"import os\n").unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!p.exists());
+    }
+    let ok = tempfile::tempdir().unwrap();
+    crate::FsServices.write_file(&ok.path().join("a.txt").to_string_lossy(), b"x").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn luts_are_never_exported_into_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let site = root.path().join("engine/venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(root.path().join("engine"), &link).unwrap();
+    for path in [site.join("evil.pth"), link.join("venv/lib/python3.12/site-packages/evil.pth")] {
+        let e = s
+            .execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": path.to_string_lossy(), "format": "cube"}))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("engine folder"), "{e}");
+    }
+    assert!(!site.join("evil.pth").exists());
+    let ok = root.path().join("look.cube");
+    s.execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": ok.to_string_lossy()})).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn exports_saves_and_scratch_disks_never_land_in_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    let site = engine.join("venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    let snap = (*s.project).clone();
+    // the encoder opens the file itself: its path and the folder it would create are refused
+    for path in [site.join("evil.pth"), site.join("new-folder/evil.wav"), link.join("venv/lib/python3.12/site-packages/evil.pth")] {
+        let e = s.execute("file.exportMedia", json!({"path": path.to_string_lossy(), "format": "wav", "wait": true})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{}: {e}", path.display());
+    }
+    assert!(!site.join("new-folder").exists());
+    // the project manager copies media and writes a project into `destination`
+    let e = s.execute("file.projectManager", json!({"destination": site.to_string_lossy(), "wait": true})).unwrap_err().to_string();
+    assert!(e.contains("engine folder"), "{e}");
+    // scratch disks: captured media, previews and auto-saves are written there
+    for k in ["captured", "videoPreviews", "audioPreviews", "autoSave"] {
+        let e = s.execute("file.projectSettings.scratchDisks", json!({k: site.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{k}: {e}");
+    }
+    assert_eq!(*s.project, snap, "nothing changed");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| !p.starts_with(engine.join("work"))).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // elsewhere is fine
+    let ok = root.path().join("out").join("demo.wav");
+    s.execute("file.exportMedia", json!({"path": ok.to_string_lossy(), "format": "wav", "wait": true})).unwrap();
+}
+
+#[test]
+fn media_cache_folders_may_not_overlap_the_default_engine_folder() {
+    let Some(engine) = crate::narration::vieneu_engine_dir() else { return };
+    let mut s = Session::default();
+    for key in ["mediaCache.location", "mediaCache.databaseLocation"] {
+        for v in [engine.join("venv"), engine.clone()] {
+            let e = s.execute("prefs.set", json!({"key": key, "value": v.to_string_lossy()})).unwrap_err().to_string();
+            assert!(e.contains("overlap"), "{key}: {e}");
+        }
+        if let Some(parent) = engine.parent() {
+            assert!(s.execute("prefs.set", json!({"key": key, "value": parent.to_string_lossy()})).is_err(), "{key}: a folder that holds the engine");
+        }
+    }
+    assert_eq!(s.prefs.media_cache.location, "");
+    let ok = tempfile::tempdir().unwrap();
+    s.execute("prefs.set", json!({"key": "mediaCache.location", "value": ok.path().to_string_lossy()})).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn proxies_ingest_copies_and_interchange_media_never_land_in_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    let site = engine.join("venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    // file media, so media.createProxies is enabled
+    s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": root.path().join("media").to_string_lossy()})).unwrap();
+    let snap = (*s.project).clone();
+    for dest in [site.clone(), link.join("venv/lib/python3.12/site-packages"), root.path().join("x/../engine/venv")] {
+        let d = dest.to_string_lossy();
+        let e = s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": d})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "ingest {d}: {e}");
+        let e = s.execute("media.createProxies", json!({"destination": d})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "proxies {d}: {e}");
+        for cmd in ["file.exportAaf", "file.exportOmf"] {
+            let e = s.execute(cmd, json!({"path": dest.join("x.aaf").to_string_lossy(), "mixdownVideo": true, "audio": "separate"})).unwrap_err().to_string();
+            assert!(e.contains("engine folder"), "{cmd} {d}: {e}");
+        }
+    }
+    // assets.buildPack writes its pack.json into `from`
+    let e = s.execute("assets.buildPack", json!({"from": site.to_string_lossy(), "id": "x"})).unwrap_err().to_string();
+    assert!(e.contains("engine folder"), "{e}");
+    assert_eq!(s.project.settings.ingest, snap.settings.ingest, "the ingest settings are unchanged");
+    assert!(s.prefs.auto_save.scratch_folders.is_empty(), "the folder was not trusted");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| !p.starts_with(engine.join("work"))).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // a destination that arrives trusted anyway (a project file, a folder chosen earlier) is
+    // still refused where the copy is made
+    let wav = root.path().join("tone.wav");
+    std::fs::write(&wav, crate::voiceover::write_wav_f32(&[0.0; 4800], 48_000)).unwrap();
+    let d = site.to_string_lossy().into_owned();
+    s.prefs.auto_save.scratch_folders.push(d.clone());
+    let ing = &mut std::sync::Arc::make_mut(&mut s.project).settings.ingest;
+    (ing.enabled, ing.destination) = (true, Some(d));
+    ing.action = filmagic_project::IngestAction::Copy;
+    let e = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).map(|v| v.to_string()).unwrap_or_else(|e| e.to_string());
+    assert!(e.contains("engine folder"), "{e}");
+    assert!(!site.join("tone.wav").exists());
+    // elsewhere is fine
+    s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": root.path().join("ingest").to_string_lossy()})).unwrap();
+}

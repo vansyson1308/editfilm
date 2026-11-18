@@ -179,3 +179,65 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// Records the language each transcription asked for.
+struct LanguageProbe {
+    seen: std::sync::Mutex<Vec<Option<String>>>,
+}
+
+impl filmagic_speech::Transcriber for LanguageProbe {
+    fn id(&self) -> String {
+        "probe".into()
+    }
+    fn transcribe(&self, _: &[f32], opts: &filmagic_speech::Options, _: filmagic_speech::ProgressFn) -> Result<Transcript, filmagic_speech::SpeechError> {
+        self.seen.lock().unwrap().push(opts.language.clone());
+        let mut t = Transcript { language: opts.language.clone().unwrap_or_else(|| "vi".into()), ..Default::default() };
+        t.words.push(Word::new("Xin", Tick::ZERO, Tick::from_seconds_f64(0.3)));
+        Ok(t)
+    }
+}
+
+#[test]
+fn transcription_takes_vietnamese_and_refuses_unknown_languages() {
+    let (mut s, item, _) = session();
+    let probe = Arc::new(LanguageProbe { seen: Default::default() });
+    s.transcriber = Some(probe.clone());
+    for (given, want) in [
+        (json!("vi"), Some("vi")),
+        (json!("vi-VN"), Some("vi")),
+        (json!(" VI "), Some("vi")),
+        (json!("auto"), None),
+        (json!(""), None),
+        (json!("yue"), Some("yue")),
+    ] {
+        s.execute("transcript.generate", json!({"items": [item.0], "language": given})).unwrap_or_else(|e| panic!("{given}: {e}"));
+        assert_eq!(probe.seen.lock().unwrap().last().cloned().flatten().as_deref(), want, "{given}");
+    }
+    // the setting: Vietnamese as the default language, written either way
+    for setting in ["vi", "vi-VN"] {
+        s.prefs.media_analysis.default_language = setting.into();
+        s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+        assert_eq!(probe.seen.lock().unwrap().last().cloned().flatten().as_deref(), Some("vi"), "{setting}");
+    }
+    let calls = probe.seen.lock().unwrap().len();
+    for bad in [json!("xx"), json!("klingon"), json!("vi\u{0}"), json!(5), json!(true), json!(["vi"]), json!({"code": "vi"}), json!("a".repeat(100_000))] {
+        let e = s.execute("transcript.generate", json!({"items": [item.0], "language": bad})).unwrap_err().to_string();
+        assert!(e.contains("language"), "{e}");
+        assert!(e.len() < 400, "the input is not echoed in full: {} bytes", e.len());
+    }
+    assert_eq!(probe.seen.lock().unwrap().len(), calls, "refused before transcribing");
+}
+
+#[test]
+fn models_list_the_languages_and_a_model_for_vietnamese() {
+    let mut s = Session::default();
+    let r = s.execute("transcript.models", json!({})).unwrap();
+    let codes: Vec<&str> = r["languages"].as_array().unwrap().iter().map(|l| l["code"].as_str().unwrap()).collect();
+    assert!(codes.contains(&"vi") && codes.contains(&"en") && codes.len() >= 99, "{codes:?}");
+    let ids: Vec<&str> = r["models"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"whisper-large-v3-turbo"), "{ids:?}");
+    // the Settings choice offers it too, and Vietnamese as a default language
+    s.execute("prefs.set", json!({"key": "mediaAnalysis.whisperModel", "value": "whisper-large-v3-turbo"})).unwrap();
+    s.execute("prefs.set", json!({"key": "mediaAnalysis.defaultLanguage", "value": "vi"})).unwrap();
+    assert_eq!(s.prefs.media_analysis.default_language, "vi");
+}

@@ -274,6 +274,9 @@ pub struct MediaAnalysisPrefs {
     pub default_language: String,
     /// Speech model (`transcript.models`).
     pub whisper_model: String,
+    /// Where downloaded models live (speech models, natural voices, VieNeu-TTS); empty = the
+    /// default `<data dir>/models`. `FILMAGIC_MODELS_DIR` overrides it (`crate::models_store`).
+    pub models_location: String,
 }
 
 impl Default for MediaAnalysisPrefs {
@@ -287,6 +290,7 @@ impl Default for MediaAnalysisPrefs {
             language_auto_detect: false,
             default_language: "en".into(),
             whisper_model: filmagic_speech::models::DEFAULT_MODEL.into(),
+            models_location: String::new(),
         }
     }
 }

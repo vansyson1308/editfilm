@@ -1084,6 +1084,12 @@ fn project_settings_scratch(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Err(crate::doc_path::NotFollowed::Refused(why)) = crate::doc_path::resolve(x, s.path.as_deref().map(std::path::Path::new)) {
                     return Err(bad("file.projectSettings.scratchDisks", format!("`{k}` must be a folder on this computer: {why}")));
                 }
+                let abs = match s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()) {
+                    Some(dir) if std::path::Path::new(x).is_relative() => dir.join(x),
+                    _ => std::path::PathBuf::from(x),
+                };
+                crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), &abs)
+                    .map_err(|e| bad("file.projectSettings.scratchDisks", format!("`{k}`: {e}")))?;
                 chosen.push(x.clone());
                 *slot = Some(x.clone());
             }

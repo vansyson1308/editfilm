@@ -361,6 +361,11 @@ pub fn prepare_audio(s: &Session, seq: ItemId, plan: &AudioPlan, media_dir: &str
 
 /// Render the video of `seq` to one file for an AAF video mixdown.
 fn mixdown(s: &Session, seq: ItemId, path: &str) -> Result<MixdownVideo> {
+    // the encoder opens the file itself (not through the host services)
+    let out = std::path::Path::new(path);
+    for p in std::iter::once(out).chain(out.parent().filter(|d| !d.as_os_str().is_empty())) {
+        crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), p).map_err(EngineError::Other)?;
+    }
     let q = s.project.sequence(seq).ok_or(EngineError::NoSequence)?;
     let dur = q.duration();
     if dur <= Tick::ZERO {
@@ -414,6 +419,9 @@ pub fn export_aaf(s: &mut Session, p: &Value) -> Result<Value> {
     check_linked_streams(s, seq, &plan)?;
     let (dir, stem) = split(&path);
     let media_dir = join(&dir, &format!("{stem} Media"));
+    for d in [path.as_str(), media_dir.as_str()] {
+        crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), std::path::Path::new(d)).map_err(|e| bad(cmd, e))?;
+    }
     let mut files = Vec::new();
     if plan.mode != AudioMode::Embedded || bool_p(p, "mixdownVideo").unwrap_or(false) {
         ensure_dir(s, &media_dir);
@@ -446,6 +454,9 @@ pub fn export_omf(s: &mut Session, p: &Value) -> Result<Value> {
     let plan = plan_from(s, p, seq, cmd, true)?;
     let (dir, stem) = split(&path);
     let media_dir = join(&dir, &format!("{stem} Audio Files"));
+    for d in [path.as_str(), media_dir.as_str()] {
+        crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), std::path::Path::new(d)).map_err(|e| bad(cmd, e))?;
+    }
     if plan.mode == AudioMode::Separate {
         ensure_dir(s, &media_dir);
     }

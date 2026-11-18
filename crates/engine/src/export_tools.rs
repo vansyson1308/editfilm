@@ -574,6 +574,13 @@ pub fn spawn_export(s: &mut Session, project: Arc<Project>, seq: ItemId, mut set
     if !filmagic_export::available(format) {
         return Err(EngineError::Other(format!("{} export is not available (no encoder registered)", format.label())));
     }
+    // the encoder opens the output itself (not through the host): the file, its folder (created
+    // below) and the OP-Atom audio files beside it must not land in VieNeu's engine folder
+    let engine = crate::narration::vieneu_engine(s);
+    let out = Path::new(&settings.path);
+    for p in std::iter::once(out).chain(out.parent().filter(|d| !d.as_os_str().is_empty())) {
+        crate::narration::refuse_inside_engine(engine.as_deref(), p).map_err(EngineError::Other)?;
+    }
     if s.services.export_in_memory() {
         let services = s.services.clone();
         settings.sink = Some(filmagic_export::OutputSink(Arc::new(move |path: &str, data: Vec<u8>| services.write_file(path, &data))));
