@@ -707,7 +707,7 @@ async fn a_closed_app_is_reopened_on_its_own_project() {
     let (port, _) = fake_app(TOKEN, Some("/films/cut.fcproj")).await;
     let m = FilmagicMcp::bridge_with_token(&format!("127.0.0.1:{port}"), Some(TOKEN.into())).unwrap().with_data_dir(Some(data.path().to_path_buf()));
     m.run("sequence.inspect", json!({})).await.unwrap();
-    assert_eq!(*m.app_project.lock().unwrap(), Some(Some("/films/cut.fcproj".to_string())), "remembered on the first command");
+    assert_eq!(m.remembered_project(), Some(Some("/films/cut.fcproj".to_string())), "remembered on the first command");
     // the user closed the app: the same session, now pointing at a dead port
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let dead = l.local_addr().unwrap().to_string();
@@ -715,11 +715,11 @@ async fn a_closed_app_is_reopened_on_its_own_project() {
     let closed = FilmagicMcp::bridge_with_token(&dead, Some(TOKEN.into())).unwrap().with_data_dir(Some(data.path().to_path_buf()));
     let r = app_open(&closed, None).await;
     assert!(r.is_error == Some(true) && text_of(&r).contains("pass `path`"), "unknown project: {}", text_of(&r));
-    *closed.app_project.lock().unwrap() = Some(Some("/films/cut.fcproj".to_string()));
+    closed.remember_project(Some("/films/cut.fcproj".to_string()));
     // the project is accepted; the launch then needs the app's executable, which tests do not have
     let r = app_open(&closed, None).await;
     assert!(text_of(&r).contains("FILMAGIC_APP"), "{}", text_of(&r));
-    *closed.app_project.lock().unwrap() = Some(None);
+    closed.remember_project(None);
     assert!(text_of(&app_open(&closed, None).await).contains("never saved"), "a project that was never saved");
 }
 
@@ -753,4 +753,52 @@ async fn app_open_reports_an_app_without_control_server() {
     assert!(!project.exists(), "nothing was saved");
     let v = json_of(&m.app_status().await.unwrap());
     assert_eq!(v["appWithoutControl"], true, "{v}");
+}
+
+/// QC final review of #17: the remembered project follows the app when the user (or a `ui_*`
+/// gesture) opens another project, without an extra round trip on every command: a
+/// `project.inspect` reply is used as it is, `app_status` and `file.*` commands read it again, and
+/// any other call reads it only once the last reading is APP_PROJECT_REFRESH old.
+#[tokio::test]
+async fn the_remembered_project_follows_the_app_without_a_round_trip_per_command() {
+    let (port, seen) = fake_app(TOKEN, Some("/films/now.fcproj")).await;
+    let m = FilmagicMcp::bridge_with_token(&format!("127.0.0.1:{port}"), Some(TOKEN.into())).unwrap();
+    let inspections = |seen: &[Value]| seen.iter().filter(|r| r["params"]["command"] == "project.inspect").count();
+    let stale = || Some(Some("/films/old.fcproj".to_string()));
+    let make_stale = |m: &FilmagicMcp| {
+        let long_ago = std::time::Instant::now().checked_sub(APP_PROJECT_REFRESH + std::time::Duration::from_secs(1)).unwrap();
+        *m.app_project.lock().unwrap() = Some((Some("/films/old.fcproj".to_string()), long_ago));
+    };
+    // a fresh reading: an ordinary command adds no round trip and keeps it
+    m.remember_project(Some("/films/old.fcproj".to_string()));
+    m.run("sequence.inspect", json!({})).await.unwrap();
+    assert_eq!(inspections(&seen.lock().await), 0, "no project.inspect on an ordinary command");
+    assert_eq!(m.remembered_project(), stale());
+    // ... but the app's own project.inspect reply is used as it is
+    m.run("project.inspect", json!({})).await.unwrap();
+    assert_eq!(m.remembered_project(), Some(Some("/films/now.fcproj".to_string())));
+    assert_eq!(inspections(&seen.lock().await), 1, "only the agent's own call");
+    // an old reading is refreshed by the next command, once
+    make_stale(&m);
+    m.run("sequence.inspect", json!({})).await.unwrap();
+    assert_eq!(m.remembered_project(), Some(Some("/films/now.fcproj".to_string())));
+    m.run("sequence.inspect", json!({})).await.unwrap();
+    assert_eq!(inspections(&seen.lock().await), 2, "one refresh, then fresh again");
+    // ... and by a ui_* call
+    make_stale(&m);
+    m.ui("ui.inspect", json!({})).await.unwrap();
+    assert_eq!(m.remembered_project(), Some(Some("/films/now.fcproj".to_string())));
+    // app_status always reads it while the app answers
+    m.remember_project(Some("/films/old.fcproj".to_string()));
+    m.app_status().await.unwrap();
+    assert_eq!(m.remembered_project(), Some(Some("/films/now.fcproj".to_string())));
+}
+
+/// QC final review of #17: with Filmagic open without its control server, `app_open` refuses, so
+/// the message must not offer it as the way out while that window is open.
+#[test]
+fn the_no_control_message_says_what_works() {
+    let why = crate::app_link::Found::NoControl(vec![42]).why_not().unwrap();
+    assert!(!why.contains("let `app_open`") && !why.contains("or let"), "{why}");
+    assert!(why.contains("close it") && why.contains("--control"), "{why}");
 }

@@ -218,7 +218,10 @@ project open.
 If the user closes the app, the next command fails with "Filmagic is not answering at …: the app
 was closed". The session never falls back to headless on its own, because headless would edit a
 different copy. `app_open` then starts the app again on the project it had: the server remembers
-the app's project file while it drives the app. If that project was never saved, `app_open` needs
+the app's project file while it drives the app. It reads the file again after `file.*` commands
+and on `app_status`, and otherwise on the first call 30 s or more after the last reading. A project
+the user opened by hand is picked up that way; call `app_status` before the user closes the app to
+be sure. If that project was never saved, `app_open` needs
 `path`, and it never starts on the demo project. Edits the closed app had not saved are offered by
 its auto-save recovery. In app mode with the app still open, `app_open` changes nothing.
 

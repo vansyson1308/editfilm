@@ -70,7 +70,7 @@ impl Found {
                 e.addr()
             )),
             Self::NoControl(pids) => Some(format!(
-                "Filmagic is open (process {}) without its control server, so agents cannot drive that window: close it and start it with `--control <port>`, or let `app_open` start one",
+                "Filmagic is open (process {}) without its control server, so agents cannot drive that window. Ask the user to close it; then `app_open` can start the app with its control server. Or the user restarts it with `--control <port>`",
                 pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
             )),
             Self::NotAnswering { endpoint, why } => Some(format!("the Filmagic app on {} does not answer as that app ({why})", endpoint.addr())),

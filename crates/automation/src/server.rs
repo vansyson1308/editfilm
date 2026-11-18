@@ -42,9 +42,9 @@ pub struct FilmagicMcp {
     data_dir: Option<PathBuf>,
     /// `app_open` calls take turns: two would launch two apps.
     app_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The bridged app's project file as last seen: `None` until known, `Some(None)` when it was
-    /// never saved. `app_open` reopens it when the user has closed the app (#17).
-    app_project: Arc<Mutex<Option<Option<String>>>>,
+    /// The bridged app's project file as last seen, and when: `None` until known; a `None` path
+    /// when it was never saved. `app_open` reopens it when the user has closed the app (#17).
+    app_project: Arc<Mutex<Option<(Option<String>, std::time::Instant)>>>,
     /// Bridge `render_frame` moves the app's one playhead and screenshots the one Program monitor, so
     /// calls (which MCP clients may send in parallel) take turns instead of seeing each other's frame.
     render_lock: Arc<tokio::sync::Mutex<()>>,
@@ -266,6 +266,10 @@ fn wrap(r: Result<Value, AutomationError>) -> Result<CallToolResult, McpError> {
     })
 }
 
+/// How old the remembered project file of a bridged app may get before the next bridged call
+/// reads it again (`project.inspect`): one extra round trip at most this often, not on every call.
+const APP_PROJECT_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Parse-error replies queued for the writer before the reader waits for it to catch up.
 const MAX_QUEUED_PARSE_ERRORS: usize = 64;
 
@@ -390,11 +394,17 @@ impl FilmagicMcp {
             }
             Backend::Bridge(b) => {
                 let r = b.execute(id, params).await;
-                // The app's project file, for `app_open` after the user closed the app: read once,
-                // and again after a command that may have opened or saved another file.
-                let unknown = self.app_project.lock().unwrap_or_else(PoisonError::into_inner).is_none();
-                if r.is_ok() && (unknown || id.starts_with("file.")) && id != "project.inspect" {
-                    self.note_app_project(b).await;
+                // The app's project file, for `app_open` after the user closed the app. A
+                // `project.inspect` reply carries it at no cost; a command that may open or save
+                // another file reads it again; otherwise it is read at most every
+                // APP_PROJECT_REFRESH, since the user (or a `ui_*` gesture) may open another
+                // project in the app at any time.
+                if let Ok(v) = &r {
+                    if id == "project.inspect" {
+                        self.remember_project(v.get("path").and_then(Value::as_str).map(str::to_string));
+                    } else if id.starts_with("file.") || self.project_is_stale() {
+                        self.note_app_project(b).await;
+                    }
                 }
                 r
             }
@@ -404,9 +414,22 @@ impl FilmagicMcp {
     /// Remember the bridged app's project file (`project.inspect` → `path`).
     async fn note_app_project(&self, b: &BridgeClient) {
         if let Ok(v) = b.execute("project.inspect", json!({})).await {
-            let path = v.get("path").and_then(Value::as_str).map(str::to_string);
-            *self.app_project.lock().unwrap_or_else(PoisonError::into_inner) = Some(path);
+            self.remember_project(v.get("path").and_then(Value::as_str).map(str::to_string));
         }
+    }
+
+    fn remember_project(&self, path: Option<String>) {
+        *self.app_project.lock().unwrap_or_else(PoisonError::into_inner) = Some((path, std::time::Instant::now()));
+    }
+
+    /// The bridged app's project file as last seen (`None`: not known; `Some(None)`: never saved).
+    fn remembered_project(&self) -> Option<Option<String>> {
+        self.app_project.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(p, _)| p.clone())
+    }
+
+    /// Whether the remembered project file is unknown or older than [`APP_PROJECT_REFRESH`].
+    fn project_is_stale(&self) -> bool {
+        self.app_project.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_none_or(|(_, seen)| seen.elapsed() >= APP_PROJECT_REFRESH)
     }
 
     /// The project tree plus the active sequence (null when there is none).
@@ -438,7 +461,14 @@ impl FilmagicMcp {
 
     async fn ui(&self, method: &str, params: Value) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
-            Some(b) => wrap(b.call(method, params).await),
+            Some(b) => {
+                let r = b.call(method, params).await;
+                // a gesture may have opened another project (see `run`)
+                if r.is_ok() && self.project_is_stale() {
+                    self.note_app_project(&b).await;
+                }
+                wrap(r)
+            }
             None => Ok(fail(
                 "this tool drives the live app, and this session is headless: call `app_open` to open your project in the desktop app and drive it from there",
             )),
@@ -452,6 +482,9 @@ impl FilmagicMcp {
         match &*self.backend() {
             Backend::Bridge(b) => {
                 let answering = b.hello(crate::app_link::HELLO_TIMEOUT).await;
+                if answering.is_ok() {
+                    self.note_app_project(b).await;
+                }
                 let mut v = json!({"mode": "app", "addr": b.addr(), "answering": answering.is_ok(), "controlFolder": control_dir});
                 if let Err(e) = answering {
                     v["notes"] = json!([format!(
@@ -533,7 +566,7 @@ impl FilmagicMcp {
                     return Ok(json!({"mode": "app", "addr": b.addr(), "launched": false, "notes": [note]}));
                 }
                 // The user closed the app: reopen the project it had, never a default one (S2).
-                let known = self.app_project.lock().unwrap_or_else(PoisonError::into_inner).clone().flatten();
+                let known = self.remembered_project().flatten();
                 let project = path.or(known).ok_or_else(|| {
                     AutomationError::BadRequest(
                         "the app was closed and its project file is not known (it was never saved, or no command reached it): pass `path`, the absolute .fcproj to open in a new app; edits the closed app had not saved are offered by its auto-save recovery".into(),
@@ -596,7 +629,7 @@ impl FilmagicMcp {
         let client = Arc::new(BridgeClient::with_token(addr.clone(), Some(app.token))?);
         self.set_backend(Backend::Bridge(client.clone()));
         if launched {
-            *self.app_project.lock().unwrap_or_else(PoisonError::into_inner) = Some(project.clone());
+            self.remember_project(project.clone());
             if let Some(p) = &project {
                 notes.push(format!("The app opened {p}."));
             }
