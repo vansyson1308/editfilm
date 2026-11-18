@@ -17,6 +17,9 @@ whisper = ["filmagic-speech/whisper"]
 speech-download = ["filmagic-speech/download"]
 # Natural voices for Text to Speech: Kokoro-82M on candle (CPU) and their download.
 neural-voices = ["filmagic-tts/kokoro", "speech-download"]
+# Asset packs from a URL (`assets.install url=… sha256=…`, catalogue packs): HTTPS with pure-Rust
+# TLS (rustls + RustCrypto, the operating system's certificate verifier), as speech-download.
+pack-download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto"]
 
 [dependencies]
 filmagic-time = { workspace = true }
@@ -47,13 +50,21 @@ chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
 # control_file: the control server's hello proof, HMAC-SHA256 (MIT OR Apache-2.0; both already in
-# the lock file through other crates).
+# the lock file through other crates). Asset packs use sha2 too: sha256 of downloads and archives.
 hmac = "0.12"
 sha2 = "0.10"
 
 # control_file: the current user's id, to refuse a control file someone else wrote (safe wrapper).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
+
+# asset packs: zip archives (stored and deflate only) and downloads, native builds only
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zip = { version = "7", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
+rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
 
 [dev-dependencies]
 filmagic-testkit = { workspace = true }
