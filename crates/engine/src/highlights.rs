@@ -426,6 +426,7 @@ fn highlights(s: &mut Session, p: &Value) -> Result<Value> {
                 bytes: 0,
                 render_fps: done as f64 / secs.max(1e-6),
                 extra_files: Vec::new(),
+                ..Default::default()
             })
         };
         *lock(&res) = Some(r);

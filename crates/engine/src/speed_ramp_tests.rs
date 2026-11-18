@@ -299,3 +299,37 @@ fn hostile_parameters_are_refused_without_a_change() {
     assert!(s.execute("clip.speedRamp", json!({"clip": c, "to": 50})).is_err());
     let _ = m;
 }
+
+#[test]
+fn smart_render_exports_the_ramped_pictures() {
+    // smart render keys its segments on the pictures it encodes: a ramp changes them, so a
+    // re-export after the ramp shows the ramped frames, not the cached ones
+    let (mut s, c, _) = numbered();
+    let dir = tmp_dir("speed-ramp-smart");
+    let export = |s: &mut Session, name: &str| {
+        let out = dir.join(name);
+        let r = s
+            .execute(
+                "file.exportMedia",
+                json!({"path": out.to_string_lossy(), "format": "h264", "smartRender": true, "range": "custom", "startSeconds": 0.0, "endSeconds": 112.0 / 25.0, "wait": true}),
+            )
+            .unwrap();
+        assert_eq!(r["result"]["frames"], 112, "{r}");
+        out
+    };
+    let before = export(&mut s, "before.mp4");
+    ramp(&mut s, json!({"clip": c, "segments": [{"at": {"frame": 0}, "speed": 100}, {"at": {"frame": 32}, "speed": 50, "ease": "inOut"}], "ripple": true}));
+    let after = export(&mut s, "after.mp4");
+    let again = export(&mut s, "again.mp4");
+    assert_ne!(std::fs::read(&before).unwrap(), std::fs::read(&after).unwrap());
+    assert_eq!(std::fs::read(&after).unwrap(), std::fs::read(&again).unwrap(), "the second export reuses every segment");
+    // read the exported file back: frame 80 shows media frame 24 + 0.5 × 48 = 48
+    let item = s.execute("file.import", json!({"paths": [after.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let src = s.media.source_for(&s.project, filmagic_project::ItemId(item), &*s.services).unwrap();
+    let rate = src.info().frame_rate();
+    let f = src.video_frame(filmagic_media::FrameRequest::full(rate.tick_of(80))).unwrap();
+    let px = f.to_rgba8();
+    let red = f64::from(px[((f.height as usize / 2) * f.width as usize + f.width as usize / 2) * 4]);
+    assert!((red / 4.0 - 48.0).abs() <= 1.5, "frame 80 shows media frame {}", red / 4.0);
+    let _ = std::fs::remove_dir_all(dir);
+}
