@@ -779,6 +779,7 @@ fn style_strip(app: &mut FilmagicApp, ui: &mut egui::Ui, r: Rect, track_idx: usi
 fn run(app: &mut FilmagicApp, ui: &egui::Ui, actions: Vec<(String, Value)>) {
     let ctx = ui.ctx().clone();
     for (cmd, p) in actions {
+        let p = crate::panels::graphics::interactive_params(&cmd, p);
         if let Err(e) = crate::menus::invoke(app, &ctx, &cmd, p) {
             app.ui.status = e;
         }
