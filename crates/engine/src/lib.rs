@@ -69,6 +69,7 @@ pub mod shortcuts;
 pub mod source_cuts;
 pub mod source_monitor;
 pub mod speed_ramp;
+pub mod sports;
 pub mod story;
 pub mod sync;
 pub mod time_params;
@@ -524,6 +525,10 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Auto Reframe and sports-overlay jobs whose results are applied when they finish.
+    pub sports_jobs: Vec<sports::PendingSports>,
+    /// Reports of finished sports jobs, by job id (the last few; `jobs.list` shows them).
+    pub sports_reports: std::collections::BTreeMap<u64, Value>,
     /// `story.highlights`: running jobs, finished results and the cue cache.
     pub highlights: highlights::State,
     /// Cuts found inside source files, per media item ([`source_cuts`]).
@@ -669,6 +674,8 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            sports_jobs: Vec::new(),
+            sports_reports: Default::default(),
             highlights: Default::default(),
             source_cuts: Default::default(),
             job_ids: 0,
@@ -789,6 +796,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        sports::poll(self);
         highlights::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
@@ -865,6 +873,9 @@ impl Session {
         // `poll_persistence`: apply background mask tracking before each command (#3302)
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
+        }
+        if self.exec_depth == 0 && !self.sports_jobs.is_empty() {
+            sports::poll(self);
         }
         // an id that is no clip (a link, a track, a clip of another sequence…) named as one is
         // refused with what it is, before anything runs (#14). It runs before the time values are

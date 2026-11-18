@@ -17,9 +17,20 @@ use crate::server::FilmagicMcp;
 
 /// Engine commands that block until their job is done when called with `wait: true`: a render
 /// is written, or an asset pack is downloaded (`assets.install` from a URL or the catalogue,
-/// `assets.fetch`), or footage is analysed (`story.highlights`). Over MCP and the bridge they run as jobs that are polled, so a waiting call
-/// never holds up the app's UI thread or the session.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch", "story.highlights"];
+/// `assets.fetch`), or footage is analysed (`story.highlights`, and the sports tools
+/// `clip.autoReframe` and `sports.*`). Over MCP and the bridge they run as jobs that are polled,
+/// so a waiting call never holds up the app's UI thread or the session.
+pub const LONG_COMMANDS: &[&str] = &[
+    "file.exportMedia",
+    "assets.install",
+    "assets.fetch",
+    "story.highlights",
+    "clip.autoReframe",
+    "sports.trackPoint",
+    "sports.ballTrail",
+    "sports.groundRing",
+    "sports.pathLine",
+];
 
 /// What a failed long command was doing, for its error: `export failed: …`.
 pub fn what(id: &str) -> &str {
@@ -393,5 +404,19 @@ mod tests {
         remove_partial(&output(&dir, "clip.mp4", None), SystemTime::now() + Duration::from_secs(60));
         assert!(dir.join("clip.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sports_analyses_are_long_commands() {
+        for id in ["clip.autoReframe", "sports.trackPoint", "sports.ballTrail", "sports.groundRing", "sports.pathLine"] {
+            assert!(is_long(id, &serde_json::json!({"wait": true})) && !is_long(id, &serde_json::json!({})), "{id}");
+        }
+        // a sports job's answer is read with sports.report; one that failed or was cancelled is an error
+        assert_eq!(unfinished("clip.autoReframe", &serde_json::json!({"status": "cancelled"})), Some("clip.autoReframe cancelled: cancelled".into()));
+        assert_eq!(
+            unfinished("sports.ballTrail", &serde_json::json!({"status": "failed", "error": "the clip is gone"})),
+            Some("sports.ballTrail failed: the clip is gone".into())
+        );
+        assert_eq!(unfinished("sports.ballTrail", &serde_json::json!({"clip": 3})), None);
     }
 }

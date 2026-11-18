@@ -647,6 +647,63 @@ progress and stop it:
   "Exporting… NN%" in its status bar) and the call returns when it is written, however long it
   takes. `filmagic-cli --bridge … exec file.exportMedia … wait=true` blocks the same way.
 
+### Sports tools: auto-reframe and tracked overlays
+
+Five commands for highlight clips (#21). Coordinates are pixels of the sequence frame, as the
+Program Monitor and `file.exportFrame` show it; times take ticks or `{"seconds"|"frame"|"timecode"}`.
+Each analysis is a job: `wait: true` runs it in the call and replies with its report; without it the
+reply is `{job, poll: "jobs.list", cancel: "jobs.cancel"}`, the result is applied (one undo step)
+when the job finishes, and `jobs.list` shows the job's `report`. A cancelled job changes nothing.
+Headless sessions apply a finished job before the next command runs, so an `edit.undo` sent right
+after the job finished undoes the job's result. `sports.report {"job": id}` answers a job's report
+(`status: "done"`), or `status` `running`, `cancelled` or `failed` with an `error`. Over MCP and the
+bridge, `wait: true` is run as a polled job (as long exports are, § Long exports): the session and
+the app stay responsive, progress is reported, cancelling the request cancels the job, and the
+reply is the report (a failed or cancelled job is a tool error naming the command).
+
+A clip with a speed ramp (`clip.speedRamp`, Time Remapping) is analysed in the frames it shows,
+and every keyframe is written at the linear media time of its sequence frame, the clock clip
+keyframes are evaluated in, so a crop or an overlay stays with what the sequence shows. Ramp first,
+then reframe: a ramp added afterwards changes the frames shown under keyframes made for the old
+ones (`clip.speedRamp` warns when a clip already has many Motion keyframes).
+Analysis is at reduced size (192 px wide for motion, 480–640 px when following an object) and
+bounded (at most 20 000 samples for a reframe, 7 200 frames for a track).
+
+- `clip.autoReframe` keeps the subject in a crop of another aspect by writing Motion Position and
+  Scale keyframes. `"output": "keyframes"` (default) works in the sequence's own frame, so use it
+  in a sequence that already has the target aspect; `"output": "sequence"` makes a new sequence of
+  `aspect` (default `"9:16"`; also `"4:5"`, `"1:1"`, any `"w:h"`) with copies of the video clips,
+  reframed, and leaves the original alone. `subject` is `"auto"` (what moves: a heuristic that a
+  moving camera fools) or `{"point": [x, y]}` / `{"box": [x, y, w, h]}` at `at`, which is then
+  followed. The camera path is smoothed over the whole range (a dead zone, a zero-phase critically
+  damped spring, a pan-speed limit): `smoothing`, `deadZone`, `maxPan`, `zoom`, `sampleEvery`. The
+  report gives per clip `coverage`, `inFrame`, `subjectLeftFrame` and `subjectLost` (`[{start, end}]`
+  in seconds), `keyframes` and `scale`, plus `pictureChange`. A rotated clip, an animated Anchor
+  Point and freeze frames are refused. In a new sequence, `graphics: "follow"` (default) gives each
+  graphic over a reframed clip the same crop, so an overlay made with the commands below stays on
+  its ball or player; `"keep"` leaves graphics as they are (a title may then need moving).
+- `sports.trackPoint` follows a small object (`point` + `size`) or a player (`box`) from `at` over
+  `start`–`end` (default: to the clip's end, at most 10 s) with a template tracker, and answers
+  `points` (`{time, seconds, x, y, found, score}` per frame), `coverage` and `lost`. It changes
+  nothing. A plain area is refused: give a box around the object.
+- `sports.ballTrail` draws a fading, tapering trail behind the followed object: a graphic clip of
+  `length` rounded-rectangle shape layers keyframed per frame (`color`, `width`, `length` frames,
+  `fade`, `taper`, `opacity`, `glow`).
+- `sports.groundRing` draws an ellipse under a player (`diameter`, `squash` for the ground's
+  perspective, `width`, `fill`, `offset` from the tracked point); `spotlight: 0..100` adds a clip
+  below it that darkens the rest of the frame through an inverted, keyframed Opacity mask
+  (`spotSize`, `spotOffset`, `feather`).
+- `sports.pathLine` draws the object's path as a line with an arrowhead, for a freeze frame: from a
+  track, or from `points` you give (`[[x, y], …]`). `curve` is `"smooth"`, `"arc"` (a parabola
+  fitted to the points, a ball's flight) or `"line"`; `time` and `duration` place it (by default
+  after the tracked range, or at the playhead for points without times, from the start of a freeze
+  frame there, and for the rest of that freeze-frame clip); `dashed`, `reveal` (draw it on over this
+  long).
+
+The drawing commands also take `points` (`[{"time", "x", "y"}]`) instead of tracking, and reply with
+the graphic `clip`, its `layers` and `keyframes`, `coverage`, `lost` and `pictureChange`.
+Everything they draw is ordinary shape layers, keyframes and masks, editable in Effect Controls.
+
 ### Vietnamese narration, transcription languages and the models directory
 
 **Where models live.** Speech models, natural voices and VieNeu-TTS all go in one directory:
