@@ -453,9 +453,13 @@ fn a_cache_directory_others_can_write_to_is_not_used() {
     let private = dir.join("private");
     crate::smart::prepare_dir(&private, true).unwrap();
     assert_eq!(std::fs::metadata(&private).unwrap().permissions().mode() & 0o777, 0o700);
-    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o775)).unwrap();
+    // readable by others: tightened once it is known to be ours
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o755)).unwrap();
     crate::smart::prepare_dir(&private, true).unwrap();
     assert_eq!(std::fs::metadata(&private).unwrap().permissions().mode() & 0o777, 0o700);
+    // writable by others: refused before anything is written there, private or not
+    std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(crate::smart::prepare_dir(&private, true).unwrap_err().contains("writable by other users"));
     // another user's directory (only where this test may give one away, i.e. as root)
     let theirs = dir.join("theirs");
     std::fs::create_dir_all(&theirs).unwrap();
@@ -483,4 +487,107 @@ fn smart_render_with_a_bitrate_says_how_it_differs() {
     let s = ExportSettings { bitrate_mode: BitrateMode::Crf, ..settings(&dir.join("c.mp4"), &dir.join("cache")) };
     let (_, _, r) = run(&p, seq, &m, &s);
     assert!(r.notes.iter().all(|n| !n.contains("held per segment")), "{:?}", r.notes);
+}
+
+/// Re-review (a): the owner check used to write a probe file at a predictable name, and before it
+/// refused a directory others could write to, so a symlink planted at that name had its target
+/// truncated. Now a directory others can write to is refused before any write, and the probe is
+/// created with `create_new`, which never follows a symlink already at its name.
+#[cfg(unix)]
+#[test]
+fn a_symlink_planted_at_the_probe_name_is_never_followed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("probe-symlink");
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, b"precious").unwrap();
+    let plant = |cache: &std::path::Path| {
+        // every name the next probes can take: this process's id and the counters to come
+        let next = crate::smart::peek_counter();
+        for n in next..next + 400 {
+            let _ = std::os::unix::fs::symlink(&victim, cache.join(format!(".owner-{}-{n}.probe", std::process::id())));
+        }
+    };
+    // a directory others can write to: refused, and nothing in it is touched
+    let shared = dir.join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    plant(&shared);
+    assert!(crate::smart::prepare_dir(&shared, false).is_err());
+    assert_eq!(std::fs::read(&victim).unwrap(), b"precious", "the symlink's target was written through");
+    // a directory of our own with names planted in it: the probe goes to a fresh name, and the
+    // planted links (and what they point at) stay as they were
+    let own = dir.join("own");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o755)).unwrap();
+    plant(&own);
+    let r = crate::smart::prepare_dir(&own, false);
+    assert_eq!(std::fs::read(&victim).unwrap(), b"precious", "the symlink's target was written through: {r:?}");
+    let links = std::fs::read_dir(&own).unwrap().filter(|e| e.as_ref().is_ok_and(|e| e.file_type().is_ok_and(|t| t.is_symlink()))).count();
+    assert_eq!(links, 400, "a planted link was removed or replaced");
+}
+
+/// Re-review (b): the temporary-file test sliced the name at byte 64, so a non-ASCII name in the
+/// cache directory panicked the export. Names are now matched byte by byte, never sliced.
+#[test]
+fn prune_survives_non_ascii_names() {
+    let dir = scratch("odd-names");
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    let hex64 = "a".repeat(64);
+    let names = [
+        // non-ASCII, with a character across byte 64 (and other shapes around it)
+        format!(".{}.tmp", "\u{20ac}".repeat(30)),
+        format!(".{}-1-2.tmp", "\u{e9}".repeat(40)),
+        format!(".{hex64}\u{20ac}-1-2.tmp"),
+        format!("{}.seg", "\u{20ac}".repeat(22)),
+    ];
+    for n in &names {
+        std::fs::write(dir.join(n), b"theirs").unwrap();
+        std::fs::File::options().write(true).open(dir.join(n)).unwrap().set_modified(old).unwrap();
+    }
+    // and one stale temporary file of exactly our shape
+    let ours = format!(".{hex64}-123-45.tmp");
+    std::fs::write(dir.join(&ours), b"ours").unwrap();
+    std::fs::File::options().write(true).open(dir.join(&ours)).unwrap().set_modified(old).unwrap();
+    let r = std::panic::catch_unwind(|| prune(&dir, 0));
+    assert!(r.is_ok(), "prune panicked on a file name");
+    for n in &names {
+        assert!(dir.join(n).exists(), "{n:?} is not ours and was removed");
+    }
+    assert!(!dir.join(&ours).exists(), "a stale temporary file of ours stays");
+    // an export with such files in its cache runs as usual
+    let (p, seq, m) = project(None);
+    let (_, stats, _) = run(&p, seq, &m, &settings(&dir.join("x.mp4"), &dir));
+    assert_eq!(stats, (0, 4));
+}
+
+/// Re-review (c): any `.<64 hex digits><anything>.tmp` was taken for one of our temporary files, so
+/// prune deleted other software's files once they were an hour old. Only the exact shape the cache
+/// writes (`.<64 hex>-<pid>-<n>.tmp`) is ours.
+#[test]
+fn foreign_temporary_files_are_left_alone() {
+    let dir = scratch("foreign-tmp");
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    let hex64 = "a".repeat(64);
+    let names = [
+        format!(".{hex64}foo.tmp"),
+        format!(".{hex64}-12.tmp"),
+        format!(".{hex64}-1-2-3.tmp"),
+        format!(".{hex64}--2.tmp"),
+        format!(".{hex64}-1-x.tmp"),
+        format!(".{}-1-2.tmp", "A".repeat(64)),
+        format!(".{hex64}-1-2.tmp.bak"),
+        format!(".{}-1-2.tmp", "a".repeat(63)),
+    ];
+    for n in &names {
+        std::fs::write(dir.join(n), b"theirs").unwrap();
+        std::fs::File::options().write(true).open(dir.join(n)).unwrap().set_modified(old).unwrap();
+    }
+    let ours = format!(".{hex64}-123-45.tmp");
+    std::fs::write(dir.join(&ours), b"ours").unwrap();
+    std::fs::File::options().write(true).open(dir.join(&ours)).unwrap().set_modified(old).unwrap();
+    prune(&dir, 0);
+    for n in &names {
+        assert!(dir.join(n).exists(), "{n:?} is not ours and was removed");
+    }
+    assert!(!dir.join(&ours).exists(), "a stale temporary file of ours stays");
 }

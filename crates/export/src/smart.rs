@@ -162,9 +162,34 @@ fn is_segment_name(name: &str) -> bool {
     name.strip_suffix(".seg").is_some_and(|stem| stem.len() == 64 && stem.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
-/// Whether `name` is one of our temporary files: `.<64 hex digits>-<pid>-<n>.tmp`.
+/// The temporary file [`store`] writes a segment of `key` to: `.<64 hex digits>-<pid>-<n>.tmp`.
+fn temp_name(key: &Digest, pid: u32, n: u64) -> String {
+    format!(".{}-{pid}-{n}.tmp", hex(key))
+}
+
+/// Whether `name` is exactly the shape [`temp_name`] writes: a dot, 64 lowercase hex digits, `-`,
+/// decimal digits, `-`, decimal digits, `.tmp`. Matched byte by byte (a file name in the directory
+/// may be anything, non-ASCII included, and is never sliced), and nothing looser: other software's
+/// files that merely look similar are not ours to delete.
 fn is_temp_name(name: &str) -> bool {
-    name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")).is_some_and(|n| n.len() > 65 && is_segment_name(&format!("{}.seg", &n[..64])))
+    let b = name.as_bytes();
+    let Some(rest) = b.strip_prefix(b".").and_then(|r| r.strip_suffix(b".tmp")) else { return false };
+    let Some((hexpart, rest)) = rest.split_at_checked(64) else { return false };
+    let is_hex = |c: &u8| c.is_ascii_digit() || (b'a'..=b'f').contains(c);
+    let digits = |s: &[u8]| !s.is_empty() && s.len() <= 20 && s.iter().all(u8::is_ascii_digit);
+    let Some(rest) = rest.strip_prefix(b"-") else { return false };
+    let mut parts = rest.splitn(2, |c| *c == b'-');
+    let (Some(pid), Some(n)) = (parts.next(), parts.next()) else { return false };
+    hexpart.iter().all(is_hex) && digits(pid) && digits(n)
+}
+
+/// Create `path` and write `bytes` to it; fails if anything (a file, a symlink) is already there,
+/// so a name planted in the directory is never followed or overwritten.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    f.write_all(bytes)?;
+    f.sync_data()
 }
 
 /// A segment's packets as a cache file.
@@ -254,12 +279,18 @@ fn load(dir: &Path, key: &Digest, count: usize, duration: u32) -> Option<Vec<Enc
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The next value of the temporary-name counter (tests plant files at the names to come).
+#[cfg(test)]
+pub(crate) fn peek_counter() -> u64 {
+    TMP_COUNTER.load(Ordering::Relaxed)
+}
+
 /// Keep `packets` under `key` (best effort: a cache that cannot be written only costs speed).
 fn store(dir: &Path, key: &Digest, packets: &[EncodedPacket]) {
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = dir.join(format!(".{}-{}-{n}.tmp", hex(key), std::process::id()));
+    let tmp = dir.join(temp_name(key, std::process::id(), n));
     let write = || -> std::io::Result<()> {
-        std::fs::write(&tmp, encode_segment_file(key, packets))?;
+        write_new(&tmp, &encode_segment_file(key, packets))?;
         // Windows refuses to rename over a file another export has just put there: that file holds the same packets
         if let Err(e) = std::fs::rename(&tmp, segment_path(dir, key))
             && !segment_path(dir, key).exists()
@@ -269,8 +300,11 @@ fn store(dir: &Path, key: &Digest, packets: &[EncodedPacket]) {
         Ok(())
     };
     let result = write();
-    // whatever happened, no temporary file stays behind
-    let _ = std::fs::remove_file(&tmp);
+    // whatever happened, no temporary file of ours stays behind; a name that already existed was
+    // not ours, and stays
+    if !matches!(&result, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+        let _ = std::fs::remove_file(&tmp);
+    }
     if let Err(e) = result {
         log::info!("smart render: segment not cached in {}: {e}", dir.display());
     }
@@ -335,7 +369,13 @@ pub fn default_dir() -> Option<PathBuf> {
 
 /// Make `dir` ready for the cache, or say why it cannot be used. On Unix it must belong to the user
 /// running the export and must not be writable by others (another user could otherwise plant
-/// segments); the default directory is created private (0700).
+/// segments); the default directory is created private (0700), and a private directory that others
+/// can read is made 0700 once it is known to be ours.
+///
+/// Nothing is written into a directory before it is known that only its owner can write there: a
+/// group- or world-writable directory is refused first. The owner check then creates a probe file
+/// with `create_new` (`O_EXCL`), which neither follows nor replaces a symlink or file already at
+/// that name, and compares the probe's owner with the directory's.
 pub(crate) fn prepare_dir(dir: &Path, private: bool) -> std::result::Result<(), String> {
     #[cfg(unix)]
     {
@@ -350,21 +390,31 @@ pub(crate) fn prepare_dir(dir: &Path, private: bool) -> std::result::Result<(), 
         if !meta.is_dir() {
             return Err(format!("{} is not a directory", dir.display()));
         }
-        // who am I: the owner of a file this process creates there
-        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let probe = dir.join(format!(".owner-{}-{n}.probe", std::process::id()));
-        std::fs::write(&probe, b"").map_err(|e| format!("cannot write to {}: {e}", dir.display()))?;
-        let me = std::fs::metadata(&probe).map(|m| m.uid());
-        let _ = std::fs::remove_file(&probe);
-        let me = me.map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+        let mode = meta.permissions().mode();
+        if mode & 0o022 != 0 {
+            return Err(format!("{} is writable by other users", dir.display()));
+        }
+        // who am I: the owner of a file this process creates there (a fresh name; never one that exists)
+        let me = (0..16)
+            .find_map(|_| {
+                let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+                let probe = dir.join(format!(".owner-{}-{n}.probe", std::process::id()));
+                match write_new(&probe, b"") {
+                    Ok(()) => {
+                        let uid = std::fs::symlink_metadata(&probe).map(|m| m.uid());
+                        let _ = std::fs::remove_file(&probe);
+                        Some(uid.map_err(|e| format!("cannot read {}: {e}", dir.display())))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(e) => Some(Err(format!("cannot write to {}: {e}", dir.display()))),
+                }
+            })
+            .unwrap_or_else(|| Err(format!("cannot write to {}: every probe name was taken", dir.display())))?;
         if meta.uid() != me {
             return Err(format!("{} belongs to another user", dir.display()));
         }
-        let mode = meta.permissions().mode();
         if private && mode & 0o077 != 0 {
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("cannot make {} private: {e}", dir.display()))?;
-        } else if !private && mode & 0o022 != 0 {
-            return Err(format!("{} is writable by other users", dir.display()));
         }
         Ok(())
     }
