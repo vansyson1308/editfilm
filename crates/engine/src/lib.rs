@@ -528,6 +528,8 @@ pub struct Session {
     pub highlights: highlights::State,
     /// Cuts found inside source files, per media item ([`source_cuts`]).
     pub source_cuts: source_cuts::Cache,
+    /// The highest job id handed out ([`Session::next_job_id`]).
+    job_ids: u64,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -613,6 +615,13 @@ impl Job {
     }
 }
 
+/// [`Session::next_job_id`] on the two fields it reads, for a caller that holds another field.
+fn next_job_id(jobs: &[Job], given: &mut u64) -> u64 {
+    let id = jobs.iter().map(|j| j.id).max().unwrap_or(0).max(*given).saturating_add(1);
+    *given = id;
+    id
+}
+
 impl Default for Session {
     fn default() -> Self {
         Self::new(Arc::new(FsServices))
@@ -662,6 +671,7 @@ impl Session {
             scene_jobs: Vec::new(),
             highlights: Default::default(),
             source_cuts: Default::default(),
+            job_ids: 0,
             presets: Default::default(),
             export_presets: Default::default(),
             packs: Default::default(),
@@ -756,6 +766,12 @@ impl Session {
             p.send_clean();
         }
         p.last_sent = Some(cur);
+    }
+
+    /// A new job id: never one handed out before in this session, even when that job has left
+    /// `jobs` (finished cut-finder jobs are pruned), so a job id names one job.
+    pub fn next_job_id(&mut self) -> u64 {
+        next_job_id(&self.jobs, &mut self.job_ids)
     }
 
     /// The job the status bar shows: the newest running one, but a background cut finder

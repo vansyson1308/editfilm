@@ -359,7 +359,7 @@ fn highlights(s: &mut Session, p: &Value) -> Result<Value> {
     let n_chunks = if sound.is_some() { (span_s * f64::from(AUDIO_RATE) / chunk as f64).ceil() as u64 } else { 0 };
     let step = Tick::from_seconds_f64(1.0 / fps as f64);
     let n_frames = if pic.is_some() { ((to - from).0 / step.0.max(1)).max(1) as u64 } else { 0 };
-    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let id = s.next_job_id();
     let job = crate::Job { id, label: "Find Highlights".into(), progress: Default::default(), result: Default::default() };
     job.progress.total.store(n_chunks + n_frames, std::sync::atomic::Ordering::Relaxed);
     let cues: Arc<Mutex<Option<Cues>>> = Arc::default();
