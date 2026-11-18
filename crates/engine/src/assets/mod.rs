@@ -719,6 +719,8 @@ fn fetch(s: &mut Session, p: &Value) -> Result<Value> {
 fn build_pack(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "assets.buildPack";
     let from = PathBuf::from(opt_str(p, "from", cmd)?.ok_or_else(|| bad(cmd, "need `from`: the folder that holds your files"))?);
+    // its pack.json is written there
+    crate::narration::refuse_inside_engine(crate::narration::vieneu_engine(s).as_deref(), &from).map_err(|e| bad(cmd, e))?;
     if !from.is_dir() {
         return Err(bad(cmd, format!("{} is not a folder", manifest::truncate(&from.to_string_lossy()))));
     }

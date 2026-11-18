@@ -631,8 +631,8 @@ again before every run; `prefs.set` refuses the media cache folders (`mediaCache
 directory either. These are refused there: narrations (`tts.create` and `tts.edit` with `dir`),
 `file.exportMedia` and the other exports (the output file and its folder, which also holds OP-Atom's
 audio files), AAF and OMF media, project saves, `file.projectManager`'s destination, Scratch Disks
-folders, `project.ingestSettings` and ingest copies, `media.createProxies` and transcodes, captions,
-markers, presets and `lut.export`. Filmagic runs its environment only if it created it: an existing
+folders, `project.ingestSettings` and ingest copies, `media.createProxies` and transcodes, `assets.buildPack`'s
+folder, captions, markers, presets and `lut.export`. Filmagic runs its environment only if it created it: an existing
 `venv` folder without Filmagic's marker is reported by `tts.engines` and refused by
 `tts.setupVieneu`, with the advice to delete it. To install by hand, make an environment in a folder
 of your own and name its interpreter with `FILMAGIC_VIENEU_PYTHON` (`installSteps` shows how).

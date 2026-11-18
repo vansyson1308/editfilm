@@ -879,6 +879,9 @@ fn proxies_ingest_copies_and_interchange_media_never_land_in_the_vieneu_engine_f
             assert!(e.contains("engine folder"), "{cmd} {d}: {e}");
         }
     }
+    // assets.buildPack writes its pack.json into `from`
+    let e = s.execute("assets.buildPack", json!({"from": site.to_string_lossy(), "id": "x"})).unwrap_err().to_string();
+    assert!(e.contains("engine folder"), "{e}");
     assert_eq!(s.project.settings.ingest, snap.settings.ingest, "the ingest settings are unchanged");
     assert!(s.prefs.auto_save.scratch_folders.is_empty(), "the folder was not trusted");
     let written: Vec<_> = walk(&engine).into_iter().filter(|p| !p.starts_with(engine.join("work"))).collect();
