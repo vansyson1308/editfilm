@@ -66,7 +66,8 @@ pub fn finished_reply(id: &str, mut start: Value, job: Option<&Value>) -> Result
             o.insert("offlineMedia".into(), off);
         }
     }
-    Ok(start)}
+    Ok(start)
+}
 
 /// How often the job is polled (and at most how often progress is reported).
 const POLL: Duration = Duration::from_millis(100);
