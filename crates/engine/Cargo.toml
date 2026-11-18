@@ -46,9 +46,18 @@ roxmltree = { workspace = true }
 chrono = { workspace = true }
 craft-docpath = { workspace = true }
 web-time = "1"
+# control_file: the control server's hello proof, HMAC-SHA256 (MIT OR Apache-2.0; both already in
+# the lock file through other crates).
+hmac = "0.12"
+sha2 = "0.10"
+
+# control_file: the current user's id, to refuse a control file someone else wrote (safe wrapper).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 filmagic-testkit = { workspace = true }
+tempfile = "3"
 filmagic-audio-dsp = { workspace = true, features = ["test-util"] }
 filmagic-dng = { workspace = true, features = ["writer"] }
 filmagic-isobmff = { workspace = true }
