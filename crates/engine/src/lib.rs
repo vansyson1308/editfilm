@@ -55,6 +55,7 @@ pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
 pub mod proxies;
+pub mod recipes;
 pub mod relight;
 pub mod relink;
 pub mod remix;
@@ -511,6 +512,8 @@ pub struct Session {
     pub scene_jobs: Vec<scene_detect::PendingScene>,
     /// `story.highlights`: running jobs, finished results and the cue cache.
     pub highlights: highlights::State,
+    /// `recipes.run`: drafts built from finished analysis jobs.
+    pub recipes: recipes::State,
     /// Cuts found inside source files, per media item ([`source_cuts`]).
     pub source_cuts: source_cuts::Cache,
     /// Effect presets (built-in + the user's, persisted in the data directory).
@@ -644,6 +647,7 @@ impl Session {
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
             highlights: Default::default(),
+            recipes: Default::default(),
             source_cuts: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),

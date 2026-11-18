@@ -1,0 +1,434 @@
+//! `comedy-meme`: from a clip, a punchy short edit with meme overlays and sounds.
+//!
+//! `story.highlights` (in `peaks` mode) finds the moment: the strongest burst of sound or motion
+//! (a laugh, a shout, a crash). The edit builds up to it: the dead air between phrases is cut out
+//! (jump cuts from the speech it heard), every other cut punches in, and on the moment the
+//! picture freezes, shakes and zooms, with a sound effect and a meme overlay from the installed
+//! packs. Top text runs over the build-up, and an optional voice-over is spoken with
+//! Text to Speech.
+
+use filmagic_time::Tick;
+use serde_json::{Map, Value, json};
+
+use super::{
+    Analysis, Footage, Pick, RUN, Recipe, Steps, analyse, aspect_p, clip_of, done, extent, find_asset, flag, footage, number, pick_p, picture_change,
+    place_cuts, round3, running, text, ticks_of, time_json,
+};
+use crate::commands::bad;
+use crate::{Result, Session};
+
+pub(super) const RECIPE: Recipe = Recipe {
+    id: "comedy-meme",
+    title: "Comedy meme edit",
+    summary: "From a clip, a punchy short edit that builds to its funniest moment: dead air cut out, punch-in zooms, a freeze with shake on the moment, top text, and a sound effect and meme overlay from the installed packs",
+    params: r#"{"item":id|"clip":id (the clip: a project item, or a timeline clip),"fromSeconds":f64?,"toSeconds":f64? (the part to use; at most 600 s apart),"maxSeconds":3..120=20 (the edit's length at most),"moment":seconds? (the moment to build to: media time for an item, sequence time for a clip; default: the loudest laugh or cheer, else the strongest burst story.highlights finds),"cutPauses":bool=true (jump cuts: drop pauses in the speech),"minPause":0.1..3=0.35 (seconds of silence worth cutting),"zoom":100..200=115 (punch-in percent on every other cut; 100: none),"freeze":0..3=1 (seconds the moment freezes; 0: no freeze),"shake":bool=true,"topText":str|false="WAIT FOR IT...","punchText":str|false? (text on the moment),"sound":true|false|"pack/item"=true (a sound effect on the moment from the installed packs),"meme":true|false|"pack/item"=true (a meme overlay on the moment from the installed packs),"voiceover":{"text":str,"voice":str?,"pace":0.5..2?}? (a Text to Speech line at the start),"picture":bool=true,"fps":n?,"aspect":"source|9:16|1:1|4:5"="source" (also a copy in that shape),"name":str?,"wait":bool=false,"job":id?}"#,
+    steps: &[
+        ("story.highlights", "find the moment and the speech (a job)"),
+        ("file.newSequence", "the edit, with the clip's frame size and rate"),
+        ("timeline.place", "each piece that is kept, back to back"),
+        ("effects.setParam", "punch in on every other cut (Motion Scale)"),
+        ("clip.insertFrameHoldSegment", "freeze on the moment"),
+        ("effects.apply", "shake the freeze (Camera Shake)"),
+        ("graphics.newText", "top text over the build-up, and text on the moment"),
+        ("graphics.set", "meme lettering: bold white with a black outline"),
+        ("graphics.anchor", "the text at the top or bottom of the title-safe area"),
+        ("assets.search", "a sound effect and a meme in the installed packs"),
+        ("assets.place", "them on the moment"),
+        ("tts.create", "with `voiceover`: the line, spoken"),
+        ("file.newSequence", "with `aspect` and no auto-reframe: a sequence of that shape holding the edit"),
+        ("clip.fillFrame", "with `aspect` and no auto-reframe: a centre crop"),
+    ],
+    later: &[("clip.autoReframe", "with `aspect`: a copy in that shape that follows the subject")],
+    keys: &[
+        "item",
+        "clip",
+        "fromSeconds",
+        "toSeconds",
+        "maxSeconds",
+        "moment",
+        "cutPauses",
+        "minPause",
+        "zoom",
+        "freeze",
+        "shake",
+        "topText",
+        "punchText",
+        "sound",
+        "meme",
+        "voiceover",
+        "picture",
+        "fps",
+        "aspect",
+        "name",
+    ],
+    analyses: true,
+};
+
+const LABEL: &str = "Recipe: Comedy Meme";
+/// Longest stretch of footage a meme edit is cut from.
+const MAX_SOURCE_SECONDS: f64 = 600.0;
+/// Most pieces an edit is cut into.
+const MAX_PIECES: usize = 40;
+/// Kept after the moment (the payoff), and around each phrase.
+const TAIL_SECONDS: f64 = 2.5;
+const PAD_SECONDS: f64 = 0.15;
+const LEAD_SECONDS: f64 = 0.6;
+
+/// The pieces of the edit (analysis time, in order): up to `max` long, ending just after
+/// `moment`. With `speech` (phrases, in order) and `cut`, pauses longer than `min_pause` are cut
+/// out; the moment itself and its payoff are always kept whole.
+pub(super) fn plan(span: (Tick, Tick), moment: Tick, speech: &[(Tick, Tick)], max: Tick, min_pause: Tick, cut: bool) -> Vec<(Tick, Tick)> {
+    let (lo, hi) = span;
+    let moment = moment.clamp(lo, hi);
+    let end = (moment + Tick::from_seconds_f64(TAIL_SECONDS)).min(hi);
+    // look back further than `max`: pauses come out
+    let back = Tick(max.0.saturating_mul(3));
+    let start = (end - back).max(lo);
+    let pad = Tick::from_seconds_f64(PAD_SECONDS);
+    let payoff = ((moment - Tick::from_seconds_f64(LEAD_SECONDS)).max(start), end);
+    let mut pieces: Vec<(Tick, Tick)> = if cut && !speech.is_empty() {
+        let mut v: Vec<(Tick, Tick)> = speech.iter().map(|(a, b)| ((*a - pad).max(start), (*b + pad).min(payoff.0))).filter(|(a, b)| b > a).collect();
+        v.push(payoff);
+        v.sort_by_key(|x| x.0);
+        v
+    } else {
+        vec![(start, end)]
+    };
+    // merge what overlaps or is closer than a pause worth cutting
+    let mut merged: Vec<(Tick, Tick)> = Vec::new();
+    for (a, b) in pieces.drain(..) {
+        match merged.last_mut() {
+            Some(last) if a - last.1 < min_pause => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    // at most MAX_PIECES: close the smallest gaps first
+    while merged.len() > MAX_PIECES {
+        let Some(k) = merged.windows(2).enumerate().min_by_key(|(k, w)| (w[1].0 - w[0].1, *k)).map(|(k, _)| k) else { break };
+        let next = merged.remove(k + 1);
+        if let Some(m) = merged.get_mut(k) {
+            m.1 = next.1;
+        }
+    }
+    // at most `max` long: drop from the front
+    let mut total: Tick = merged.iter().fold(Tick::ZERO, |t, (a, b)| t + (*b - *a));
+    while total > max {
+        let excess = total - max;
+        let n = merged.len();
+        let Some(first) = merged.first_mut() else { break };
+        let (a, b) = *first;
+        if b - a <= excess && n > 1 {
+            merged.remove(0);
+            total -= b - a;
+        } else {
+            first.0 = (a + excess).min(b);
+            total -= excess;
+        }
+    }
+    merged.retain(|(a, b)| b > a);
+    merged
+}
+
+fn seconds_list(v: &Value) -> Vec<(Tick, Tick)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .take(2000)
+        .filter_map(|g| {
+            let (a, b) = (g["start"].as_f64()?, g["end"].as_f64()?);
+            (a.is_finite() && b.is_finite() && b > a && a >= 0.0).then(|| (Tick::from_seconds_f64(a), Tick::from_seconds_f64(b)))
+        })
+        .collect()
+}
+
+/// Where the loudest burst of crowd-like noise (a laugh, a cheer) starts: the moment a comedy
+/// edit builds to, when there is one.
+fn strongest_cheer(r: &Value) -> Option<Tick> {
+    r["cheers"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| Some((c["riseDb"].as_f64().filter(|x| x.is_finite())?, c["start"].as_f64().filter(|x| x.is_finite() && *x >= 0.0)?)))
+        .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.total_cmp(&a.1)))
+        .map(|(_, t)| Tick::from_seconds_f64(t))
+}
+
+struct Voice {
+    text: String,
+    voice: Option<String>,
+    pace: Option<f64>,
+}
+
+fn voice_p(p: &Value) -> Result<Option<Voice>> {
+    let Some(v) = p.get("voiceover").filter(|v| !v.is_null() && **v != json!(false)) else { return Ok(None) };
+    if !v.is_object() {
+        return Err(bad(RUN, "`voiceover` must be {\"text\": str, \"voice\": str?, \"pace\": 0.5..2?} (tts.voices lists the voices)"));
+    }
+    let Some(text) = text(v, "text", 2000, None, RUN)? else {
+        return Err(bad(RUN, "`voiceover` needs `text`: the line to speak, at most 2000 characters"));
+    };
+    let voice = super::text(v, "voice", 120, None, RUN)?;
+    let pace = match v.get("pace") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(number(v, "pace", 0.5, 2.0, 1.0, RUN)?),
+    };
+    Ok(Some(Voice { text, voice, pace }))
+}
+
+struct Opts {
+    max: Tick,
+    moment: Option<Tick>,
+    cut: bool,
+    min_pause: Tick,
+    zoom: f64,
+    freeze: f64,
+    shake: bool,
+    top: Option<String>,
+    punch: Option<String>,
+    sound: Pick,
+    meme: Pick,
+    voice: Option<Voice>,
+    aspect: Option<&'static str>,
+    name: String,
+}
+
+pub(super) fn run(s: &mut Session, p: &Value, wait: bool, job: Option<u64>) -> Result<Value> {
+    let f = footage(s, p, RUN)?;
+    if !f.video {
+        return Err(bad(RUN, "a meme edit needs a picture: this footage has only sound"));
+    }
+    let o = Opts {
+        max: Tick::from_seconds_f64(number(p, "maxSeconds", 3.0, 120.0, 20.0, RUN)?),
+        moment: match p.get("moment") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(Tick::from_seconds_f64(number(p, "moment", 0.0, 1e7, 0.0, RUN)?)),
+        },
+        cut: flag(p, "cutPauses", true, RUN)?,
+        min_pause: Tick::from_seconds_f64(number(p, "minPause", 0.1, 3.0, 0.35, RUN)?),
+        zoom: number(p, "zoom", 100.0, 200.0, 115.0, RUN)?,
+        freeze: number(p, "freeze", 0.0, 3.0, 1.0, RUN)?,
+        shake: flag(p, "shake", true, RUN)?,
+        top: text(p, "topText", 120, Some("WAIT FOR IT..."), RUN)?,
+        punch: text(p, "punchText", 120, None, RUN)?,
+        sound: pick_p(p, "sound", Pick::Auto, RUN)?,
+        meme: pick_p(p, "meme", Pick::Auto, RUN)?,
+        voice: voice_p(p)?,
+        aspect: aspect_p(p, "aspect", None, RUN)?,
+        name: text(p, "name", 120, None, RUN)?.unwrap_or_else(|| format!("{} Meme", f.name)),
+    };
+    // bounded cost: a meme is cut from at most ten minutes
+    let sec = |k: &str| p.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
+    let from = sec("fromSeconds").map_or(f.span.0, Tick::from_seconds_f64).clamp(f.span.0, f.span.1);
+    let to = sec("toSeconds").map_or(f.span.1, Tick::from_seconds_f64).clamp(f.span.0, f.span.1);
+    if (to - from).seconds() > MAX_SOURCE_SECONDS {
+        return Err(bad(
+            RUN,
+            format!(
+                "a meme edit is cut from at most {MAX_SOURCE_SECONDS:.0} s and this footage is {:.0} s: pass `fromSeconds` and `toSeconds` around the part to use",
+                (to - from).seconds()
+            ),
+        ));
+    }
+    let mut hp = Map::new();
+    for k in ["fromSeconds", "toSeconds", "picture", "fps"] {
+        if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
+            hp.insert(k.into(), v.clone());
+        }
+    }
+    hp.insert("mode".into(), json!("peaks"));
+    hp.insert("limit".into(), json!(5));
+    hp.insert("minSeconds".into(), json!(0.3));
+    hp.insert("maxSeconds".into(), json!(10));
+    let r = match analyse(s, &f, Value::Object(hp), wait, job)? {
+        Analysis::Running(j) => return Ok(running(RECIPE.id, p, j)),
+        Analysis::Ready(r) => r,
+    };
+    s.edit_group(LABEL, |s| build(s, &f, &r, o))
+}
+
+fn build(s: &mut Session, f: &Footage, r: &Value, o: Opts) -> Result<Value> {
+    let mut st = Steps { notes: f.notes.clone(), ..Default::default() };
+    st.record("story.highlights", &f.target, "find the moment and the speech", "done");
+    let span = (r["span"]["from"].as_f64().map_or(f.span.0, Tick::from_seconds_f64), r["span"]["to"].as_f64().map_or(f.span.1, Tick::from_seconds_f64));
+    let moment = match o.moment {
+        Some(m) => m,
+        None => match strongest_cheer(r).or_else(|| r["segments"].get(0).and_then(|g| ticks_of(&g["start"]))) {
+            Some(m) => m,
+            None => {
+                st.notes.push(
+                    "no moment stood out (no burst of sound or motion): the edit builds to two thirds of the way in; pass `moment` (seconds) to choose it"
+                        .into(),
+                );
+                span.0 + Tick((span.1 - span.0).0 / 3 * 2)
+            }
+        },
+    };
+    let speech = seconds_list(&r["speech"]);
+    if o.cut && speech.is_empty() {
+        st.notes.push("no speech was heard, so no pauses were cut: the edit is one stretch before the moment".into());
+    }
+    let cuts = plan(span, moment, &speech, o.max, o.min_pause, o.cut);
+    if cuts.is_empty() {
+        return Err(bad(RUN, "nothing to cut: the footage is shorter than a frame around the moment. Nothing was changed"));
+    }
+    let made =
+        st.must(s, "the edit, with the clip's frame size and rate", "file.newSequence", json!({"name": o.name, "fromItem": f.item.0, "place": false}))?;
+    let edit_seq = made["sequence"].as_u64().map(filmagic_project::ItemId).ok_or_else(|| bad(RUN, "file.newSequence answered no sequence"))?;
+    let placed = place_cuts(s, &mut st, f, &cuts, "piece")?;
+    let rate = s.sequence_rate();
+    let (w, h) = s.active_sequence().map_or(f.size, |q| (q.settings.width, q.settings.height));
+    let (a0, b0) = extent(s);
+    let before = crate::story::looks_across(s, a0, b0);
+    // punch in on every other cut
+    let zoomed: Vec<u64> = placed.iter().skip(1).step_by(2).filter_map(|pl| pl.video.map(|v| v.0)).collect();
+    if o.zoom > 100.0 && !zoomed.is_empty() {
+        st.may(s, "punch in on every other cut", "effects.setParam", json!({"clips": zoomed, "effect": "motion", "param": "scale", "value": o.zoom}));
+    }
+    // the moment in the edit: the piece holding it (the last, by the plan)
+    let m_media = f.media_at(moment);
+    let at_moment = placed.iter().rev().find(|pl| pl.media_in <= m_media && m_media < pl.media_out).or(placed.last()).and_then(|pl| {
+        let it = clip_of(s, pl.video?)?;
+        Some((it.id, rate.snap(it.start + (m_media.clamp(pl.media_in, pl.media_out) - pl.media_in))))
+    });
+    let mut hit_at = at_moment.map(|x| x.1).unwrap_or(Tick::ZERO);
+    let mut hold_len = Tick::from_seconds_f64(1.0);
+    if let Some((clip, t)) = at_moment {
+        if o.freeze > 0.0 {
+            if let Some(v) = st.may(s, "freeze on the moment", "clip.insertFrameHoldSegment", json!({"clip": clip.0, "time": t.0, "seconds": round3(o.freeze)}))
+            {
+                let hold = v["clip"].as_u64();
+                hold_len = v["duration"].as_i64().map_or(hold_len, Tick);
+                if let Some(hold) = hold {
+                    if o.shake {
+                        st.may(s, "shake the freeze", "effects.apply", json!({"clips": [hold], "effect": "camera_shake"}));
+                    }
+                    st.may(
+                        s,
+                        "zoom on the freeze",
+                        "effects.setParam",
+                        json!({"clip": hold, "effect": "motion", "param": "scale", "value": round3((o.zoom + 15.0).min(220.0))}),
+                    );
+                    st.next("edit.rippleDelete", json!({"clips": [hold]}), "no freeze");
+                }
+            }
+        } else if o.shake {
+            st.skip("effects.apply", json!({"effect": "camera_shake"}), "shake the freeze", "there is no freeze (`freeze` is 0)");
+        }
+        hit_at = t;
+    }
+    // top text over the build-up, punch text on the moment
+    let size = round3((f64::from(h) * 0.085).clamp(24.0, 400.0));
+    let lettering = |s: &mut Session, st: &mut Steps, words: &str, from: Tick, len: Tick, anchor: &str, why: &str| {
+        let len = len.max(rate.frame_duration());
+        let v = st.may(
+            s,
+            why,
+            "graphics.newText",
+            json!({"text": words, "time": from.0, "seconds": round3(len.seconds()), "size": size, "track": "auto", "position": [f64::from(w) / 2.0, f64::from(h) / 2.0]}),
+        )?;
+        let clip = v["clip"].as_u64()?;
+        st.may(
+            s,
+            "meme lettering: bold white with a black outline",
+            "graphics.set",
+            json!({"clip": clip, "props": {"font_style": "Bold", "align": "center", "fill_color": "#ffffff", "stroke": true, "stroke_width": round3((size / 12.0).max(3.0)), "shadow": false}, "pictureChange": false}),
+        );
+        st.may(s, "keep the text in the title-safe area", "graphics.anchor", json!({"clip": clip, "anchor": anchor, "safe": "title"}));
+        Some(clip)
+    };
+    if let Some(t) = &o.top
+        && let Some(c) = lettering(s, &mut st, t, Tick::ZERO, hit_at, "top", "top text over the build-up")
+    {
+        st.next("graphics.setText", json!({"clip": c, "text": "…"}), "your own top text");
+    }
+    if let Some(t) = &o.punch {
+        lettering(s, &mut st, t, hit_at, hold_len + Tick::from_seconds_f64(0.5), "bottom", "text on the moment");
+    }
+    // sound and meme on the moment, from the installed packs
+    let sound = match &o.sound {
+        Pick::Off => None,
+        Pick::Asset(a) => Some(a.clone()),
+        Pick::Auto => find_asset(s, &mut st, json!("sfx"), &["boom", "impact", "hit", "scratch"], "a sound effect in the installed packs"),
+    };
+    match sound {
+        Some(a) => {
+            st.may(s, "a sound effect on the moment", "assets.place", json!({"asset": a, "time": hit_at.0, "audioTrack": "new"}));
+        }
+        None if o.sound != Pick::Off => {
+            st.notes.push("no sound effect: no installed pack has one. assets.catalog lists the CC0 sound packs (assets.install {\"catalog\": id}); then assets.search {\"kind\": \"sfx\"}".into());
+            st.next("assets.search", json!({"kind": "sfx", "query": "boom"}), "a sound effect for the moment, once a pack is installed");
+        }
+        None => {}
+    }
+    let meme = match &o.meme {
+        Pick::Off => None,
+        Pick::Asset(a) => Some(a.clone()),
+        Pick::Auto => find_asset(s, &mut st, json!(["meme-gif", "meme-video", "meme-image"]), &["reaction"], "a meme in the installed packs"),
+    };
+    match meme {
+        Some(a) => {
+            st.may(
+                s,
+                "a meme overlay on the moment",
+                "assets.place",
+                json!({"asset": a, "time": hit_at.0, "duration": (hold_len + Tick::from_seconds_f64(0.5)).0, "track": "new"}),
+            );
+        }
+        None if o.meme != Pick::Off => {
+            st.notes.push(
+                "no meme overlay: no meme pack is installed (none ships with Filmagic). Build one from a folder of memes you may use with assets.buildPack {\"from\": folder, \"license\": …}, then assets.search {\"kind\": \"meme-gif\"}"
+                    .into(),
+            );
+            st.next(
+                "assets.buildPack",
+                json!({"from": "<folder of your memes>", "license": "<their licence>", "install": true}),
+                "a meme pack from your own files",
+            );
+        }
+        None => {}
+    }
+    if let Some(v) = &o.voice {
+        let mut tp = json!({"text": v.text, "time": 0});
+        if let Some(x) = &v.voice {
+            tp["voice"] = json!(x);
+        }
+        if let Some(x) = v.pace {
+            tp["pace"] = json!(x);
+        }
+        if st.may(s, "the voice-over, spoken", "tts.create", tp).is_none() {
+            st.next("tts.voices", json!({}), "the voices this build has (tts.downloadVoices for the natural ones)");
+        }
+    }
+    let change = picture_change(s, &before, a0, extent(s).1);
+    let mut extra = Map::new();
+    extra.insert("edit".into(), json!(edit_seq.0));
+    if let Some(asp) = o.aspect {
+        let shaped = super::reframe(s, &mut st, edit_seq, asp, &format!("{} {asp}", o.name), rate)?;
+        extra.insert("shaped".into(), json!({"aspect": asp, "sequence": shaped.map(|x| x.0)}));
+        st.notes.push(format!("the active sequence is the {asp} copy; the edit itself is sequence {}", edit_seq.0));
+    }
+    extra.insert("footage".into(), f.target.clone());
+    extra.insert("moment".into(), json!({"source": round3(moment.seconds()), "edit": time_json(hit_at)}));
+    extra.insert(
+        "pieces".into(),
+        json!(
+            placed
+                .iter()
+                .map(|pl| json!({"clip": pl.video.map(|c| c.0), "media": {"from": round3(pl.media_in.seconds()), "to": round3(pl.media_out.seconds())}}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    extra.insert("pictureChange".into(), change);
+    let mut again = f.target.clone();
+    again["recipe"] = json!(RECIPE.id);
+    again["moment"] = json!(round3(moment.seconds()));
+    again["cutPauses"] = json!(false);
+    st.next(super::RUN, again, "the same moment without jump cuts (edit.undo first)");
+    st.next(
+        "preview.motion",
+        json!({"path": "meme.gif", "fromSeconds": round3((hit_at.seconds() - 2.0).max(0.0)), "toSeconds": round3(hit_at.seconds() + 2.0)}),
+        "watch the moment",
+    );
+    st.next("layout.check", json!({}), "check the text stays readable and inside the safe area");
+    st.next("file.exportMedia", json!({"path": "meme.mp4", "draft": true, "wait": true}), "a quick review copy");
+    Ok(done(&RECIPE, s, st, extra, LABEL))
+}

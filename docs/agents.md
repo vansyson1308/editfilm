@@ -513,6 +513,60 @@ command could not do. And read `pictureChange` after a command that alters the p
 means a viewer will not notice it. A region read off a rendered frame takes `"space":"frame"`
 when the clip is moved, zoomed or turned.
 
+### Recipes and the guide: a first draft in one command (#22)
+
+There are some 750 commands. Two commands keep an agent from getting lost in them.
+
+**`guide.find {"goal": "…"}`** answers "which commands do this?" in plain words: "apply the same
+grade to many clips", "add an adjustment layer", "duck the music under speech", "reframe to 9:16",
+"remove the pauses", "slow motion", "captions"… Each topic lists the exact commands, in order, with
+example parameters, and the reply adds the recipes and other commands whose words match. Without a
+goal it lists every topic. The topics are data (`crates/engine/src/recipes/guide.rs`), and a test
+checks that every command they name is in the registry.
+
+**Recipes** build a first draft that you then adjust:
+
+| Command | Does |
+|---|---|
+| `recipes.list` | the recipes, and which optional commands this build does not have yet |
+| `recipes.describe {"recipe": id}` | one recipe: its parameters, the commands it runs and why |
+| `recipes.run {"recipe": id, …}` | builds the draft |
+
+| Recipe | From | Builds |
+|---|---|---|
+| `sports-highlight` | a long rally recording (`item` or `clip`) | a reel of the best moments by `story.highlights` (to `targetSeconds`, in time order), slow motion at the end of the best one, soft cuts, a marker per moment, an opening title, music when a pack has one; `aspect` adds a 9:16, 1:1 or 4:5 copy; `ball` a ball trail |
+| `comedy-meme` | a clip | an edit that builds to the funniest moment (the loudest laugh or burst): pauses in the speech cut out, punch-ins, a freeze with camera shake on the moment, top text and `punchText`, a sound effect and a meme from the installed packs, a `voiceover` line by Text to Speech |
+| `vertical` | the active sequence, a `sequence`, an `item` or a `clip` | a copy in 9:16 (or 1:1, 4:5) |
+
+How a run works:
+
+- **One undo step.** `edit.undo` takes the whole draft back. A required step that fails rolls it
+  all back, with the step and its error. An optional step that fails is a warning.
+- **Every step is in the result**: `steps` lists each command with its exact `params`, its status
+  (`done`, `failed`, `skipped`) and why it ran. Tune any of them with the same command, or start
+  from `nextSteps`. `pictureChange` says how visible the styling is.
+- **Analysis is a job.** `wait: true` answers with the draft. Without it the reply is
+  `{"status": "running", "job", "resultCommand"}`: once `jobs.list` shows the job finished,
+  run the `resultCommand` (`recipes.run` with `job`) to build the draft. Over MCP a waiting call
+  does this for you, as for exports. Running the same `resultCommand` again answers the same draft
+  (`alreadyBuilt`) rather than building a second one. The analysis is cached, so another run with
+  other options reads no media again.
+- **Deterministic.** The same footage and parameters give the same draft.
+- **No media ships.** Music, sounds and memes come from installed packs (`assets.search`). When
+  none is installed the recipe says so in `notes`, and says what to add.
+- **Commands that are not in this build yet** (`clip.autoReframe`, `sports.ballTrail`) are
+  skipped with a note. Until then, `aspect` gives a centre crop: the draft is nested in a sequence
+  of that shape and fills its frame, and `nextSteps` says how to move the crop.
+- **Hostile parameters** are refused before anything changes: unknown keys (a typo is never
+  ignored), wrong types, out-of-range numbers. Costs are bounded. A reel is at most 300 s and 20
+  moments. A meme is cut from at most 600 s of footage, in at most 40 pieces.
+
+```json
+{"recipe": "sports-highlight", "item": 3, "targetSeconds": 30, "aspect": "9:16", "wait": true}
+{"recipe": "comedy-meme", "item": 7, "maxSeconds": 15, "punchText": "BRUH", "voiceover": {"text": "So this happened."}, "wait": true}
+{"recipe": "vertical", "aspect": "9:16"}
+```
+
 ### Checking what you made
 
 A still frame cannot show motion, and a rendered frame does not say what covers what. These close

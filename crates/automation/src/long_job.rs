@@ -17,9 +17,10 @@ use crate::server::FilmagicMcp;
 
 /// Engine commands that block until their job is done when called with `wait: true`: a render
 /// is written, or an asset pack is downloaded (`assets.install` from a URL or the catalogue,
-/// `assets.fetch`), or footage is analysed (`story.highlights`). Over MCP and the bridge they run as jobs that are polled, so a waiting call
-/// never holds up the app's UI thread or the session.
-pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch", "story.highlights"];
+/// `assets.fetch`), or footage is analysed (`story.highlights`, and `recipes.run`, which builds
+/// its draft through its `resultCommand` once the analysis is done). Over MCP and the bridge they
+/// run as jobs that are polled, so a waiting call never holds up the app's UI thread or the session.
+pub const LONG_COMMANDS: &[&str] = &["file.exportMedia", "assets.install", "assets.fetch", "story.highlights", "recipes.run"];
 
 /// What a failed long command was doing, for its error: `export failed: …`.
 pub fn what(id: &str) -> &str {
@@ -27,6 +28,7 @@ pub fn what(id: &str) -> &str {
         "file.exportMedia" => "export",
         "assets.install" => "asset pack install",
         "assets.fetch" => "asset download",
+        "recipes.run" => "recipe",
         other => other,
     }
 }
