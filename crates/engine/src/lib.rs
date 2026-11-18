@@ -18,6 +18,7 @@ pub mod clip_ids;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod control_file;
 pub mod demo;
 pub mod doc_path;
 pub mod essential_sound;

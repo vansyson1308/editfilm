@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -33,12 +33,26 @@ impl BridgeClient {
     /// `addr` such as `127.0.0.1:9876` (loopback only). Reads `FILMAGIC_CONTROL_TOKEN`
     /// from the environment; the desktop app requires this credential on every request.
     pub fn new(addr: impl Into<String>) -> Result<Self, AutomationError> {
+        Self::with_token(addr, std::env::var("FILMAGIC_CONTROL_TOKEN").ok())
+    }
+
+    /// [`Self::new`] with the credential given, e.g. a live app's session credential (#17).
+    pub fn with_token(addr: impl Into<String>, token: Option<String>) -> Result<Self, AutomationError> {
         let addr = addr.into();
-        let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
-        if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
-            return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
-        }
-        Ok(Self { addr, token: std::env::var("FILMAGIC_CONTROL_TOKEN").ok(), idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+        check_loopback(&addr)?;
+        Ok(Self { addr, token, idle: Mutex::new(Vec::new()), next_id: AtomicU64::new(1) })
+    }
+
+    /// The app's address, `127.0.0.1:<port>`.
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
+    /// Whether the Filmagic app that holds this credential answers at this address
+    /// (`control.hello`, answered by the app's server thread even while it starts or is busy),
+    /// within `timeout`. The credential itself is not sent.
+    pub async fn hello(&self, timeout: Duration) -> Result<Value, AutomationError> {
+        hello(&self.addr, self.token.as_deref(), timeout).await
     }
 
     /// Run engine command `id` in the app. A blocking export (`file.exportMedia` with
@@ -123,13 +137,88 @@ impl BridgeClient {
         let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
             .await
             .map_err(|_| AutomationError::Bridge(format!("timed out connecting to {}", self.addr)))?
-            .map_err(|e| AutomationError::Bridge(format!(
-                "cannot connect to {} ({e}); start the app with `filmagic --control <port>` and set FILMAGIC_CONTROL_TOKEN to the same 64-hex-character value on both sides (see docs/control-protocol.md)",
-                self.addr
-            )))?;
+            .map_err(|e| AutomationError::Bridge(not_answering(&self.addr, &e)))?;
         let (r, w) = s.into_split();
-        Ok((BufReader::new(r), w))
+        let mut conn = (BufReader::new(r), w);
+        // Before the credential goes out on a new connection, the server proves it holds it: the
+        // port may belong to another program since the app that had it exited (#17).
+        if let Some(token) = &self.token {
+            tokio::time::timeout(HELLO_TIMEOUT, handshake(&mut conn, &self.addr, token))
+                .await
+                .map_err(|_| AutomationError::Bridge(format!("{} did not answer control.hello within {} s", self.addr, HELLO_TIMEOUT.as_secs())))??;
+        }
+        Ok(conn)
     }
+}
+
+/// How long a server gets to answer `control.hello`.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 32 random bytes from the operating system, as 64 hex characters.
+fn new_nonce() -> Result<String, AutomationError> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| AutomationError::Other(format!("no random nonce: {e}")))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The port of `127.0.0.1:<port>`.
+fn port_of(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':')?.1.parse().ok()
+}
+
+/// `control.hello` on `conn`: send a fresh nonce, read the reply and check its proof against `token`
+/// and the port of `addr`. The reply's `result` when the server is the app that holds `token`.
+async fn handshake(conn: &mut Conn, addr: &str, token: &str) -> Result<Value, AutomationError> {
+    let port = port_of(addr).ok_or_else(|| AutomationError::BadRequest(format!("no port in `{addr}`")))?;
+    let nonce = new_nonce()?;
+    let line = format!("{}\n", json!({"id": 0, "method": "control.hello", "params": {"nonce": nonce}}));
+    conn.1.write_all(line.as_bytes()).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+    let mut buf = String::new();
+    // bounded: a program that is not Filmagic may send anything
+    (&mut conn.0).take(64 * 1024).read_line(&mut buf).await.map_err(|e| AutomationError::Bridge(e.to_string()))?;
+    let impostor = || {
+        AutomationError::Bridge(format!(
+            "{addr} is not the Filmagic app this credential belongs to (its control.hello proof does not match); nothing was sent to it. Another program may be using the port of an app that has exited"
+        ))
+    };
+    let v: Value = serde_json::from_str(&buf).map_err(|_| impostor())?;
+    let result = v.get("result").filter(|_| v.get("ok").and_then(Value::as_bool) == Some(true)).ok_or_else(impostor)?;
+    let proof = result.get("proof").and_then(Value::as_str).ok_or_else(impostor)?;
+    if result.get("app").and_then(Value::as_str) != Some("filmagic") || !filmagic_engine::control_file::verify_proof(token, port, &nonce, proof) {
+        return Err(impostor());
+    }
+    Ok(result.clone())
+}
+
+/// The error when nothing listens at `addr`: usually the user closed the app (#17).
+fn not_answering(addr: &str, e: &std::io::Error) -> String {
+    format!(
+        "Filmagic is not answering at {addr} ({e}): the app was closed, or was not started with `--control`. From MCP, call the `app_open` tool to start it again with your project; otherwise start it with `filmagic --control <port>`. The credential comes from the app's control folder (for its own session credential), or from FILMAGIC_CONTROL_TOKEN set to the same 64 hex characters on both sides (see docs/control-protocol.md)"
+    )
+}
+
+/// Refuse a non-loopback address: the control server only listens on 127.0.0.1.
+fn check_loopback(addr: &str) -> Result<(), AutomationError> {
+    let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
+        return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
+    }
+    Ok(())
+}
+
+/// `control.hello` on a fresh connection, within `timeout`: `Ok` only when the server proves it is
+/// the Filmagic app that holds `token`. The credential is never sent, so asking a program that only
+/// took over the port reveals nothing to it.
+pub async fn hello(addr: &str, token: Option<&str>, timeout: Duration) -> Result<Value, AutomationError> {
+    check_loopback(addr)?;
+    let token = token.ok_or_else(|| AutomationError::Bridge(format!("no credential to check {addr} with: set FILMAGIC_CONTROL_TOKEN to the app's value")))?;
+    let exchange = async {
+        let s = TcpStream::connect(addr).await.map_err(|e| AutomationError::Bridge(not_answering(addr, &e)))?;
+        let (r, w) = s.into_split();
+        let mut conn = (BufReader::new(r), w);
+        handshake(&mut conn, addr, token).await
+    };
+    tokio::time::timeout(timeout, exchange).await.map_err(|_| AutomationError::Bridge(format!("{addr} did not answer within {} ms", timeout.as_millis())))?
 }
 
 #[cfg(test)]
@@ -137,6 +226,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::net::TcpListener;
+
+    /// The credential the stand-in apps hold.
+    const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A stand-in's reply to `control.hello` for `TEST_TOKEN` on `port`, or `None` for other requests.
+    fn hello_reply(req: &Value, port: u16) -> Option<Value> {
+        (req["method"] == "control.hello").then(|| {
+            let nonce = req["params"]["nonce"].as_str().unwrap_or_default();
+            let proof = filmagic_engine::control_file::proof(TEST_TOKEN, port, nonce).unwrap();
+            json!({"id": req["id"], "ok": true, "result": {"app": "filmagic", "port": port, "proof": proof}})
+        })
+    }
 
     /// A stand-in for the app's control server: the export starts job 7, which `jobs.list` reports
     /// running twice and then finished with `result`. Every request is recorded.
@@ -148,6 +249,7 @@ mod tests {
     async fn fake_app_with(result: Value, offline: Option<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
+        let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
         tokio::spawn(async move {
@@ -157,6 +259,10 @@ mod tests {
             let mut polls = 0;
             while let Ok(Some(line)) = lines.next_line().await {
                 let req: Value = serde_json::from_str(&line).unwrap();
+                if let Some(reply) = hello_reply(&req, port) {
+                    w.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+                    continue;
+                }
                 log.lock().await.push(req.clone());
                 let reply = match req["params"]["command"].as_str() {
                     Some("file.exportMedia") => json!({"job": 7, "path": "/tmp/out.mov"}),
@@ -306,15 +412,84 @@ mod tests {
     #[tokio::test]
     async fn credential_is_sent_on_every_request() {
         let (addr, seen) = fake_app(Value::Null).await;
-        let mut b = BridgeClient::new(addr).unwrap();
-        // Inject directly to avoid mutating the process environment in parallel tests.
-        let token = "0123456789abcdef".repeat(4);
-        b.token = Some(token.clone());
+        let b = BridgeClient::with_token(addr, Some(TEST_TOKEN.to_string())).unwrap();
+        let token = TEST_TOKEN.to_string();
         b.call("ui.inspect", json!({})).await.unwrap();
         b.execute("file.saveAs", json!({"path": "/owner/project.fcproj"})).await.unwrap();
         let seen = seen.lock().await;
         assert_eq!(seen.len(), 2);
         assert!(seen.iter().all(|request| request["token"] == token));
         assert_eq!(seen[1]["params"]["params"]["path"], "/owner/project.fcproj");
+    }
+
+    /// A program on the app's port that is not the app: it answers hello with what it can (nothing,
+    /// junk, a wrong proof, or the real app's proof for another port, relayed) and records what it
+    /// is sent. Returns its address and the lines it received.
+    async fn impostor(answer: fn(&Value, u16) -> Option<Value>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = listener.accept().await {
+                let log = log.clone();
+                tokio::spawn(async move {
+                    let (r, mut w) = s.into_split();
+                    let mut lines = BufReader::new(r).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        log.lock().await.push(line.clone());
+                        let req: Value = serde_json::from_str(&line).unwrap_or_default();
+                        match answer(&req, port) {
+                            Some(reply) => {
+                                let _ = w.write_all(format!("{reply}\n").as_bytes()).await;
+                            }
+                            None => {
+                                let _ = w.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (addr, seen)
+    }
+
+    /// S1 (#17 review): a client sends the credential only to a server that proves it holds it. A
+    /// listener on the port, however it answers hello, gets neither the credential nor a command.
+    #[tokio::test]
+    async fn an_impostor_never_receives_the_credential() {
+        let answers: [fn(&Value, u16) -> Option<Value>; 5] = [
+            |_, _| None,
+            |req, _| Some(json!({"id": req["id"], "ok": true, "result": {"app": "filmagic"}})),
+            |req, port| Some(json!({"id": req["id"], "ok": true, "result": {"app": "filmagic", "port": port, "proof": "0".repeat(64)}})),
+            // the real app's proof, relayed from the port it listens on: bound to that port, not this one
+            |req, port| hello_reply(req, port.wrapping_add(1)),
+            // the right proof from something that does not say it is Filmagic
+            |req, port| {
+                hello_reply(req, port).map(|mut v| {
+                    v["result"]["app"] = json!("other");
+                    v
+                })
+            },
+        ];
+        for (n, answer) in answers.into_iter().enumerate() {
+            let (addr, seen) = impostor(answer).await;
+            let b = BridgeClient::with_token(addr.as_str(), Some(TEST_TOKEN.to_string())).unwrap();
+            let e = b.call("engine.execute", json!({"command": "file.saveAs", "params": {"path": "/tmp/x.fcproj"}})).await.unwrap_err().to_string();
+            assert!(e.contains("not the Filmagic app") || e.contains("did not answer"), "answer {n}: {e}");
+            assert!(hello(&addr, Some(TEST_TOKEN), Duration::from_secs(2)).await.is_err(), "answer {n}");
+            let seen = seen.lock().await;
+            assert!(seen.iter().all(|l| !l.contains(TEST_TOKEN) && l.contains("control.hello")), "answer {n} received {seen:?}");
+        }
+    }
+
+    /// The real stand-in passes the same check.
+    #[tokio::test]
+    async fn the_app_passes_hello() {
+        let (addr, _) = fake_app(Value::Null).await;
+        let r = hello(&addr, Some(TEST_TOKEN), Duration::from_secs(2)).await.unwrap();
+        assert_eq!(r["app"], "filmagic");
+        assert!(hello(&addr, None, Duration::from_secs(2)).await.unwrap_err().to_string().contains("no credential"));
     }
 }
