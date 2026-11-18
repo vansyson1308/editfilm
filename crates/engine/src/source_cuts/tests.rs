@@ -516,3 +516,33 @@ fn an_overlapping_request_adds_only_its_new_frames_to_the_total() {
     wait_job(&s, job);
     assert!(cached(&s, item, 0, 49).unwrap().complete);
 }
+
+/// Every job takes its id from `Session::next_job_id`: an id worked out from the jobs still listed
+/// (`max + 1`, `len + 1`) can be one a pruned job had.
+#[test]
+fn no_job_id_is_worked_out_from_the_listed_jobs() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    let bad: Vec<String> = files
+        .iter()
+        .filter(|p| !p.to_string_lossy().contains("test"))
+        .flat_map(|p| {
+            let text = std::fs::read_to_string(p).unwrap();
+            text.lines()
+                .filter(|l| l.contains("s.jobs.iter().map(|j| j.id).max()") || l.contains("s.jobs.len() as u64 + 1"))
+                .map(|l| format!("{}: {}", p.display(), l.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(bad.is_empty(), "use Session::next_job_id: {bad:#?}");
+}
