@@ -816,3 +816,73 @@ fn frames_that_could_not_be_checked_are_counted_in_the_status() {
         );
     }
 }
+
+/// On a ramped clip the mask follows the frames the clip shows: tracking steps through sequence
+/// frames, decodes what each shows and keys it at that moment's linear media time, the clock
+/// clip keyframes are evaluated in (#21).
+#[test]
+fn tracking_a_ramped_clip_follows_the_frames_it_shows() {
+    let (mut s, clip) = tracking_session();
+    let rate = filmagic_time::FrameRate::FPS_24;
+    s.execute("clip.speedRamp", json!({"clip": clip.0, "from": 100, "to": 50, "at": {"frame": 4}, "duration": {"frame": 4}, "ease": "linear"})).unwrap();
+    s.set_playhead(rate.tick_of(10));
+    let it = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let shown = |it: &filmagic_project::TrackItem, f: i64| it.source_time_at(rate.tick_of(f)).0 as f64 / rate.frame_duration().0 as f64;
+    let c = truth(shown(&it(&s), 10)).apply(filmagic_geom::Vec2::ZERO);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [c.x, c.y], "size": [90, 90]})).unwrap();
+    let r = s.execute("masks.track", json!({"direction": "forward", "frames": 12, "wait": true})).unwrap();
+    assert_eq!(r["frames"], 12, "{r}");
+    let it = it(&s);
+    let mask = it.effect("opacity").unwrap().masks[0].clone();
+    let obj: Vec<filmagic_geom::Vec2> = {
+        let inv = truth(shown(&it, 10)).inverse().unwrap();
+        mask.path_at(it.effect_time_at(rate.tick_of(10))).vertices.iter().map(|v| inv.apply(v.p)).collect()
+    };
+    let mut worst = 0.0f64;
+    for f in [12i64, 16, 20, 22] {
+        let path = mask.path_at(it.effect_time_at(rate.tick_of(f)));
+        for (v, o) in path.vertices.iter().zip(&obj) {
+            worst = worst.max((v.p - truth(shown(&it, f)).apply(*o)).length());
+        }
+    }
+    assert!(worst < 2.0, "the mask is {worst} px off the subject the ramped clip shows");
+}
+
+#[test]
+fn starting_a_long_ramped_track_does_not_work_out_its_frames_first() {
+    // an hour at 24 fps with 64 eased speed points: working out the frame each sequence frame
+    // shows takes seconds, and the start call runs on the app's UI thread
+    let (mut s, clip) = tracking_session();
+    let rate = filmagic_time::FrameRate::FPS_24;
+    let hour = rate.tick_of(24 * 3600);
+    {
+        let id = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+        let (_, it) = q.find_item_mut(clip).unwrap();
+        it.duration = hour;
+        if it.effect("time_remap").is_none() {
+            it.effects.push(filmagic_project::find_effect("time_remap").unwrap().instance());
+        }
+        let p = it.effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes = (0..64)
+            .map(|i| {
+                let mut k = filmagic_project::Keyframe::new(Tick(hour.0 / 64 * i), filmagic_project::ParamValue::Float([100.0, 40.0][i as usize % 2]));
+                k.interp = filmagic_project::Interpolation::Bezier;
+                k
+            })
+            .collect();
+        assert!(it.has_speed_ramp());
+    }
+    s.set_playhead(rate.tick_of(2));
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "ellipse", "center": [160, 120], "size": [90, 90]})).unwrap();
+    let t0 = std::time::Instant::now();
+    let r = s.execute("masks.track", json!({"direction": "forward"})).unwrap();
+    let took = t0.elapsed();
+    assert!(r["frames"].as_u64().unwrap() > 80_000, "{r}");
+    assert!(took < std::time::Duration::from_secs(2), "the start call took {took:?}");
+    s.execute("jobs.cancel", json!({"job": r["job"]})).unwrap();
+    let t0 = std::time::Instant::now();
+    while !s.jobs.iter().all(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) && t0.elapsed() < std::time::Duration::from_secs(60) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}

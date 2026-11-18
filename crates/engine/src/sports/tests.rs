@@ -578,3 +578,53 @@ fn a_path_line_from_untimed_points_starts_at_the_playhead_or_its_freeze_frame() 
     let r = s.execute("sports.pathLine", json!({"points": timed, "duration": {"frame": 24}})).unwrap();
     assert!((r["start"].as_f64().unwrap() - 21.0 / 24.0).abs() < 1e-9, "{r}");
 }
+
+/// The media frame clip `clip` shows at sequence frame `k` (through any speed ramp).
+fn shown_frame(s: &Session, seq: ItemId, clip: ClipId, k: i64) -> f64 {
+    RATE.frame_at(item_at(s, seq, clip).source_time_at(RATE.tick_of(k))) as f64
+}
+
+#[test]
+fn reframe_keeps_the_subject_centred_across_a_speed_ramp() {
+    let (mut s, clip, seq) = Setup::new(640, 360, 96, sliding).session();
+    s.execute("clip.speedRamp", json!({"clip": clip.0, "from": 100, "to": 40, "at": {"frame": 12}, "duration": {"frame": 12}})).unwrap();
+    assert!(item_at(&s, seq, clip).has_speed_ramp());
+    let r = s.execute("clip.autoReframe", json!({"output": "sequence", "smoothing": 0.2, "wait": true})).unwrap();
+    assert!(r["notes"].to_string().contains("ramp first, then reframe"), "{r}");
+    let new = ItemId(r["sequence"]["id"].as_u64().unwrap());
+    let copy = s.project.sequence(new).unwrap().video_tracks[0].items[0].clone();
+    assert!(copy.has_speed_ramp(), "the copy keeps its ramp");
+    let len = (copy.duration.0 / RATE.frame_duration().0) as i64;
+    for k in (0..len).step_by(3) {
+        // the disc of the frame shown there, through the crop keyed at that moment's linear time
+        let (x, y, _) = sliding(shown_frame(&s, new, copy.id, k)).unwrap();
+        let p = on_screen(&s, new, copy.id, k, Vec2::new(x, y));
+        assert!(p.x > 0.2 * 360.0 && p.x < 0.8 * 360.0, "frame {k}: the subject is at x {:.1} of 360", p.x);
+    }
+}
+
+#[test]
+fn tracking_follows_the_frames_a_speed_ramp_shows() {
+    let (mut s, clip, seq) = Setup::new(320, 180, 60, lob).session();
+    s.execute("clip.speedRamp", json!({"clip": clip.0, "from": 100, "to": 50, "at": {"frame": 6}, "duration": {"frame": 10}})).unwrap();
+    let (x, y, _) = lob(0.0).unwrap();
+    let r = s.execute("sports.trackPoint", json!({"point": [x, y], "size": 10, "at": 0, "end": {"frame": 24}, "wait": true})).unwrap();
+    assert_eq!(r["coverage"], 1.0, "{r}");
+    assert!(r["notes"].to_string().contains("speed ramp"), "{r}");
+    for (k, p) in r["points"].as_array().unwrap().iter().enumerate() {
+        let (x, y, _) = lob(shown_frame(&s, seq, clip, k as i64)).unwrap();
+        let (px, py) = (p["x"].as_f64().unwrap(), p["y"].as_f64().unwrap());
+        assert!((px - x).abs() < 1.5 && (py - y).abs() < 1.5, "frame {k}: ({px:.1}, {py:.1}) vs ({x:.1}, {y:.1})");
+    }
+    // a trail on the ramped clip lands behind the ball it shows
+    let r = s
+        .execute("sports.ballTrail", json!({"point": [x, y], "size": 10, "at": 0, "end": {"frame": 24}, "length": 6, "width": 6, "glow": false, "color": "#FF2020", "opacity": 100, "fade": 0, "wait": true}))
+        .unwrap();
+    assert_eq!(r["layers"], 6, "{r}");
+    let k = 18;
+    s.set_playhead(RATE.tick_of(k));
+    let img = s.render_program(1.0).unwrap();
+    let (a, b) = (lob(shown_frame(&s, seq, clip, k - 2)).unwrap(), lob(shown_frame(&s, seq, clip, k - 3)).unwrap());
+    let mid = pixel(&img, (a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+    assert!(mid[0] > 0.6 && mid[1] < 0.1 && mid[2] < 0.1, "trail pixel {mid:?}");
+}

@@ -2983,6 +2983,7 @@
 	Graphics problem: switched to software compositing	Problema de gráficos: se ha cambiado a la composición por software
 	GPU acceleration is unavailable; preview renders on the CPU	La aceleración por GPU no está disponible; la vista previa se procesa en la CPU
 	Exporting	Exportando
+	Find Cuts in Source	Buscar cortes en el origen
 	Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.	Haz clic para seleccionar, o haz clic en un espacio vacío y arrastra para seleccionar con un marco. Usa Mayús, Opción y Cmd para otras opciones.
 	Click to select all clips to the right in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la derecha en todas las pistas. Mayús+clic para una sola pista.
 	Click to select all clips to the left in all tracks. Shift-click for a single track.	Haz clic para seleccionar todos los clips a la izquierda en todas las pistas. Mayús+clic para una sola pista.
@@ -3762,6 +3763,11 @@
 	Ball Trail	Estela de la pelota
 	Ground Ring	Anillo en el suelo
 	Path Line	Línea de trayectoria
+	Speed Ramp…	Rampa de velocidad…
+	Speed Ramp	Rampa de velocidad
+	Remove Speed Ramp	Quitar rampa de velocidad
+	Find Highlights	Buscar momentos destacados
+	Mark Highlights	Marcar momentos destacados
 	List Asset Packs	Listar paquetes de recursos
 	Asset Pack Catalogue	Catálogo de paquetes de recursos
 	Install Asset Pack	Instalar paquete de recursos

@@ -100,6 +100,17 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("sports.ballTrail", "Ball Trail", overlay::TRAIL_PARAMS, |s, p| overlay::start(s, p, overlay::Kind::Trail, "sports.ballTrail")),
         spec("sports.groundRing", "Ground Ring", overlay::RING_PARAMS, |s, p| overlay::start(s, p, overlay::Kind::Ring, "sports.groundRing")),
         spec("sports.pathLine", "Path Line", overlay::PATH_PARAMS, |s, p| overlay::start(s, p, overlay::Kind::Path, "sports.pathLine")),
+        CommandSpec {
+            id: "sports.report",
+            label: "Sports Job Report",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"job":id} → the report of a finished clip.autoReframe / sports.* job (status "done"), or {status: "running" | "cancelled" | "failed", error?}"#,
+            enabled: crate::commands::always,
+            run: report_cmd,
+            journal: false,
+            named: NamedKeys::NONE,
+        },
     ]
 }
 
@@ -185,8 +196,35 @@ pub(crate) fn launch(
         "frames": total,
         "poll": "jobs.list",
         "cancel": "jobs.cancel",
-        "notes": [format!("{label} runs in the background: its result is applied when it finishes, and jobs.list shows its report")],
+        // what a long-job caller (MCP, the bridge) reads once the job is done
+        "resultCommand": {"command": "sports.report", "params": {"job": id}},
+        "notes": [format!("{label} runs in the background: its result is applied when it finishes, and sports.report (or jobs.list) gives its report")],
     }))
+}
+
+/// `sports.report {job}`: a sports job's answer. Its report once it is applied (`status`
+/// `"done"`), else `{status: "running" | "cancelled" | "failed", error?}`.
+fn report_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    use std::sync::atomic::Ordering;
+    let id = p.get("job").and_then(Value::as_u64).ok_or_else(|| bad("sports.report", "need `job`, the id a sports command answered"))?;
+    if let Some(r) = report(s, id) {
+        let mut r = r.clone();
+        if let Some(e) = r.get("error").cloned() {
+            return Ok(json!({"job": id, "status": "failed", "error": e}));
+        }
+        r["job"] = json!(id);
+        r["status"] = json!("done");
+        return Ok(r);
+    }
+    let j = s.jobs.iter().find(|j| j.id == id).ok_or_else(|| bad("sports.report", format!("no job {id}")))?;
+    // still running, or finished and not applied yet (the next poll applies it)
+    if !j.progress.finished.load(Ordering::Relaxed) || s.sports_jobs.iter().any(|pj| pj.job == id) {
+        return Ok(json!({"job": id, "status": "running"}));
+    }
+    match lock(&j.result).clone() {
+        Some(Err(e)) if e != STOPPED => Ok(json!({"job": id, "status": "failed", "error": e})),
+        _ => Ok(json!({"job": id, "status": "cancelled", "error": "the job was stopped before it finished; nothing was changed"})),
+    }
 }
 
 pub(crate) const STOPPED: &str = "stopped";
@@ -419,6 +457,24 @@ pub(crate) fn luma_frame(src: &filmagic_media::SharedSource, time: Tick, scale: 
     let (w, h) = (f.width as usize, f.height as usize);
     let l = Luma::from_rgba8(w, h, &f.to_rgba8())?;
     Some((l, f64::from(f.width) / f64::from(src_w.max(1))))
+}
+
+/// The media time each sequence time in `times` shows on `it`: through its frame hold, else
+/// through its Time Remapping curve with one walk along it (each step integrates only from the
+/// last keyframe passed), else its linear media time. Worked out inside the analysis job: on a
+/// long ramp this is a lot of integrating, which must not hold up the thread that called.
+/// Keyframes are written at the other clock, [`TrackItem::effect_time_at`] (linear media time).
+pub(crate) fn shown_times(it: &TrackItem, times: &[Tick]) -> Vec<Tick> {
+    if let Some(h) = it.frame_hold {
+        return vec![h; times.len()];
+    }
+    match it.remap() {
+        Some(r) => {
+            let mut w = r.walk();
+            times.iter().map(|t| w.shown(it.linear_source_time_at(*t))).collect()
+        }
+        None => times.iter().map(|t| it.linear_source_time_at(*t)).collect(),
+    }
 }
 
 /// Where an object is when tracking starts: its centre and half-size, in source pixels.

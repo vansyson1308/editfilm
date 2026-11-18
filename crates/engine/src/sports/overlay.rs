@@ -311,9 +311,8 @@ pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -
     if at_src.x < 0.0 || at_src.y < 0.0 || at_src.x > f64::from(view.src.0) || at_src.y > f64::from(view.src.1) {
         return Err(bad(cmd, format!("`point`/`box` ({:.0}, {:.0}) is outside clip {}'s picture at `at`", centre.x, centre.y, it.id.0)));
     }
-    let mts: Vec<Tick> = times.iter().map(|t| it.source_time_at(*t)).collect();
-    if it.effect("time_remap").is_some_and(|e| e.enabled && e.is_animated()) {
-        req.warnings.push("the clip is time-remapped: the object is followed at its unremapped media times".into());
+    if it.has_speed_ramp() {
+        req.notes.push("the clip has a speed ramp: the object is followed in the frames it shows, and the overlay is keyed on the sequence's frames".into());
     }
     let src_w = view.src.0;
     let label = match kind {
@@ -323,7 +322,9 @@ pub(crate) fn start(s: &mut Session, p: &Value, kind: Kind, cmd: &'static str) -
         Kind::Path => "Path Line",
     };
     let (vv, tt) = (view.clone(), times.clone());
+    let clip = it.clone();
     super::launch(s, cmd, label.to_string(), n as u64, JobRequest::Overlay(req), wait, move |prog| {
+        let mts = super::shown_times(&clip, &tt);
         let found = super::follow(&src, src_w, &mts, seed, super::Seed { at: at_src, half }, TRACK_WIDTH, prog)?;
         Ok(Analysis::Points(tt.iter().zip(found).map(|(t, (q, score))| TrackedPoint { time: *t, at: q.map(|q| vv.to_seq(*t, q)), score }).collect()))
     })
@@ -483,6 +484,7 @@ pub(crate) fn apply(s: &mut Session, seq: filmagic_project::ItemId, req: Request
                     .collect::<Vec<_>>()
             );
             out["warnings"] = json!(warnings);
+            out["notes"] = json!(notes);
             return Ok(out);
         }
         Style::Trail(t) => {

@@ -68,8 +68,9 @@ pub(crate) fn move_many(s: &mut Session, p: &Value) -> Result<Value> {
         if !speed.is_finite() || speed == 0.0 || it.duration < frame {
             return Err(bad(COMMAND, "clip has no movable keyframe range"));
         }
-        let a = it.moving_source_time_at(it.start);
-        let b = it.moving_source_time_at(it.end() - frame);
+        // keyframes are timed in the clip's linear media time, whatever its Time Remapping
+        let a = it.linear_source_time_at(it.start);
+        let b = it.linear_source_time_at(it.end() - frame);
         if key.time < a.min(b) || key.time > a.max(b) {
             return Err(bad(COMMAND, "keyframe is outside the visible clip range"));
         }

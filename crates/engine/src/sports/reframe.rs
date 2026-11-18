@@ -68,7 +68,6 @@ struct Work {
     view: ClipView,
     src: filmagic_media::SharedSource,
     times: Vec<Tick>,
-    mts: Vec<Tick>,
     step: Tick,
     seed: Option<(usize, Seed)>,
 }
@@ -186,7 +185,7 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(CMD, "`end` must be after `start`"));
     }
     // the clips
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let mut notes = Vec::new();
     let video = |c: ClipId| q.find_item(c).filter(|(t, _)| q.track(*t).is_some_and(|t| t.kind == TrackKind::Video)).map(|(_, it)| it.clone());
     let named: Option<Vec<ClipId>> = match (p.get("clips").filter(|v| !v.is_null()), p.get("clip").filter(|v| !v.is_null())) {
@@ -252,8 +251,11 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(CMD, format!("clip {}'s Motion ▸ Anchor Point is animated: remove its keyframes first", it.id.0)));
             }
         }
-        if it.effect("time_remap").is_some_and(|e| e.enabled && e.is_animated()) {
-            warnings.push(format!("clip {} is time-remapped: it is analysed at its unremapped media times", it.id.0));
+        if it.has_speed_ramp() {
+            notes.push(format!(
+                "clip {} has a speed ramp: its shown frames are analysed and the keyframes are timed in its linear media time, so they stay with the sequence; ramp first, then reframe",
+                it.id.0
+            ));
         }
         let lo = range.0.map_or(it.start, |a| a.max(it.start));
         let hi = range.1.map_or(it.end(), |b| b.min(it.end()));
@@ -303,8 +305,7 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
             }
             None => None,
         };
-        let mts = times.iter().map(|t| it.source_time_at(*t)).collect();
-        work.push(Work { view: view.resized(ow, oh), src, times, mts, step, seed });
+        work.push(Work { view: view.resized(ow, oh), src, times, step, seed });
     }
     if let Some((at, ..)) = seed_spec
         && !work.iter().any(|w| w.seed.is_some())
@@ -329,13 +330,13 @@ pub(crate) fn run(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The subject per sample (source pixels) by motion saliency.
-fn motion_subject(w: &Work, prog: &filmagic_export::Progress) -> std::result::Result<Vec<Option<Vec2>>, String> {
+fn motion_subject(w: &Work, mts: &[Tick], prog: &filmagic_export::Progress) -> std::result::Result<Vec<Option<Vec2>>, String> {
     use std::sync::atomic::Ordering;
     let src_w = w.view.src.0;
     let scale = (MOTION_WIDTH / f64::from(src_w.max(1))).min(1.0) as f32;
-    let mut out = vec![None; w.mts.len()];
+    let mut out = vec![None; mts.len()];
     let mut prev: Option<super::Luma> = None;
-    for (i, mt) in w.mts.iter().enumerate() {
+    for (i, mt) in mts.iter().enumerate() {
         if prog.cancel.load(Ordering::Relaxed) {
             return Err(STOPPED.into());
         }
@@ -356,9 +357,11 @@ fn motion_subject(w: &Work, prog: &filmagic_export::Progress) -> std::result::Re
 }
 
 fn analyse(w: &Work, o: Opts, prog: &filmagic_export::Progress) -> std::result::Result<ClipPlan, String> {
+    // the frames each sample shows (through a speed ramp), worked out here in the job
+    let mts = super::shown_times(&w.view.item, &w.times);
     let subject: Vec<Option<Vec2>> = match w.seed {
-        Some((i, seed)) => super::follow(&w.src, w.view.src.0, &w.mts, i, seed, TRACK_WIDTH, prog)?.into_iter().map(|(p, _)| p).collect(),
-        None => motion_subject(w, prog)?,
+        Some((i, seed)) => super::follow(&w.src, w.view.src.0, &mts, i, seed, TRACK_WIDTH, prog)?.into_iter().map(|(p, _)| p).collect(),
+        None => motion_subject(w, &mts, prog)?,
     };
     let (src_w, src_h) = (f64::from(w.view.src.0), f64::from(w.view.src.1));
     let (sw, sh) = w.view.seq_size();

@@ -26,10 +26,12 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+pub mod highlights;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
 pub mod layers;
+pub mod layout_check;
 mod marker_edit;
 mod marker_export;
 pub mod masks;
@@ -39,6 +41,7 @@ pub mod media_pool;
 mod media_queue;
 pub mod media_watch;
 pub mod mixer;
+pub mod motion_preview;
 pub mod multicam;
 pub mod narration;
 mod palette;
@@ -62,7 +65,9 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod source_cuts;
 pub mod source_monitor;
+pub mod speed_ramp;
 pub mod sports;
 pub mod story;
 pub mod sync;
@@ -509,6 +514,10 @@ pub struct Session {
     pub sports_jobs: Vec<sports::PendingSports>,
     /// Reports of finished sports jobs, by job id (the last few; `jobs.list` shows them).
     pub sports_reports: std::collections::BTreeMap<u64, Value>,
+    /// `story.highlights`: running jobs, finished results and the cue cache.
+    pub highlights: highlights::State,
+    /// Cuts found inside source files, per media item ([`source_cuts`]).
+    pub source_cuts: source_cuts::Cache,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -641,6 +650,8 @@ impl Session {
             scene_jobs: Vec::new(),
             sports_jobs: Vec::new(),
             sports_reports: Default::default(),
+            highlights: Default::default(),
+            source_cuts: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
             packs: Default::default(),
@@ -737,6 +748,15 @@ impl Session {
         p.last_sent = Some(cur);
     }
 
+    /// The job the status bar shows: the newest running one, but a background cut finder
+    /// (`media.sourceCuts`) only when nothing else runs, so an export's progress and its Cancel
+    /// button stay in view.
+    pub fn status_job(&self) -> Option<&Job> {
+        use std::sync::atomic::Ordering;
+        let running = || self.jobs.iter().rev().filter(|j| !j.progress.finished.load(Ordering::Relaxed));
+        running().find(|j| !self.source_cuts.is_background_job(j.id)).or_else(|| running().next())
+    }
+
     /// Apply worker notifications (call regularly, e.g. once per UI frame). Also applies the
     /// results of finished proxy / ingest jobs.
     pub fn poll_persistence(&mut self) {
@@ -744,8 +764,11 @@ impl Session {
         masks::poll(self);
         scene_detect::poll(self);
         sports::poll(self);
+        highlights::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
+        // a finished cut finder leaves the job list once the Events panel has had it
+        source_cuts::prune_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -865,6 +888,8 @@ impl Session {
             self.command_origin = Some(id.to_string());
         }
         let ends_before = (outermost && time_params::PLACES_GRAPHICS.contains(&id)).then(|| time_params::ends(self));
+        // what the edit changed is compared with this to find edits near cuts inside the source
+        let cuts_before = (outermost && source_cuts::watches(id)).then(|| self.project.clone());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -874,6 +899,13 @@ impl Session {
         // a graphic or caption placed past the last picture frame is reported, not silent (#13)
         if let (Some(before), Ok(v)) = (&ends_before, &mut r) {
             time_params::warn_past_end(self, before, v);
+        }
+        // an edit near a cut inside its source is reported, from what is known; the guard turns a
+        // panic while reading the source into a note (#16)
+        if let (Some(before), Ok(v)) = (&cuts_before, &mut r)
+            && !Arc::ptr_eq(before, &self.project)
+        {
+            source_cuts::annotate_guarded(self, id, before, v);
         }
         self.exec_depth -= 1;
         if outermost {
@@ -1438,11 +1470,15 @@ mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
+mod highlights_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod image_sequence_tests;
 #[cfg(test)]
 mod individual_selection_tests;
+#[cfg(test)]
+mod inspect_filter_tests;
 #[cfg(test)]
 mod interchange_auto_points_tests;
 #[cfg(test)]
@@ -1519,6 +1555,8 @@ mod sequence_tools_tests;
 mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod speed_ramp_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]

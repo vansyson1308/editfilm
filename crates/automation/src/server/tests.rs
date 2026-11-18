@@ -607,6 +607,48 @@ async fn story_and_layer_commands_run_over_the_wire() {
     assert_eq!(seq["video"].as_array().map(Vec::len), Some(3), "the layer's track is gone again");
 }
 
+/// #16: a motion preview comes back as an animated GIF; inspections take filters and a compact
+/// mode; `story_board` samples a range densely.
+#[tokio::test(flavor = "multi_thread")]
+async fn motion_previews_compact_inspections_and_dense_boards() {
+    let mut c = Client::start(demo());
+    c.init().await;
+    let r = c.call(1, "render_motion", json!({"from_seconds": 0.5, "to_seconds": 1.5, "fps": 8, "width": 96})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    assert_eq!(r["result"]["content"][0]["mimeType"], "image/gif", "{r}");
+    let gif = base64::engine::general_purpose::STANDARD.decode(r["result"]["content"][0]["data"].as_str().unwrap()).unwrap();
+    assert!(gif.starts_with(b"GIF89a"));
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((v["frames"].as_u64(), v.get("path")), (Some(8), None), "{v}");
+    // an MP4 stays on disk for the caller
+    let r = c.call(2, "render_motion", json!({"from_seconds": 0.0, "to_seconds": 0.5, "width": 96, "format": "mp4"})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let path = v["path"].as_str().unwrap().to_string();
+    assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 0), "{v}");
+    let _ = std::fs::remove_file(&path);
+    for (id, args) in [(3, json!({"format": "webm"})), (4, json!({"from_seconds": 0.0, "to_seconds": 60.0})), (5, json!({"fps": 0.0}))] {
+        let r = c.call(id, "render_motion", args.clone()).await;
+        assert_eq!(r["result"]["isError"], true, "{args}: {r}");
+    }
+    // compact and filtered inspections
+    let full = c.call(6, "sequence_inspect", json!({})).await["result"]["content"][0]["text"].as_str().unwrap().len();
+    let r = c.call(7, "sequence_inspect", json!({"compact": true})).await;
+    let compact = r["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(compact.len() * 3 < full, "{} vs {full}", compact.len());
+    let r = c.call(8, "doc_inspect", json!({"track": "V1", "compact": true})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(v["sequence"]["tracks"].as_array().map(Vec::len), Some(1), "{v}");
+    let r = c.call(9, "sequence_inspect", json!({"track": "Q7"})).await;
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let r = c.call(10, "doc_inspect", json!({"compact": "yes"})).await;
+    assert!(r.get("error").is_some() || r["result"]["isError"] == true, "{r}");
+    // a dense board: six frames a second for one second
+    let r = c.call(11, "story_board", json!({"fps": 6.0, "from_seconds": 1.0, "to_seconds": 2.0, "width": 64})).await;
+    let v: Value = serde_json::from_str(r["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(v["cells"].as_array().map(Vec::len), Some(6), "{v}");
+}
+
 use crate::app_link::tests::{TOKEN, be_live_app, fake_app};
 
 fn text_of(r: &CallToolResult) -> String {
@@ -823,4 +865,52 @@ async fn sports_jobs_with_wait_answer_their_report() {
     // a refused one is a tool error
     let r = c.call(4, "command_run", json!({"id": "sports.trackPoint", "params": {"point": "here", "wait": true}})).await;
     assert_eq!(r["result"]["isError"], true, "{r}");
+}
+
+/// A 16-bit mono WAV of `x` at `rate`.
+fn wav16(x: &[f32], rate: u32) -> Vec<u8> {
+    let data: Vec<u8> = x.iter().flat_map(|v| ((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let mut out = Vec::with_capacity(44 + data.len());
+    out.extend(b"RIFF");
+    out.extend((36 + data.len() as u32).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(rate.to_le_bytes());
+    out.extend((rate * 2).to_le_bytes());
+    out.extend(2u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend((data.len() as u32).to_le_bytes());
+    out.extend(data);
+    out
+}
+
+/// `story.highlights` with `wait: true` over headless MCP runs as a polled job (the session is
+/// not held for the analysis) and answers with the segments its `resultCommand` reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocking_highlights_call_over_mcp_answers_the_segments() {
+    let dir = std::env::temp_dir().join(format!("filmagic-mcp-highlights-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 16_000u32;
+    let mut x = vec![0.0f32; rate as usize * 10];
+    for c in [2.0, 2.8, 3.6, 4.4] {
+        let a = (c * f64::from(rate)) as usize;
+        for (k, v) in x.iter_mut().skip(a).take(48).enumerate() {
+            *v = 0.6 * (-(k as f32) / 10.0).exp() * if k % 2 == 0 { 1.0 } else { -1.0 };
+        }
+    }
+    let path = dir.join("hits.wav");
+    std::fs::write(&path, wav16(&x, rate)).unwrap();
+    let mut s = Session::default();
+    let item = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let mut c = Client::start(s);
+    c.init().await;
+    let r = c.call(1, "command_run", json!({"id": "story.highlights", "params": {"item": item, "wait": true}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let answer: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((answer["status"].as_str(), answer["impacts"].as_u64()), (Some("done"), Some(4)), "{answer}");
+    assert_eq!(answer["segments"][0]["kind"], "rally", "{answer}");
+    let _ = std::fs::remove_dir_all(dir);
 }

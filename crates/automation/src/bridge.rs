@@ -61,7 +61,7 @@ impl BridgeClient {
     /// here until it finishes, so the app keeps repainting (its status bar shows the progress) and
     /// answering other requests, and no request waits on the control server's 60 s reply limit
     /// (#91, #92). The reply is the same as a blocking export's: `{job, path, result}`, or the
-    /// export's error; a sports analysis (`clip.autoReframe`, `sports.*`) answers its report.
+    /// export's error.
     pub async fn execute(&self, id: &str, mut params: Value) -> Result<Value, AutomationError> {
         if !crate::long_job::is_long(id, &params) {
             return self.call("engine.execute", json!({"command": id, "params": params})).await;
@@ -69,19 +69,38 @@ impl BridgeClient {
         if let Some(p) = params.as_object_mut() {
             p.insert("wait".into(), json!(false));
         }
-        let start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
+        let mut start = self.call("engine.execute", json!({"command": id, "params": params})).await?;
         let Some(job) = start.get("job").and_then(Value::as_u64) else { return Ok(start) };
-        let state = loop {
+        let (result, offline, status) = loop {
             tokio::time::sleep(JOB_POLL).await;
             let jobs = self.call("engine.execute", json!({"command": "jobs.list", "params": {}})).await?;
             let Some(j) = jobs.as_array().and_then(|a| a.iter().find(|j| j["id"].as_u64() == Some(job))).cloned() else {
-                break None;
+                break (Value::Null, None, None);
             };
             if j["finished"].as_bool() == Some(true) {
-                break Some(j);
+                break (j["result"].clone(), j.get("offlineMedia").cloned(), j.get("status").cloned());
             }
         };
-        crate::long_job::finished_reply(id, start, state.as_ref()).map_err(AutomationError::App)
+        if let Some(e) = result.get("error").and_then(Value::as_str) {
+            return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
+        }
+        if let Some((cmd, p)) = crate::long_job::result_command(&start) {
+            let answer = self.call("engine.execute", json!({"command": cmd, "params": p})).await?;
+            return match crate::long_job::unfinished(id, &answer) {
+                Some(e) => Err(AutomationError::App(e)),
+                None => Ok(answer),
+            };
+        }
+        if let Some(o) = start.as_object_mut() {
+            o.insert("result".into(), result);
+            if let Some(st) = status.filter(|v| id != "file.exportMedia" && v.as_str().is_some_and(|s| !s.is_empty())) {
+                o.insert("status".into(), st);
+            }
+            if let Some(off) = offline {
+                o.insert("offlineMedia".into(), off);
+            }
+        }
+        Ok(start)
     }
 
     /// Call a control method; returns `result` or the app's error.
@@ -239,6 +258,12 @@ mod tests {
 
     /// [`fake_app`] whose finished job also lists `offline` as its `offlineMedia`.
     async fn fake_app_with(result: Value, offline: Option<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
+        fake_app_full(result, offline, Value::Null).await
+    }
+
+    /// [`fake_app_with`] that also runs `story.highlights`: its start names the command that reads
+    /// the finished job (`resultCommand`), which answers `answer`.
+    async fn fake_app_full(result: Value, offline: Option<Value>, answer: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let port = listener.local_addr().unwrap().port();
@@ -258,6 +283,10 @@ mod tests {
                 log.lock().await.push(req.clone());
                 let reply = match req["params"]["command"].as_str() {
                     Some("file.exportMedia") => json!({"job": 7, "path": "/tmp/out.mov"}),
+                    Some("story.highlights") if req["params"]["params"]["job"] == 7 => answer.clone(),
+                    Some("story.highlights") => {
+                        json!({"job": 7, "status": "running", "resultCommand": {"command": "story.highlights", "params": {"job": 7}}})
+                    }
                     Some("assets.install") => json!({"job": 7, "poll": "jobs.list"}),
                     Some("jobs.list") => {
                         polls += 1;
@@ -338,6 +367,27 @@ mod tests {
         let b = BridgeClient::new(addr).unwrap();
         let r = b.execute("file.exportMedia", json!({"path": "/tmp/out.mov", "wait": true})).await.unwrap();
         assert_eq!(r["offlineMedia"], off, "{r}");
+    }
+
+    /// `story.highlights` with `wait: true` is polled as a job too, and answers with what its
+    /// `resultCommand` reads once the job is done; a job that ends failed or cancelled is an error.
+    #[tokio::test]
+    async fn a_blocking_highlights_call_is_polled_and_read_back() {
+        let segments = json!({"status": "done", "segments": [{"rank": 1, "kind": "rally"}]});
+        let (addr, seen) = fake_app_full(json!({"frames": 9}), None, segments.clone()).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let r = b.execute("story.highlights", json!({"item": 3, "wait": true})).await.unwrap();
+        assert_eq!(r, segments);
+        let seen = seen.lock().await;
+        assert!(seen.iter().all(|q| q["params"]["params"]["wait"] != json!(true)), "the app never runs it blocking");
+        assert_eq!(seen.last().unwrap()["params"]["params"], json!({"job": 7}), "the result is read back with its job");
+        drop(seen);
+        for status in ["failed", "cancelled"] {
+            let (addr, _) = fake_app_full(json!({"frames": 9}), None, json!({"status": status, "error": "the project was replaced"})).await;
+            let b = BridgeClient::new(addr).unwrap();
+            let e = b.execute("story.highlights", json!({"item": 3, "wait": true})).await.unwrap_err().to_string();
+            assert!(e.contains(status) && e.contains("story.highlights"), "{e}");
+        }
     }
 
     #[tokio::test]

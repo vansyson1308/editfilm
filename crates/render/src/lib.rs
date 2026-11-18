@@ -19,6 +19,7 @@ pub mod flow;
 pub mod gpufx;
 pub mod graphic_clip;
 pub mod graphics;
+pub mod highlights;
 pub mod image;
 pub mod lumetri_cube;
 pub mod lumetri_presets;
@@ -836,7 +837,7 @@ pub fn interpolation_blend(item: &TrackItem, t: Tick, src_rate: filmagic_time::F
     if item.time_interpolation == filmagic_project::TimeInterpolation::FrameSampling || item.frame_hold.is_some() {
         return None;
     }
-    if (item.speed.abs() - 1.0).abs() < 1e-9 && src_rate.frame_duration() == seq_rate.frame_duration() {
+    if (item.speed.abs() - 1.0).abs() < 1e-9 && src_rate.frame_duration() == seq_rate.frame_duration() && !item.has_speed_ramp() {
         return None;
     }
     let mt = item.source_time_at(t);
