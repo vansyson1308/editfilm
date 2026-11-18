@@ -2937,6 +2937,10 @@
 	Luma Min / Max	Luma min / max
 	Loudness Normalization	Normalisering av ljudstyrka
 	True Peak Limit	Gräns för sann topp
+	True-Peak Limiter	Begränsare för sann topp
+	Ceiling	Tak
+	Find Speech Segments	Hitta talsegment
+	Check Mix Loudness	Kontrollera mixens ljudstyrka
 	Audio only	Endast ljud
 	Scaling	Skalning
 	Scale To Fit	Skala för att passa

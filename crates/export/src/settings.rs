@@ -454,6 +454,38 @@ impl Default for LoudnessNormalization {
     }
 }
 
+/// Export ▸ Effects ▸ True-Peak Limiter: a look-ahead limiter that keeps the exported audio at or
+/// under `ceiling_dbtp` when no loudness target is set (Loudness Normalization has its own
+/// limiter, so this one stands aside then). A draft peaked at +2.7 dBFS and clipped audibly with
+/// nothing to warn (#15), so it is **on by default**, except where 32-bit float PCM is written:
+/// float keeps peaks above full scale, and that is why people choose it. An export that never
+/// comes within 0.1 dB of the ceiling (where the limiter aims) is written bit for bit.
+///
+/// Internal renders (proxies, transcodes and Project Manager copies, AAF/OMF clip audio) turn it
+/// off ([`PeakLimiter::OFF`]): they must keep the media as it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeakLimiter {
+    /// `None` (the default): on, unless 32-bit float PCM is written. `Some(_)`: as set.
+    pub enabled: Option<bool>,
+    /// Ceiling (dBTP), −24…0.
+    pub ceiling_dbtp: f64,
+}
+
+/// The default true-peak ceiling (dBTP), the delivery ceiling most platforms ask for.
+pub const PEAK_CEILING_DBTP: f64 = -1.0;
+
+impl PeakLimiter {
+    /// Off whatever the sample format: internal renders that must keep the media as it is.
+    pub const OFF: PeakLimiter = PeakLimiter { enabled: Some(false), ceiling_dbtp: PEAK_CEILING_DBTP };
+}
+
+impl Default for PeakLimiter {
+    fn default() -> Self {
+        PeakLimiter { enabled: None, ceiling_dbtp: PEAK_CEILING_DBTP }
+    }
+}
+
 /// Export ▸ Effects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -463,6 +495,7 @@ pub struct ExportEffects {
     pub timecode_overlay: TextOverlay,
     pub video_limiter: VideoLimiter,
     pub loudness: LoudnessNormalization,
+    pub peak_limiter: PeakLimiter,
 }
 
 impl ExportEffects {
@@ -513,6 +546,21 @@ pub struct Resolved {
 }
 
 impl ExportSettings {
+    /// Whether the True-Peak Limiter runs ([`PeakLimiter`]): as set, else on unless the export
+    /// writes 32-bit float PCM. A float setting with a lossy codec or FLAC (left over from a WAV
+    /// export, or asked for with H.264) writes no float, so it keeps the limiter. Loudness
+    /// Normalization's own limiter takes over when that is on.
+    pub fn peak_limiter_on(&self) -> bool {
+        self.effects.peak_limiter.enabled.unwrap_or(!self.writes_float_pcm())
+    }
+
+    /// Whether the audio is written as 32-bit float PCM (WAV, AIFF, or PCM in a movie that can
+    /// hold float).
+    pub fn writes_float_pcm(&self) -> bool {
+        let f = self.audio.sample_format();
+        f.is_float() && self.audio_codec() == AudioCodec::Pcm && self.supports_sample_format(f)
+    }
+
     /// The format whose video encoder runs: the MXF video codec for MXF exports, else the format.
     pub fn video_format(&self) -> Format {
         if self.format.is_mxf() { self.mxf_video_codec.encoder_format() } else { self.format }
