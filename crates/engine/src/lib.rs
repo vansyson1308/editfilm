@@ -59,6 +59,7 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod source_monitor;
+pub mod sports;
 pub mod story;
 pub mod sync;
 pub mod time_params;
@@ -500,6 +501,10 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Auto Reframe and sports-overlay jobs whose results are applied when they finish.
+    pub sports_jobs: Vec<sports::PendingSports>,
+    /// Reports of finished sports jobs, by job id (the last few; `jobs.list` shows them).
+    pub sports_reports: std::collections::BTreeMap<u64, Value>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -609,6 +614,8 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            sports_jobs: Vec::new(),
+            sports_reports: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -707,6 +714,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        sports::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -780,6 +788,9 @@ impl Session {
         // `poll_persistence`: apply background mask tracking before each command (#3302)
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
+        }
+        if self.exec_depth == 0 && !self.sports_jobs.is_empty() {
+            sports::poll(self);
         }
         // every time-valued parameter takes ticks or {"seconds"|"frame"|"timecode"} (#13)
         let params = match time_params::normalize(self, id, params) {
