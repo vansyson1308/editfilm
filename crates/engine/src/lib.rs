@@ -167,6 +167,14 @@ pub trait Services: Send + Sync {
     }
 }
 
+/// Refuse a write into VieNeu's engine directory (its Python environment and bridge): a file an
+/// agent names there (a `.pth` file in the environment's `site-packages`) would run with the next
+/// VieNeu call. Filmagic writes the engine's own files without these services.
+fn outside_vieneu_engine(path: &str) -> std::io::Result<()> {
+    narration::refuse_inside_engine(narration::vieneu_engine_dir().as_deref(), std::path::Path::new(path))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
+}
+
 /// Native filesystem services.
 pub struct FsServices;
 impl Services for FsServices {
@@ -174,10 +182,12 @@ impl Services for FsServices {
         filmagic_media::reader::read_regular_file(std::path::Path::new(path))
     }
     fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        outside_vieneu_engine(path)?;
         // Atomic + durable: temp file in the same directory, fsync, rename, fsync the directory.
         filmagic_format::atomic_write(std::path::Path::new(path), data)
     }
     fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        outside_vieneu_engine(path)?;
         let path = std::path::Path::new(path);
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
         std::fs::create_dir_all(dir).map_err(|error| {

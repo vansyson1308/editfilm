@@ -412,8 +412,13 @@ No command parameter or setting can name a program to run: that would let a prom
 run anything. The environment and the bridge, the code that runs, are kept out of the models folder,
 which an agent can move. The models folder holds VieNeu's data only: `vieneu/cache` (the downloaded
 model) and `vieneu/voices.json`. The child process gets none of Filmagic's `FILMAGIC_*` variables
-(the control token among them) and no `PYTHON*` variables. It runs with `-E -s -X utf8` (the bridge)
-or `-I` (venv and pip) in an empty working directory.
+(the control token among them) and no `PYTHON*` variables. Every Python runs isolated (`-I`), so
+nothing beside the bridge or in the working directory is ever imported, in an empty working directory.
+The models folder may not overlap the engine directory (neither inside the other, with symbolic
+links resolved). This is checked by `prefs.set`, by `models.setLocation` and again before every run.
+Nothing an agent names can be written inside the engine directory either: narrations (`tts.create`
+and `tts.edit` with `dir`), files written through the host (exports, captions, markers) and
+`lut.export` are refused there.
 
 1. `tts.engines` reports whether a Python with `vieneu` was found, what was tried, and
    `installSteps` with the exact commands for this machine.

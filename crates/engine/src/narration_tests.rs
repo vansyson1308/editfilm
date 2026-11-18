@@ -724,3 +724,82 @@ fn natural_voices_download_one_by_one() {
         assert!(e.contains("voice") || e.contains("not available"), "{bad}: {e}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn narrations_are_never_written_into_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    std::fs::create_dir_all(engine.join("bridge")).unwrap();
+    std::fs::create_dir_all(engine.join("venv/lib/python3.12/site-packages")).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    let snap = (*s.project).clone();
+    for dir in [
+        engine.join("bridge"),
+        engine.join("venv/lib/python3.12/site-packages"),
+        engine.join("work/new"),
+        link.join("bridge"),
+        root.path().join("out/../engine/bridge"),
+    ] {
+        let e = s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": dir.to_string_lossy()})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "{}: {e}", dir.display());
+    }
+    assert_eq!(*s.project, snap, "nothing imported");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| p.extension().is_some_and(|e| e == "wav")).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // beside the engine folder is fine
+    let ok = root.path().join("engine-narrations");
+    s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": ok.to_string_lossy()})).unwrap();
+}
+
+#[cfg(unix)]
+fn walk(p: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+        let path = e.path();
+        if e.file_type().is_ok_and(|t| t.is_dir()) {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+#[test]
+fn host_writes_into_the_vieneu_engine_folder_are_refused() {
+    use crate::Services;
+    let Some(engine) = crate::narration::vieneu_engine_dir() else { return };
+    for p in [engine.join("venv/lib/python3.12/site-packages/evil.pth"), engine.join("bridge/vieneu/__init__.py")] {
+        let path = p.to_string_lossy();
+        let e = crate::FsServices.write_file(&path, b"import os\n").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{path}: {e}");
+        assert_eq!(crate::FsServices.write_file_new(&path, b"import os\n").unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!p.exists());
+    }
+    let ok = tempfile::tempdir().unwrap();
+    crate::FsServices.write_file(&ok.path().join("a.txt").to_string_lossy(), b"x").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn luts_are_never_exported_into_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let site = root.path().join("engine/venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(root.path().join("engine"), &link).unwrap();
+    for path in [site.join("evil.pth"), link.join("venv/lib/python3.12/site-packages/evil.pth")] {
+        let e = s
+            .execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": path.to_string_lossy(), "format": "cube"}))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("engine folder"), "{e}");
+    }
+    assert!(!site.join("evil.pth").exists());
+    let ok = root.path().join("look.cube");
+    s.execute("lut.export", json!({"lut": "builtin:slog3-sgamut3cine-to-rec709", "path": ok.to_string_lossy()})).unwrap();
+}

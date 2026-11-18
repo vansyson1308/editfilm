@@ -3,7 +3,8 @@
 # VieNeu-TTS is an optional external engine: Filmagic never links, bundles or ships it, and the
 # owner asked for it to be integrated through a Python bridge (issue #20). `crates/tts/src/
 # vieneu.rs` writes this file to Filmagic's engine directory and runs it as
-# `python -E -s -X utf8 vieneu_bridge.py <op>` with an interpreter that has `vieneu` installed,
+# `python -I -X utf8 vieneu_bridge.py <op>` (isolated: this file's folder is not on sys.path)
+# with an interpreter that has `vieneu` installed,
 # sends a JSON request on stdin, and reads one line from stdout that starts with
 # "FILMAGIC-REPLY ". Everything else (pause markers, plausible lengths, pace and pitch, silence,
 # WAV files, the project) is done in Rust. This file calls only `vieneu`'s documented methods:

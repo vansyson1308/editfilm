@@ -26,7 +26,9 @@
 //!   import `vieneu`, and from then on runs the interpreter's own `sys.executable` (so a
 //!   `python.bat` shim is not what gets stopped on cancel).
 //! - The child gets a scrubbed environment (no `FILMAGIC_*` secrets, no `PYTHON*` variables) and
-//!   runs with `-E -s -X utf8` (the bridge) or `-I` (venv and pip) in an empty working directory.
+//!   runs isolated (`-I`: nothing next to the bridge or in the working directory is importable)
+//!   in an empty working directory. The models directory may not overlap the engine directory
+//!   ([`Dirs::check`], links resolved), checked before every run.
 //! - **Voices**: cached by [`prepare`], so listing them never starts Python. Ids are
 //!   `vieneu:<name>` ([`VOICE_PREFIX`]). Names and text are NFC-normalised.
 //! - **Cloning**: [`Request::reference`] clones the voice of a reference clip instead.
@@ -155,6 +157,62 @@ impl Dirs {
     fn ready_marker(&self) -> PathBuf {
         self.data().join("ready")
     }
+
+    /// The models directory must not be inside the engine directory, nor contain it. Folders under
+    /// the models directory are moved there by `models.setLocation`, so overlapping folders would
+    /// let a prepared "model" folder become part of what is executed. Compared after resolving
+    /// symbolic links, so a linked parent cannot hide the overlap.
+    pub fn check(&self) -> Result<(), String> {
+        if overlap(&self.engine, &self.models) {
+            return Err(format!(
+                "the models folder {} and VieNeu's engine folder {} overlap (one is inside the other); choose a models folder outside it (models.setLocation)",
+                self.models.display(),
+                self.engine.display()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `p` as an absolute path with symbolic links resolved as far as it exists; `.` and `..` are
+/// applied to the real (resolved) parent. The part that does not exist yet is kept as written.
+pub fn resolved(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut cur = PathBuf::new();
+    let mut real = true;
+    let resolve = |cur: &mut PathBuf, real: &mut bool| {
+        if *real {
+            match std::fs::canonicalize(&*cur) {
+                Ok(c) => *cur = c,
+                Err(_) => *real = false,
+            }
+        }
+    };
+    for c in abs.components() {
+        match c {
+            Component::Prefix(_) => cur.push(c.as_os_str()),
+            Component::RootDir => {
+                cur.push(c.as_os_str());
+                resolve(&mut cur, &mut real);
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cur.pop();
+            }
+            Component::Normal(n) => {
+                cur.push(n);
+                resolve(&mut cur, &mut real);
+            }
+        }
+    }
+    cur
+}
+
+/// One of `a` and `b` is inside the other (or they are the same folder), links resolved.
+pub fn overlap(a: &Path, b: &Path) -> bool {
+    let (a, b) = (resolved(a), resolved(b));
+    a.starts_with(&b) || b.starts_with(&a)
 }
 
 /// Interpreters to try, in order (see the module docs). `host` is one a host program chose
@@ -288,6 +346,8 @@ fn run_process(mut cmd: Command, stdin: &[u8], cap: usize, timeout: Duration, ca
 /// token among them) and none of Python's (`PYTHONPATH`, `PYTHONHOME`, …), then downloads into the
 /// models directory, no telemetry, and offline once a setup has succeeded.
 fn command(program: &Path, dirs: &Dirs, offline: bool) -> Result<Command, String> {
+    // checked before anything runs, every time: the setting can change between runs
+    dirs.check()?;
     let work = dirs.work();
     std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     let mut cmd = Command::new(program);
@@ -344,8 +404,10 @@ fn path_text(path: &Path) -> Result<&str, TtsError> {
 fn bridge_command(py: &Python, op: &str, dirs: &Dirs, offline: bool) -> Result<Command, String> {
     let script = bridge_script(dirs)?;
     let mut cmd = command(&py.program, dirs, offline)?;
-    // -E: ignore PYTHON* variables; -s: no user site-packages; -X utf8: UTF-8 everywhere
-    cmd.args(&py.args).args(["-E", "-s", "-X", "utf8"]).arg(script).arg(op);
+    // -I: isolated (no PYTHON* variables, no user site-packages, and neither the script's folder
+    // nor the working directory on sys.path, so nothing next to the bridge is ever imported);
+    // -X utf8: UTF-8 everywhere
+    cmd.args(&py.args).args(["-I", "-X", "utf8"]).arg(script).arg(op);
     Ok(cmd)
 }
 
@@ -836,7 +898,7 @@ mod tests {
     }
 
     /// A stand-in for a Python with `vieneu`: a shell script that speaks the bridge's protocol
-    /// (`sh fake.sh -E -s -X utf8 <bridge.py> <op>`, request on stdin, a prefixed reply line).
+    /// (`sh fake.sh -I -X utf8 <bridge.py> <op>`, request on stdin, a prefixed reply line).
     /// `synth` writes `samples` zero samples per segment at 48 kHz; `body` replaces the synth reply
     /// for hostile cases (`R '<json>'` prints a reply). It keeps the last request, its arguments
     /// and its environment in its working directory.
@@ -918,7 +980,11 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
         let d = dirs(root.path());
         let py = fake(root.path(), 480, None);
         say(&py, root.path(), "Xin chào.", Some("Hải Đăng"), 1.0).unwrap();
-        assert!(last(root.path(), "args.txt").starts_with("-E -s -X utf8 "), "{}", last(root.path(), "args.txt"));
+        assert!(
+            last(root.path(), "args.txt").starts_with("-I -X utf8 "),
+            "isolated, so nothing beside the bridge is importable: {}",
+            last(root.path(), "args.txt")
+        );
         let env = last(root.path(), "env.txt");
         for line in env.lines() {
             assert!(!line.starts_with("FILMAGIC_"), "Filmagic's variables (the control token) stay out: {line}");
@@ -933,6 +999,41 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
         // the working directory is empty but for what the stand-in wrote itself
         let names: Vec<String> = std::fs::read_dir(d.work()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert!(names.iter().all(|n| ["args.txt", "env.txt", "last-request.json"].contains(&n.as_str())), "{names:?}");
+    }
+
+    /// A "model" folder moved into the engine directory could put a `vieneu` package next to the
+    /// bridge: overlapping directories are refused before anything runs, links resolved.
+    #[cfg(unix)]
+    #[test]
+    fn overlapping_models_and_engine_folders_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = root.path().join("engine");
+        std::fs::create_dir_all(engine.join("bridge")).unwrap();
+        std::os::unix::fs::symlink(&engine, root.path().join("innocent")).unwrap();
+        let py = fake(root.path(), 480, None);
+        for models in [
+            engine.join("bridge"),
+            engine.clone(),
+            root.path().to_path_buf(),
+            root.path().join("innocent").join("bridge"),
+            root.path().join("innocent"),
+            root.path().join("elsewhere").join("..").join("engine").join("not-yet"),
+        ] {
+            let d = Dirs { engine: engine.clone(), models: models.clone() };
+            assert!(overlap(&d.engine, &d.models), "{}", models.display());
+            assert!(d.check().is_err(), "{}", models.display());
+            let req = Request { text: "Xin chào.", voice: Some("Hải Đăng"), reference: None, params: Params::default() };
+            let e = synthesize(&py, &d, &req, None).unwrap_err();
+            assert!(matches!(&e, TtsError::Engine(m) if m.contains("overlap")), "{}: {e:?}", models.display());
+            assert!(probe(&py, &d).unwrap_err().contains("overlap"));
+            assert!(prepare(&py, &d, None).is_err());
+            assert!(install(&py, &d, None, &mut |_| {}).unwrap_err().contains("overlap"));
+            assert!(!d.work().join("args.txt").exists(), "nothing ran");
+        }
+        // side by side is fine, even with a shared prefix in the name
+        let d = Dirs { engine: engine.clone(), models: root.path().join("engine-models") };
+        assert!(!overlap(&d.engine, &d.models) && d.check().is_ok());
+        assert_eq!(resolved(&root.path().join("innocent").join("x")), resolved(&engine).join("x"));
     }
 
     #[cfg(unix)]

@@ -97,7 +97,23 @@ pub fn validate_setting(v: &Value) -> std::result::Result<(), String> {
             s.chars().take(200).collect::<String>()
         ));
     }
+    if !s.trim().is_empty() {
+        refuse_engine_overlap(crate::narration::vieneu_engine_dir().as_deref(), Path::new(s.trim()))?;
+    }
     Ok(())
+}
+
+/// Refuse a models folder that is inside VieNeu's engine directory `engine` or holds it, links
+/// resolved: VieNeu runs code from there, and models are moved into the models folder.
+fn refuse_engine_overlap(engine: Option<&Path>, models: &Path) -> std::result::Result<(), String> {
+    match engine {
+        Some(e) if filmagic_tts::vieneu::overlap(e, models) => Err(format!(
+            "the models folder {} and VieNeu's engine folder {} overlap (one is inside the other); choose a folder outside it",
+            models.display(),
+            e.display()
+        )),
+        _ => Ok(()),
+    }
 }
 
 impl Session {
@@ -383,6 +399,7 @@ fn set_location(s: &mut Session, p: &Value) -> Result<Value> {
             format!("{} and {} are inside one another; choose a folder outside the current models directory", target.display(), current.display()),
         ));
     }
+    refuse_engine_overlap(crate::narration::vieneu_engine(s).as_deref(), &target).map_err(|e| bad(cmd, e))?;
     if target.exists() && !target.is_dir() {
         return Err(bad(cmd, format!("{} is a file, not a folder", target.display())));
     }
@@ -619,5 +636,55 @@ mod tests {
         }
         assert_eq!(s.models_dir().as_deref(), Some(a.as_path()), "unchanged");
         assert_eq!(entries(&a), ["vieneu", "whisper-tiny"]);
+    }
+
+    #[test]
+    fn models_may_not_move_into_or_around_the_engine_folder() {
+        if env_set() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (a, holder) = (root.path().join("a"), root.path().join("holder"));
+        let engine = holder.join("x").join("engine");
+        std::fs::create_dir_all(engine.join("bridge")).unwrap();
+        let mut s = saving_session(root.path());
+        s.vieneu_host.engine_dir = Some(engine.clone());
+        s.prefs.media_analysis.models_location = a.to_string_lossy().into_owned();
+        fill(&a);
+        let mut hostile = vec![engine.join("bridge"), engine.join("venv").join("not-yet"), engine.clone(), holder.clone()];
+        #[cfg(unix)]
+        {
+            let link = root.path().join("innocent");
+            std::os::unix::fs::symlink(&engine, &link).unwrap();
+            hostile.push(link.join("bridge"));
+            hostile.push(link.join("venv").join("..").join("bridge"));
+        }
+        for dir in &hostile {
+            let e = s.execute("models.setLocation", json!({"dir": dir.to_string_lossy()})).unwrap_err().to_string();
+            assert!(e.contains("overlap"), "{}: {e}", dir.display());
+        }
+        assert_eq!(s.models_dir().as_deref(), Some(a.as_path()), "unchanged");
+        assert_eq!(entries(&a), ["vieneu", "whisper-tiny"], "nothing moved");
+        assert!(!engine.join("bridge").join("vieneu").exists());
+        // a sibling with a similar name is fine
+        let r = s.execute("models.setLocation", json!({"dir": root.path().join("holder-models").to_string_lossy()})).unwrap();
+        assert_eq!(r["moved"], json!(["vieneu", "whisper-tiny"]));
+    }
+
+    #[test]
+    fn the_setting_may_not_point_into_the_default_engine_folder() {
+        let Some(engine) = crate::narration::vieneu_engine_dir() else { return };
+        for v in [engine.join("bridge"), engine.clone(), engine.join("venv").join("lib")] {
+            let e = validate_setting(&json!(v.to_string_lossy())).unwrap_err();
+            assert!(e.contains("overlap"), "{e}");
+            let mut s = Session::default();
+            assert!(s.execute("prefs.set", json!({"key": "mediaAnalysis.modelsLocation", "value": v.to_string_lossy()})).is_err());
+            assert_eq!(s.prefs.media_analysis.models_location, "");
+        }
+        if let Some(parent) = engine.parent() {
+            assert!(validate_setting(&json!(parent.to_string_lossy())).is_err(), "a folder that holds the engine");
+        }
+        let elsewhere = tempfile::tempdir().unwrap();
+        validate_setting(&json!(elsewhere.path().join("models").to_string_lossy())).unwrap();
     }
 }

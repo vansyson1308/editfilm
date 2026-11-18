@@ -117,10 +117,25 @@ pub fn vieneu_engine_dir() -> Option<PathBuf> {
     Some(data.join(tts::vieneu::DIR_NAME))
 }
 
+/// The engine directory this session runs VieNeu from (the host's, else [`vieneu_engine_dir`]).
+pub(crate) fn vieneu_engine(s: &Session) -> Option<PathBuf> {
+    s.vieneu_host.engine_dir.clone().or_else(vieneu_engine_dir)
+}
+
+/// Refuse `path` (a file or folder an agent chose) when it lies inside VieNeu's engine directory
+/// `engine`, links resolved: what lands there (a `.pth` file in its Python environment, a module
+/// beside the bridge) can be run by the next VieNeu call.
+pub(crate) fn refuse_inside_engine(engine: Option<&Path>, path: &Path) -> std::result::Result<(), String> {
+    let Some(engine) = engine else { return Ok(()) };
+    if tts::vieneu::resolved(path).starts_with(tts::vieneu::resolved(engine)) {
+        return Err(format!("{} is inside VieNeu's engine folder {}, which holds code it runs; choose another folder", path.display(), engine.display()));
+    }
+    Ok(())
+}
+
 /// VieNeu's two directories for this session.
 fn vieneu_dirs(s: &Session) -> Option<tts::vieneu::Dirs> {
-    let engine = s.vieneu_host.engine_dir.clone().or_else(vieneu_engine_dir)?;
-    Some(tts::vieneu::Dirs { engine, models: s.models_dir()? })
+    Some(tts::vieneu::Dirs { engine: vieneu_engine(s)?, models: s.models_dir()? })
 }
 
 /// What synthesis needs from the session, captured so background jobs run without it.
@@ -406,6 +421,7 @@ fn write_and_import(s: &mut Session, p: &Value, samples: &[f32], rate: u32, near
         _ => None,
     });
     let dir = beside.unwrap_or_else(|| crate::voiceover::media_dir(s, p, "Narrations"));
+    refuse_inside_engine(vieneu_engine(s).as_deref(), Path::new(&dir)).map_err(EngineError::Other)?;
     let path = crate::voiceover::unique_wav_path(s, &dir, BASE_NAME)?;
     if !cfg!(target_arch = "wasm32") {
         std::fs::create_dir_all(&dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
