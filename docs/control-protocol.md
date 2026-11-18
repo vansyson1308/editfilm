@@ -247,7 +247,7 @@ Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcu
 that app proves itself (`control.hello`), and otherwise works headless (an in-process session). `--headless`, `--demo` and
 `--project p.fcproj` force headless; `--bridge 127.0.0.1:9876` drives a given app (see
 [agents.md § MCP server](agents.md#1-mcp-server)). Tools: `app_status`, `app_open`, `command_list`, `command_run`,
-`command_batch`, `doc_inspect`, `render_preview`, `project_inspect`, `sequence_inspect`, `media_import`,
+`command_batch`, `doc_inspect`, `render_preview`, `render_motion`, `project_inspect`, `sequence_inspect`, `media_import`,
 `render_frame`, `story_board`, `ui_inspect`, `ui_elements`, `ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`,
 `ui_control`; resources `filmagic://document` and `filmagic://commands`. `.mcp.json` registers `filmagic` (`mcp`) and `filmagic-headless` (`mcp --demo`).
 Annotations, argument checking, errors and export progress / cancellation:
