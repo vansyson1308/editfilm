@@ -2933,6 +2933,10 @@
 	Luma Min / Max	亮度最小 / 最大
 	Loudness Normalization	响度标准化
 	True Peak Limit	真实峰值限制
+	True-Peak Limiter	真实峰值限制器
+	Ceiling	上限
+	Find Speech Segments	查找语音片段
+	Check Mix Loudness	检查混音响度
 	Audio only	仅音频
 	Scaling	缩放
 	Scale To Fit	缩放以适配

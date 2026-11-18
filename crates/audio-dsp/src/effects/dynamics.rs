@@ -272,6 +272,8 @@ pub struct Limiter {
     rel_state: f32,
     t: u64,
     gr_meter: f32,
+    /// Smallest gain applied since [`Limiter::take_max_reduction_db`] was last called.
+    min_gain: f32,
 }
 
 impl Limiter {
@@ -310,6 +312,7 @@ impl Limiter {
             rel_state: 1.0,
             t: 0,
             gr_meter: 0.0,
+            min_gain: 1.0,
         };
         s.apply_params(true);
         s
@@ -328,6 +331,12 @@ impl Limiter {
     /// Current gain reduction in dB (≤ 0).
     pub fn gain_reduction_db(&self) -> f32 {
         self.gr_meter
+    }
+
+    /// The deepest gain reduction (dB, ≥ 0) applied since the last call, which resets it.
+    pub fn take_max_reduction_db(&mut self) -> f32 {
+        let g = std::mem::replace(&mut self.min_gain, 1.0);
+        if g >= 1.0 { 0.0 } else { -lin_db(g) }
     }
 }
 
@@ -348,6 +357,7 @@ impl AudioEffect for Limiter {
         self.rel_state = 1.0;
         self.t = 0;
         self.gr_meter = 0.0;
+        self.min_gain = 1.0;
     }
     fn process(&mut self, channels: &mut [&mut [f32]]) {
         let n = block_len(channels);
@@ -385,13 +395,22 @@ impl AudioEffect for Limiter {
                 }
             }
             let m = self.minq.front().map_or(1.0, |&(_, v)| v);
-            // Release.
-            self.rel_state = if m < self.rel_state { m } else { self.rel_state + (m - self.rel_state) * (1.0 - self.rel) };
+            // Release. In f32 the one-pole stalls a hair under its target (0.99988556 for unity
+            // with an 80 ms release, -0.001 dB: a 16-bit LSB above about -17.5 dBFS), where each
+            // step is less than half an ulp. A step that makes no progress lands on the target, so
+            // the signal after an over is passed through exactly again.
+            let next = if m < self.rel_state { m } else { self.rel_state + (m - self.rel_state) * (1.0 - self.rel) };
+            self.rel_state = if m > self.rel_state && next <= self.rel_state { m } else { next };
             // Moving average over look+1 samples.
             self.box_sum += self.rel_state as f64 - self.box_ring[self.box_pos] as f64;
             self.box_ring[self.box_pos] = self.rel_state;
             self.box_pos = (self.box_pos + 1) % self.box_ring.len();
-            let g = (self.box_sum / self.box_ring.len() as f64) as f32;
+            let mut g = (self.box_sum / self.box_ring.len() as f64) as f32;
+            // the running sum drifts by rounding; a gain this close to unity is unity
+            if (1.0 - g).abs() < 1e-6 {
+                g = 1.0;
+            }
+            self.min_gain = self.min_gain.min(g);
             for ch in 0..nch {
                 let y = self.delay[ch][out_pos] * g;
                 channels[ch][i] = y.clamp(-self.ceiling, self.ceiling);
@@ -541,6 +560,44 @@ mod tests {
         for i in lat..4800 {
             assert!((y[i] - x[i - lat]).abs() < 1e-6);
         }
+    }
+
+    /// After an over the limiter must give the signal back exactly: in f32 its release stalled
+    /// at 0.99988556 (-0.001 dB), scaling the rest of an export by that (#15).
+    #[test]
+    fn limiter_returns_to_exact_unity_after_an_over() {
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("release", 80.0);
+        lim.reset();
+        let lat = lim.latency();
+        let n = SR as usize * 3;
+        let x: Vec<f32> = sine(440.0, 1.0, SR as f64, n, 0.0).iter().enumerate().map(|(i, v)| if i < SR as usize / 2 { v * 1.5 } else { v * 0.3 }).collect();
+        let mut y = x.clone();
+        lim.process(&mut [&mut y]);
+        assert!(lim.take_max_reduction_db() > 4.0, "the over was limited");
+        // well after the release: bit for bit, delayed by the look-ahead
+        for i in (SR as usize * 3 / 2)..n {
+            assert_eq!(y[i].to_bits(), x[i - lat].to_bits(), "sample {i}: {} vs {}", y[i], x[i - lat]);
+        }
+        assert_eq!(lim.take_max_reduction_db(), 0.0, "taking the reduction resets it");
+    }
+
+    /// An fs/4 sine at a 45° phase is the worst case for peaks between samples (its true peak is
+    /// 3 dB over its sample peak). Aimed 0.1 dB under a -1 dBTP ceiling, as the export does, the
+    /// limited true peak stays at or under -1 dBTP.
+    #[test]
+    fn limiter_with_the_export_margin_holds_minus_one_dbtp_on_an_fs4_sine() {
+        let mut lim = Limiter::new(SR, 1);
+        lim.set_param("ceiling", -1.1);
+        lim.set_param("true_peak", 1.0);
+        lim.reset();
+        let n = SR as usize;
+        let x: Vec<f32> = (0..n).map(|i| (1.2 * (std::f64::consts::FRAC_PI_2 * i as f64 + std::f64::consts::FRAC_PI_4).sin()) as f32).collect();
+        let mut y = x.clone();
+        lim.process(&mut [&mut y]);
+        let mut m = LoudnessMeter::new(SR as f64, 1);
+        m.process(&[&y[4800..]]);
+        assert!(m.true_peak_dbtp() <= -1.0, "true peak {}", m.true_peak_dbtp());
     }
 
     #[test]
