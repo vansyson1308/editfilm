@@ -16,6 +16,14 @@ fn demo() -> Session {
     s
 }
 
+/// The reason a call naming ids that are no clips is refused before it runs (#14).
+fn refused(r: crate::Result<serde_json::Value>) -> String {
+    match r {
+        Err(EngineError::BadParams { msg, .. }) => msg,
+        other => panic!("expected refused parameters, got {other:?}"),
+    }
+}
+
 fn item_named(s: &Session, name: &str) -> ItemId {
     s.project.items.values().find(|i| i.name == name).map(|i| i.id).unwrap_or_else(|| panic!("no item {name}"))
 }
@@ -124,10 +132,11 @@ fn naming_nothing_usable_does_not_enable_a_command() {
         assert_eq!(disabled(s.execute("edit.rippleDelete", p.clone())), "nothing selected", "{p}");
     }
     // ids of no clip and values that are not ids: still disabled, and the reason names them (#591)
-    let why = disabled(s.execute("edit.rippleDelete", json!({"clips": [987_654_321u64]})));
+    let why = refused(s.execute("edit.rippleDelete", json!({"clips": [987_654_321u64]})));
     assert!(why.starts_with("no clip 987654321 in the active sequence"), "{why}");
-    let why = disabled(s.execute("edit.rippleDelete", json!({"clips": [-1, 1.5, null]})));
-    assert!(why.starts_with("-1 is not a clip id"), "{why}");
+    let why = refused(s.execute("edit.rippleDelete", json!({"clips": [-1, 1.5, null]})));
+    assert!(why.starts_with("`clips` holds -1, which is not a clip id"), "{why}");
+    assert!(why.contains("`clips` holds 1.5") && why.contains("`clips` holds null"), "every bad entry is named: {why}");
     assert_eq!(disabled(s.execute("clip.replaceFromBin", json!({"clips": [v1(&s)[0].id.0], "item": 987_654_321u64}))), "select a clip in the Project panel");
     // `edit.cut` takes no `clips`: it works on the selection only
     assert_eq!(disabled(s.execute("edit.cut", json!({"clips": [v1(&s)[0].id.0]}))), "no clips or captions selected");
@@ -174,23 +183,26 @@ fn named_clips_that_are_not_usable_say_why() {
     let last = v1(&s).last().unwrap().clone();
     // a track id and a project item id are not clip ids
     let track = s.active_sequence().unwrap().video_tracks[0].id.0;
-    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [track], "speed": 50})));
-    assert_eq!(why, format!("no clip {track} in the active sequence (clip ids are the `clip` numbers of the items in sequence.inspect)"));
-    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.item.0], "speed": 50})));
-    assert!(why.starts_with(&format!("no clip {} in the active sequence", last.item.0)), "{why}");
+    let why = refused(s.execute("clip.speedDuration", json!({"clips": [track], "speed": 50})));
+    assert!(why.starts_with(&format!("{track} is the id of track V1, not of a clip")), "{why}");
+    let why = refused(s.execute("clip.speedDuration", json!({"clips": [last.item.0], "speed": 50})));
+    assert!(why.starts_with(&format!("{} is the project item", last.item.0)) && why.contains(&last.id.0.to_string()), "{why}");
     // a string is not an id
-    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.id.0.to_string()], "speed": 50})));
-    assert!(why.starts_with(&format!("\"{}\" is not a clip id", last.id.0)), "{why}");
+    let why = refused(s.execute("clip.speedDuration", json!({"clips": [last.id.0.to_string()], "speed": 50})));
+    assert!(why.starts_with(&format!("`clips` holds \"{}\", which is not a clip id", last.id.0)), "{why}");
     // `clip`, where the command documents it
-    let why = disabled(s.execute("graphics.setText", json!({"clip": "x", "text": "x"})));
-    assert!(why.starts_with("\"x\" is not a clip id"), "{why}");
+    let why = refused(s.execute("graphics.setText", json!({"clip": "x", "text": "x"})));
+    assert!(why.starts_with("`clip` holds \"x\", which is not a clip id"), "{why}");
     // a clip of a sequence that is not the active one
     s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
     assert_ne!(s.state.active_sequence, Some(demo_seq));
-    let why = disabled(s.execute("clip.speedDuration", json!({"clips": [last.id.0], "speed": 200})));
+    let why = refused(s.execute("clip.speedDuration", json!({"clips": [last.id.0], "speed": 200})));
     assert_eq!(
         why,
-        format!("clip {} is in sequence \"{demo_name}\", not the active one: open it first with sequence.open {{\"item\":{}}}", last.id.0, demo_seq.0)
+        format!(
+            "clip {} is in sequence \"{demo_name}\", not the active one: open it first with sequence.open {{\"item\":{}}}. Nothing was changed",
+            last.id.0, demo_seq.0
+        )
     );
     // and doing what it says works
     s.execute("sequence.open", json!({"item": demo_seq.0})).unwrap();

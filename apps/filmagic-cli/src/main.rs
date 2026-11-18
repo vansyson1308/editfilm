@@ -76,7 +76,7 @@ SUBCOMMANDS
   run <script.jsonl | ->        run commands, one {\"id\",\"params\"} per line (# comments ok), in
                                 order: file.exportMedia waits for its file before the next line
                                 (and before exit) unless its params say \"wait\": false
-  commands [filter] [--json]    list commands (id, label, shortcut, params)
+  commands [words…] [--json]   list commands whose id, label, menu, params or keywords hold every word
   describe <id>                 one command as JSON (menu, shortcut, params, enabled now)
   inspect [project|sequence]    project tree or active sequence as JSON (default: both)
   import <file>...              import media into the project
@@ -381,7 +381,9 @@ async fn cli_bench_decode(a: &Args) {
 
 async fn cli_commands(a: &Args, cmd: &str) {
     let mut b = Backend::open(a);
-    let list = b.exec("command.list", json!({})).await.unwrap_or_else(|e| fail(e));
+    // `commands many clips`: every word after the subcommand is part of the filter
+    let f = if cmd == "describe" { String::new() } else { (1..).map_while(|i| a.pos(i)).collect::<Vec<_>>().join(" ") };
+    let list = b.exec("command.list", json!({"filter": f})).await.unwrap_or_else(|e| fail(e));
     let list = list.as_array().cloned().unwrap_or_default();
     if cmd == "describe" {
         let id = a.pos(1).unwrap_or_else(|| usage("describe <id>"));
@@ -391,13 +393,10 @@ async fn cli_commands(a: &Args, cmd: &str) {
         }
         return;
     }
-    let f = a.pos(1).map(str::to_ascii_lowercase).unwrap_or_default();
-    let hit = |c: &Value| {
-        let id = c["id"].as_str().unwrap_or("").to_ascii_lowercase();
-        let label = c["label"].as_str().unwrap_or("").to_ascii_lowercase();
-        f.is_empty() || id.contains(&f) || label.contains(&f)
-    };
-    let list: Vec<Value> = list.into_iter().filter(hit).collect();
+    // the engine already matched and ranked; the same match here covers a bridged app that predates it
+    let mut hits: Vec<(u8, Value)> = list.into_iter().filter_map(|c| filmagic_engine::commands::command_json_rank(&c, &f).map(|r| (r, c))).collect();
+    hits.sort_by_key(|(r, _)| *r);
+    let list: Vec<Value> = hits.into_iter().map(|(_, c)| c).collect();
     if a.flag("--json") {
         print(a, &Value::Array(list));
     } else {

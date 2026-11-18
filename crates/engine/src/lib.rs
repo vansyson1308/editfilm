@@ -14,6 +14,7 @@ pub mod aaf_omf;
 pub mod audio_check;
 pub mod autosave;
 pub mod captions;
+pub mod clip_ids;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
@@ -815,6 +816,16 @@ impl Session {
         if self.exec_depth == 0 && !self.sports_jobs.is_empty() {
             sports::poll(self);
         }
+        // an id that is no clip (a link, a track, a clip of another sequence…) named as one is
+        // refused with what it is, before anything runs (#14). It runs before the time values are
+        // read: a source time is read on the clock of the named clip, and before a dynamic trim
+        // is settled, which a refused call must not do.
+        if self.exec_depth == 0
+            && let Err(e) = clip_ids::check_named_clips(self, spec, &params)
+        {
+            self.log.push(panels::Level::Warning, id, e.to_string());
+            return Err(e);
+        }
         // every time-valued parameter takes ticks or {"seconds"|"frame"|"timecode"} (#13)
         let params = match time_params::normalize(self, id, params) {
             Ok(p) => p,
@@ -1403,6 +1414,8 @@ mod audio_placement_tests;
 mod autosave_tests;
 #[cfg(test)]
 mod avi_import_tests;
+#[cfg(test)]
+mod clip_identity_tests;
 #[cfg(test)]
 mod clip_mismatch_tests;
 #[cfg(test)]
