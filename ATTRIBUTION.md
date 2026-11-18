@@ -167,6 +167,19 @@ SHA-256 (`crates/speech/src/models.rs`, `docs/transcripts.md`).
 |---|---|---|---|
 | Whisper tiny / base / small speech-recognition weights (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer.json`) | OpenAI | `https://huggingface.co/openai/whisper-{tiny,base,small}` (revisions `169d4a43…`, `e37978b9…`, `973afd24…`); weights released with `https://github.com/openai/whisper` | MIT (weights and code, github.com/openai/whisper); the Hugging Face conversion is labelled Apache-2.0 |
 
+### Asset pack catalogue
+
+`assets.install {"catalog": id}` downloads one of these packs into `<data dir>/Packs/<id>/` only
+when an agent or the user asks for it; nothing is bundled. Each archive is pinned by SHA-256 and
+size (`crates/engine/src/assets/catalog.rs`), and a changed archive is refused. The licence was read
+in the archive's own `License.txt` and on the author's page (2026-11-13). Packs that users build
+from their own files are theirs and are not listed here.
+
+| Pack | Author | Source | Licence |
+|---|---|---|---|
+| Interface Sounds 1.0 (100 `.ogg`), `kenney-interface-sounds` | Kenney (www.kenney.nl) | https://kenney.nl/assets/interface-sounds; archive `https://opengameart.org/sites/default/files/kenney_interfaceSounds.zip`, 834536 bytes, sha256 `f2193d072726d6758a5f7871b2dcc54dcce0d5c35c6f0a62f92549b327c81232` | CC0-1.0 |
+| Sci-Fi Sounds 1.0 (73 `.ogg`), `kenney-sci-fi-sounds` | Kenney (www.kenney.nl) | https://kenney.nl/assets/sci-fi-sounds; archive `https://opengameart.org/sites/default/files/sci-fi_sounds.zip`, 5875104 bytes, sha256 `119340f351a5098ad814f78719438c0da355a9ce8a4c8a3af6a8d48aa3d49e04` | CC0-1.0 |
+
 ## egui dependency fonts
 
 | Asset | Author | Source | Licence | Use |
