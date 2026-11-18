@@ -917,6 +917,16 @@ pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
     let new_audio_key = |k: &str| is_new(k) || (k == "audioTrack" && sound_only && is_new("track"));
     let new_v = is_new("track") && video && enabled("video");
     let new_a = new_audio_key("audioTrack") && audio && enabled("audio");
+    let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
+    // sound only, `"track":"new"` and an existing `audioTrack`: there is no picture to put on a
+    // new track, so the sound goes where `audioTrack` says (#14)
+    if !new_v && !new_a && !video && audio && is_new("track") && !is_new("audioTrack") {
+        let mut q = p.clone();
+        if let Some(o) = q.as_object_mut() {
+            o.remove("track");
+        }
+        return place(s, &q);
+    }
     if !new_v && !new_a {
         let has = match (video, audio) {
             (true, true) => "picture and sound",
@@ -926,14 +936,13 @@ pub(crate) fn place_on_new_tracks(s: &mut Session, p: &Value) -> Result<Value> {
         };
         return Err(bad(cmd, format!("no new track to add: the item has {has}, and `video`/`audio` or `audioTrack` leave nothing to place on a new track")));
     }
-    let place = crate::commands::find(cmd).ok_or_else(|| EngineError::UnknownCommand(cmd.into()))?.run;
     // one undo step for the tracks and the clip; when the placement fails the project, its undo
     // and its redo history are put back as they were
     s.edit_group("Place Clip", |s| {
         let added = add_tracks(s, &json!({"video": u64::from(new_v), "audio": u64::from(new_a)}))?;
         let mut q = p.clone();
         for (key, kind) in [("track", "video"), ("audioTrack", "audio")] {
-            if new_audio_key(key) || is_new(key) {
+            if new_audio_key(key) {
                 q[key] = added.get(kind).and_then(|ids| ids.get(0)).cloned().unwrap_or(Value::Null);
             }
         }

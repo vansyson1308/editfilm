@@ -782,6 +782,16 @@ impl Session {
         if self.exec_depth == 0 && !self.mask_jobs.is_empty() {
             masks::poll(self);
         }
+        // an id that is no clip (a link, a track, a clip of another sequence…) named as one is
+        // refused with what it is, before anything runs (#14). It runs before the time values are
+        // read: a source time is read on the clock of the named clip, and before a dynamic trim
+        // is settled, which a refused call must not do.
+        if self.exec_depth == 0
+            && let Err(e) = clip_ids::check_named_clips(self, spec, &params)
+        {
+            self.log.push(panels::Level::Warning, id, e.to_string());
+            return Err(e);
+        }
         // every time-valued parameter takes ticks or {"seconds"|"frame"|"timecode"} (#13)
         let params = match time_params::normalize(self, id, params) {
             Ok(p) => p,
@@ -795,14 +805,6 @@ impl Session {
         let journal = spec.journal && !commands::reports_only(id, &params);
         if self.exec_depth == 0 && journal && self.trim_play.active() {
             self.settle_trim_playback(id);
-        }
-        // an id that is no clip (a link, a track, a clip of another sequence…) named as one is
-        // refused with what it is, before anything runs (#14)
-        if self.exec_depth == 0
-            && let Err(e) = clip_ids::check_named_clips(self, spec, &params)
-        {
-            self.log.push(panels::Level::Warning, id, e.to_string());
-            return Err(e);
         }
         if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);

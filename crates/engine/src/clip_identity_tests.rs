@@ -363,3 +363,198 @@ fn new_sequence_from_a_clip_can_take_only_its_settings() {
         assert!(Arc::ptr_eq(&before, &s.project), "{p}");
     }
 }
+
+// ---------------------------------------------------------------- review of #24 (checklist #33)
+
+fn video_clips(s: &Session) -> Vec<TrackItem> {
+    s.active_sequence().unwrap().video_tracks[0].items.clone()
+}
+
+/// The custom-colour dialog stores `{clips, sequence}` and runs `edit.label` later, maybe after
+/// another sequence was opened: the clips are checked against that `sequence`.
+#[test]
+fn edit_label_checks_its_clips_against_the_sequence_it_names() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let c = video_clips(&s)[0].id;
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    assert_ne!(s.state.active_sequence, Some(seq));
+    s.execute("edit.label", json!({"label": "#336699", "clips": [c.0], "sequence": seq.0})).unwrap();
+    let q = s.project.sequence(seq).unwrap();
+    assert!(q.find_item(c).unwrap().1.custom_label_color.is_some(), "the clip of the named sequence got the colour");
+    // an id that is no clip of that sequence is still refused, and named against it
+    let why = refused(s.execute("edit.label", json!({"label": "#336699", "clips": [987_654_321u64], "sequence": seq.0})));
+    assert!(why.contains("no clip 987654321 in sequence"), "{why}");
+}
+
+/// A caption id is no clip: commands on clips refuse it instead of skipping it or failing with
+/// "track is locked".
+#[test]
+fn a_caption_id_is_refused_by_commands_on_clips() {
+    let mut s = demo();
+    let (v, a) = linked_pair(&s);
+    let cap = s.execute("captions.add", json!({"time": {"seconds": 1.0}, "text": "hi"})).unwrap()["caption"].as_u64().unwrap();
+    let before = s.project.clone();
+    let why = refused(s.execute("clip.speedDuration", json!({"clips": [v.id.0, cap], "speed": 200})));
+    assert!(why.contains(&format!("{cap} is a caption on caption track C1")) && !why.contains("locked"), "{why}");
+    s.execute("essentialSound.setType", json!({"clips": [a.id.0], "type": "dialogue"})).unwrap();
+    let typed = s.project.clone();
+    let why = refused(s.execute("essentialSound.set", json!({"clips": [a.id.0, cap], "key": "repair.noise.on", "value": true})));
+    assert!(why.contains("is a caption"), "{why}");
+    assert!(Arc::ptr_eq(&typed, &s.project), "nothing changed");
+    assert!(!Arc::ptr_eq(&before, &typed));
+    // and a caption track's id is named as one
+    let track = s.active_sequence().unwrap().caption_tracks[0].id.0;
+    let why = refused(s.execute("clip.enable", json!({"clips": [track]})));
+    assert!(why.starts_with(&format!("{track} is the id of caption track C1")), "{why}");
+}
+
+/// Run by a command that calls another (no id check at that depth), a missing clip is reported
+/// as missing, not as on a locked track.
+#[test]
+fn speed_duration_reports_a_missing_clip_as_missing() {
+    let mut s = demo();
+    let v = video_clips(&s).last().unwrap().id;
+    let run = crate::commands::find("clip.speedDuration").unwrap().run;
+    let e = run(&mut s, &json!({"clips": [v.0, 987_654_321u64], "speed": 200})).unwrap_err().to_string();
+    assert!(!e.contains("locked"), "{e}");
+    assert!(e.contains("987654321"), "{e}");
+}
+
+/// The id check runs before the time values are read, so a link id named as the clip of a
+/// source-time parameter gets the link message, not one about the clock it was read on.
+#[test]
+fn the_clip_check_runs_before_the_time_values_are_read() {
+    let mut s = demo();
+    let (v, _) = linked_pair(&s);
+    let link = v.link.unwrap();
+    let why =
+        refused(s.execute("effects.deleteKeyframe", json!({"clip": link, "effect": "opacity", "param": "opacity", "mediaTime": {"timecode": "00:00:00:05"}})));
+    assert!(why.starts_with(&format!("{link} is a link id")), "{why}");
+}
+
+/// Each `clips[]` entry says where its own keyframe went; the `ease` error names the clip.
+#[test]
+fn set_param_on_many_clips_reports_each_clips_media_time() {
+    let mut s = demo();
+    let clips = video_clips(&s);
+    let (a, b) = (&clips[0], &clips[1]);
+    let r =
+        s.execute("effects.setParam", json!({"clips": [a.id.0, b.id.0], "effect": "opacity", "param": "opacity", "value": 40.0, "keyframe": true})).unwrap();
+    let entries = r["clips"].as_array().unwrap();
+    let mt = |e: &Value| e["mediaTime"].as_i64().unwrap();
+    // the playhead is pinned to each clip: their media times differ
+    let want = |c: &TrackItem| c.effect_time_at(s.playhead().clamp(c.start, (c.end() - Tick(1)).max(c.start))).0;
+    assert_eq!((mt(&entries[0]), mt(&entries[1])), (want(a), want(b)), "{r}");
+    assert!(entries.iter().all(|e| e["mediaSeconds"].is_number()), "{r}");
+    let why =
+        refused(s.execute("effects.setParam", json!({"clips": [a.id.0, b.id.0], "effect": "motion", "param": "scale", "value": 50.0, "ease": "easeOut"})));
+    assert!(why.contains(&format!("of clip {} is not animated", a.id.0)), "{why}");
+}
+
+/// Sound only, `"track":"new"` and an existing `audioTrack`: the sound goes on that track.
+#[test]
+fn place_sound_on_an_existing_audio_track_with_track_new() {
+    let mut s = demo();
+    s.execute("file.newSequence", json!({"name": "Sound", "fps": 24, "video": 1, "audio": 2})).unwrap();
+    s.execute("timeline.place", json!({"item": 11, "track": "new", "audioTrack": "A2", "time": 0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (1, 2), "no track added");
+    assert_eq!(q.audio_tracks[1].items.len(), 1, "the sound is on A2");
+}
+
+/// The shape #16 gives `sequence.inspect` (`"item":id?,"clip":id|[id]?`, a query): the clips are
+/// checked against the sequence `item` names, `clip` takes a list, and a query's refusal does not
+/// say "Nothing was changed".
+#[test]
+fn a_query_checks_clips_against_the_sequence_it_inspects() {
+    use crate::commands::{CommandSpec, NamedKeys};
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let c = video_clips(&s)[0].id;
+    s.execute("file.newSequence", json!({"name": "Other"})).unwrap();
+    let spec = CommandSpec {
+        id: "sequence.inspect",
+        label: "Inspect Sequence",
+        menu: &[],
+        shortcut: None,
+        params: r#"{"item":id?,"clip":id|[id]?}"#,
+        enabled: |_| Ok(()),
+        run: |_, _| Ok(Value::Null),
+        journal: false,
+        named: NamedKeys::CLIP,
+    };
+    let check = |s: &Session, p: Value| crate::clip_ids::check_named_clips(s, &spec, &p);
+    check(&s, json!({"item": seq.0, "clip": c.0})).unwrap();
+    check(&s, json!({"item": seq.0, "clip": [c.0]})).unwrap();
+    let e = check(&s, json!({"item": seq.0, "clip": [c.0, 987_654_321u64]})).unwrap_err().to_string();
+    assert!(e.contains("no clip 987654321 in sequence") && !e.contains("Nothing was changed"), "{e}");
+    // without `item`, the active sequence: the clip is elsewhere
+    let e = check(&s, json!({"clip": [c.0]})).unwrap_err().to_string();
+    assert!(e.contains("not the active one"), "{e}");
+}
+
+/// `metadata.*` reads `item` instead of `clip`: with an `item`, a `clip` is not checked.
+#[test]
+fn item_instead_of_clip_is_not_checked() {
+    let mut s = demo();
+    let item = video_clips(&s)[0].item.0;
+    s.execute("metadata.set", json!({"item": item, "clip": 0, "field": "Scene", "value": "12"})).unwrap();
+    assert!(refused(s.execute("metadata.set", json!({"clip": 0, "field": "Scene", "value": "12"}))).starts_with("no clip 0"));
+}
+
+#[test]
+fn small_wordings() {
+    let mut s = demo();
+    let clips = video_clips(&s);
+    // a whole number written as a float is refused with the integer to send
+    let c = clips[0].id.0;
+    let why = refused(s.execute("clip.enable", json!({"clips": [c as f64]})));
+    assert!(why.contains(&format!("pass {c}")), "{why}");
+    // a transition at a clip's edge names that edge
+    let last = clips.last().unwrap().id;
+    s.execute("sequence.applyVideoTransition", json!({"clip": last.0, "edge": "out", "frames": 10})).unwrap();
+    let tr = s.active_sequence().unwrap().video_tracks[0].transitions.iter().find(|t| t.from == Some(last) && t.to.is_none()).unwrap().id.0;
+    let why = refused(s.execute("clip.enable", json!({"clips": [tr]})));
+    assert!(why.contains(&format!("at the end of clip {}", last.0)), "{why}");
+    // a sequence with no video tracks says so
+    s.execute("file.newSequence", json!({"name": "Sound only", "video": 0, "audio": 1})).unwrap();
+    let e = s.execute("graphics.newText", json!({"text": "x", "track": "V1"})).unwrap_err().to_string();
+    assert!(e.contains("this sequence has no video tracks"), "{e}");
+    // a track index written as a float
+    let e = s.execute("graphics.newText", json!({"text": "x", "track": 1.0})).unwrap_err().to_string();
+    assert!(e.contains("pass 1 (or \"V2\")"), "{e}");
+}
+
+#[test]
+fn command_list_ranks_matches_and_refuses_a_filter_that_is_no_text() {
+    let mut s = demo();
+    let ids = |s: &mut Session, f: &str| -> Vec<String> {
+        s.execute("command.list", json!({"filter": f})).unwrap().as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect()
+    };
+    let hits = ids(&mut s, "paste attributes");
+    assert_eq!(hits.first().map(String::as_str), Some("edit.pasteAttributes"), "{hits:?}");
+    // commands named for the word come before ones that only mention it in their params
+    let clip = ids(&mut s, "speed");
+    let first_param_only = clip.iter().position(|id| !id.to_lowercase().contains("speed")).unwrap_or(clip.len());
+    assert!(clip[..first_param_only].iter().all(|id| id.to_lowercase().contains("speed")), "{clip:?}");
+    assert!(clip[first_param_only..].iter().all(|id| !id.to_lowercase().contains("speed")), "{clip:?}");
+    for bad in [json!(3), json!(["a"]), json!({"a": 1})] {
+        assert!(refused(s.execute("command.list", json!({"filter": bad}))).contains("`filter` must be a string"), "{bad}");
+    }
+}
+
+/// `place:false` takes a subclip's settings, and refuses `fromItems`.
+#[test]
+fn new_sequence_settings_only_takes_a_subclip_and_one_item() {
+    let mut s = demo();
+    let sub = s.execute("clip.makeSubclip", json!({"item": 5, "startFrame": 10, "endFrame": 60})).unwrap()["item"].as_u64().unwrap();
+    let r = s.execute("file.newSequence", json!({"name": "From subclip", "fromItem": sub, "place": false})).unwrap();
+    let q = s.project.sequence(filmagic_project::ItemId(r["sequence"].as_u64().unwrap())).unwrap();
+    let src = s.project.item(filmagic_project::ItemId(5)).unwrap();
+    let want = crate::commands::default_seq_settings_for(src.as_media().unwrap());
+    assert_eq!((q.settings.width, q.settings.height, q.settings.frame_rate), (want.width, want.height, want.frame_rate));
+    assert!(q.all_tracks().all(|t| t.items.is_empty()));
+    let why = refused(s.execute("file.newSequence", json!({"fromItem": 5, "fromItems": [5], "place": false})));
+    assert!(why.contains("without `fromItems`"), "{why}");
+}

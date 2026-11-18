@@ -265,12 +265,21 @@ There is no trim option: an end card may run on past the last shot on purpose.
 ### Clip ids, linked clips and tracks
 
 - **Clip ids are the `clip` numbers** of the items in `sequence_inspect` (or `sequence.clips`).
-  Clips, links, groups, tracks, transitions, markers and project items share one id counter, so the
-  `link` value of a clip looks like a clip id but is not one. A command that takes `clips` / `clip`
-  refuses any id that is no clip of the active sequence before it changes anything, and says what
-  the id is and what to pass instead: `53 is a link id, not a clip id; its linked clips are 52
-  (video, V1) and 54 (audio, A1). Pass those clip ids`. The same goes for track, group, transition,
-  marker and project-item ids, clips of another sequence, and values that are not ids.
+  Clips, links, groups, tracks, transitions, markers, captions and project items share one id
+  counter, so the `link` value of a clip looks like a clip id but is not one. A command whose
+  params doc declares `"clips":[id]` or `"clip":id` (one id or a list) refuses an id that is no clip
+  of the sequence it works on, before it changes anything, and says what the id is and what to pass
+  instead: `53 is a link id, not a clip id; its linked clips are 52 (video, V1) and 54 (audio, A1).
+  Pass those clip ids`. The same goes for group, track, caption-track, caption, transition, marker
+  and project-item ids, clips of another sequence, and values that are not ids (`29.0` is refused
+  with "pass 29": the commands read ids as whole numbers).
+  - The sequence is the command's `sequence` (`edit.label`), or a query's `item` when that is a
+    sequence (`sequence.inspect`), else the active one.
+  - When a command takes `item` instead of `clip` (`metadata.*`, `source.open`, `clip.rename`,
+    `clip.makeSubclip`, `story.blinkPoints`, `tts.inspect`) and you pass `item`, `clip` is not read
+    and not checked.
+  - Only those declared keys are checked. Ids inside other values (`timeline.move`'s
+    `moves[].clip`, `captions`, `transitions`) are checked by the command itself.
 - **Linked clips.** While Linked Selection is on (the default; `sequence.linkedSelection`), a video
   clip brings its linked audio along: edits such as `edit.clear`, `edit.rippleDelete`,
   `clip.speedDuration`, `clip.enable` and `timeline.move` change both, and audio commands
@@ -289,10 +298,13 @@ There is no trim option: an end card may run on past the last shot on purpose.
   index as before. Without `track` the clip goes above the clips at the playhead.
 - **New tracks follow the media.** `timeline.place` with `"track":"new"` adds a video track for the
   picture; for a file with sound only it adds an audio track, unless `audioTrack` says where the
-  sound goes.
+  sound goes (`{"track":"new","audioTrack":"A1"}` puts the sound on A1 and adds no track).
 - **A sequence that matches a clip.** `file.newSequence {"fromItem": id, "place": false}` takes the
-  clip's frame size, rate and audio settings and leaves the sequence empty (the default, `place:
-  true`, also places the clip).
+  frame size, rate and audio settings of a media file (or of a subclip's file) and leaves the
+  sequence empty; the default, `place: true`, also places the clip. `place:false` takes one item:
+  with `fromItems` it is refused.
+- **Finding commands.** `command_list` (and `filmagic-cli commands many clips`) ranks what matches:
+  commands with every word in their id first, then in their label, then in their keywords.
 
 ### Tools
 

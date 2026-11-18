@@ -155,18 +155,33 @@ pub(crate) fn place_video_clip(
             GraphicTrack::Index(i) if i < q.video_tracks.len() && free(&q.video_tracks[i]) => i,
             GraphicTrack::Index(i) if i < q.video_tracks.len() => {
                 let n = q.video_tracks.len();
-                return Err(bad(cmd, format!("V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it, or another of V1–V{n}", i + 1)));
+                return Err(bad(
+                    cmd,
+                    format!(
+                        "V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it ({})",
+                        i + 1,
+                        video_tracks_are(n)
+                    ),
+                ));
             }
             GraphicTrack::Named(i) => {
                 let n = q.video_tracks.len();
-                let tr = q.video_tracks.get(i).ok_or_else(|| {
-                    bad(cmd, format!("no track V{}: this sequence has V1–V{n}; pass \"track\":\"auto\" to use a free track or add one", i + 1))
-                })?;
+                let tr = q
+                    .video_tracks
+                    .get(i)
+                    .ok_or_else(|| bad(cmd, format!("no track V{}: {}; pass \"track\":\"auto\" to use a free track or add one", i + 1, video_tracks_are(n))))?;
                 if tr.locked {
                     return Err(bad(cmd, format!("V{} is locked; unlock it (timeline.setTrack) or pass \"track\":\"auto\"", i + 1)));
                 }
                 if !free(tr) {
-                    return Err(bad(cmd, format!("V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it, or another of V1–V{n}", i + 1)));
+                    return Err(bad(
+                        cmd,
+                        format!(
+                            "V{} is not free here (another clip overlaps the new clip's range); pass \"track\":\"auto\" for the first free track above it ({})",
+                            i + 1,
+                            video_tracks_are(n)
+                        ),
+                    ));
                 }
                 i
             }
@@ -211,6 +226,15 @@ pub(crate) enum GraphicTrack {
     Named(usize),
 }
 
+/// "this sequence has V1–V3" (or only V1, or no video tracks), for track errors.
+fn video_tracks_are(n: usize) -> String {
+    match n {
+        0 => "this sequence has no video tracks".to_string(),
+        1 => "this sequence has only V1".to_string(),
+        n => format!("this sequence has V1–V{n}"),
+    }
+}
+
 /// The `track` of a command that places a graphic clip: a 0-based index, `"V2"` or `"auto"`.
 pub(crate) fn video_track_p(p: &Value, cmd: &str) -> Result<GraphicTrack> {
     let v = match p.get("track") {
@@ -221,6 +245,10 @@ pub(crate) fn video_track_p(p: &Value, cmd: &str) -> Result<GraphicTrack> {
         return Ok(GraphicTrack::Index(usize::try_from(i).unwrap_or(usize::MAX)));
     }
     let hint = "`track` takes \"V1\", \"V2\"… (a video track), \"auto\" (the first free track above the clips there, or a new one) or a 0-based track index";
+    if let Some(f) = v.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0 && *f < 1.0e9) {
+        // 1.0 reads as a float; a track index is a whole number, so say which one to send
+        return Err(bad(cmd, format!("{hint}; got {v}, a decimal number: pass {} (or \"V{}\")", f as u64, f as u64 + 1)));
+    }
     let Some(name) = v.as_str().map(str::trim) else { return Err(bad(cmd, format!("{hint}; got {v}"))) };
     if name.eq_ignore_ascii_case("auto") {
         return Ok(GraphicTrack::Auto);

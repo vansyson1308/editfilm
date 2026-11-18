@@ -109,15 +109,48 @@ pub fn command_keywords(id: &str) -> Option<&'static str> {
     KEYWORDS.iter().find(|(k, _)| *k == id).map(|(_, v)| *v)
 }
 
-/// Whether every word of `filter` appears (case-insensitively) in the id, label, menu path,
-/// parameter doc or keywords of `c`. An empty filter matches every command.
-pub fn command_matches(c: &CommandSpec, filter: &str) -> bool {
+/// How well a command matches `filter`: `None` when some word of it appears in none of the id,
+/// label, menu path, parameter doc or keywords (case-insensitive, any order); otherwise a rank,
+/// lower first: every word in the id (0), in the label (1), in the keywords (2), anywhere (3). An
+/// empty filter matches every command at rank 0. "clip" alone matches some 250 commands, so
+/// `command.list` puts the ones named for it first.
+pub fn filter_rank(id: &str, label: &str, menu: &str, params: &str, keywords: &str, filter: &str) -> Option<u8> {
     let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
-        return true;
+        return Some(0);
     }
-    let hay = format!("{} {} {} {} {}", c.id, c.label, c.menu.join(" "), c.params, command_keywords(c.id).unwrap_or_default()).to_lowercase();
-    words.iter().all(|w| hay.contains(w.as_str()))
+    let all_in = |t: &str| {
+        let t = t.to_lowercase();
+        words.iter().all(|w| t.contains(w.as_str()))
+    };
+    if !all_in(&format!("{id} {label} {menu} {params} {keywords}")) {
+        return None;
+    }
+    Some(if all_in(id) {
+        0
+    } else if all_in(label) {
+        1
+    } else if all_in(keywords) {
+        2
+    } else {
+        3
+    })
+}
+
+/// [`filter_rank`] of one entry of the `command.list` reply, for a client (the MCP server, the
+/// CLI) that filters a list it got from a bridged app, which may predate the engine's filter.
+pub fn command_json_rank(c: &Value, filter: &str) -> Option<u8> {
+    let field = |k: &str| match &c[k] {
+        Value::String(x) => x.clone(),
+        Value::Array(a) => a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        _ => String::new(),
+    };
+    filter_rank(&field("id"), &field("label"), &field("menu"), &field("params"), &field("keywords"), filter)
+}
+
+/// Whether every word of `filter` appears in `c` (see [`filter_rank`]).
+pub fn command_matches(c: &CommandSpec, filter: &str) -> bool {
+    filter_rank(c.id, c.label, &c.menu.join(" "), c.params, command_keywords(c.id).unwrap_or_default(), filter).is_some()
 }
 
 pub fn command_specs() -> &'static [CommandSpec] {
@@ -1023,6 +1056,15 @@ pub fn roll_delta(s: &Session, left: ClipId, right: ClipId, delta: Tick) -> Resu
     clamp_roll_linked(q, &linked_roll_pairs(q, left, right, s.state.linked_selection), delta, &mut ctx)
 }
 
+/// The media file behind project item `id`: the item itself, or the parent of a subclip.
+fn media_of(p: &Project, id: ItemId) -> Option<&MediaClip> {
+    let it = p.item(id)?;
+    match &it.kind {
+        ItemKind::Subclip { parent, .. } => p.item(*parent)?.as_media(),
+        _ => it.as_media(),
+    }
+}
+
 /// Sequence settings matching a media clip (New Sequence From Clip, New Sequence from an item):
 /// its frame size, rate and pixel aspect ratio (Interpret Footage's, else the file's), so a
 /// 1440 x 1080 clip with 4:3 pixels makes a 1440 x 1080 sequence that displays 16:9.
@@ -1692,7 +1734,7 @@ fn build() -> Vec<CommandSpec> {
             "Sequence…",
             ["File", "New"],
             Some("Cmd+N"),
-            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"place":bool=true (false: take only the settings of `fromItem` and leave the sequence empty),"bin":binId?}"#,
+            r#"{"name":str,"width":u32=1920,"height":u32=1080,"fps":f64=23.976,"sampleRate":u32=48000,"video":n=3,"audio":n=3,"mix":"Stereo|Mono|5.1|Adaptive"?,"trackType":"Standard|Mono|5.1|Adaptive"?,"fromItem":itemId?,"fromItems":[itemId]?,"place":bool=true (false: take only the settings of `fromItem`, a media file or a subclip, and leave the sequence empty),"bin":binId?}"#,
             always,
             |s, p| s.edit_group("New Sequence", |s| {
                 let bin = bin_p(s, p, "file.newSequence")?;
@@ -1712,20 +1754,30 @@ fn build() -> Vec<CommandSpec> {
                 if let Some(one) = item_p(p, "fromItem") {
                     from_ids.insert(0, one);
                 }
+                if !place && from_ids.len() > 1 {
+                    return Err(bad(
+                        "file.newSequence",
+                        "`place:false` takes the settings of one item: pass it as `fromItem`, without `fromItems` (which places clips back to back)",
+                    ));
+                }
                 if let Some(&first) = from_ids.first() {
+                    // the same outcome as before (no sequence is made), told before anything is made
                     let it = s
                         .project
                         .item(first)
                         .ok_or_else(|| bad("file.newSequence", format!("no project item {} (`fromItem` takes an `item` id from project.inspect)", first.0)))?;
-                    if !place && it.as_media().is_none() {
+                    if !place && media_of(&s.project, first).is_none() {
                         return Err(bad(
                             "file.newSequence",
-                            format!("\"{}\" is not a media file, so it has no settings to take; `place:false` needs a video or audio item", it.name),
+                            format!(
+                                "\"{}\" is not a media file or a subclip of one, so it has no settings to take; `place:false` needs a video or audio item",
+                                it.name
+                            ),
                         ));
                     }
                 }
                 let mut st = SequenceSettings::default();
-                if let Some(from) = from_ids.first().and_then(|i| s.project.item(*i)).and_then(|i| i.as_media()) {
+                if let Some(from) = from_ids.first().and_then(|i| media_of(&s.project, *i)) {
                     st = default_seq_settings_for(from);
                 }
                 if let Some(w) = checked_u32_p(p, "width", "file.newSequence")? {
@@ -2536,6 +2588,10 @@ fn build() -> Vec<CommandSpec> {
                         }
                     }
                     for group in &groups {
+                        // a clip that is not there is reported as missing, not as locked (#14)
+                        if let Some(gone) = group.iter().find(|c| q.find_item(**c).is_none()) {
+                            return Err(edit::EditError::NoItem(*gone).into());
+                        }
                         let unlocked: Vec<ClipId> =
                             group.iter().copied().filter(|c| q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|tr| !tr.locked))).collect();
                         if unlocked.is_empty() {
@@ -3954,7 +4010,10 @@ fn build() -> Vec<CommandSpec> {
                             // the easing of the keyframe just written, in the same undo step (#13)
                             if let Some(ease) = ease {
                                 let k = prm.keyframes.iter_mut().find(|k| k.time == mt).ok_or_else(|| {
-                                    bad("effects.setParam", format!("`ease` needs a keyframe, and `{pid}` is not animated: add \"keyframe\": true"))
+                                    bad(
+                                        "effects.setParam",
+                                        format!("`ease` needs a keyframe, and `{pid}` of clip {} is not animated: add \"keyframe\": true", c.0),
+                                    )
                                 })?;
                                 k.interp = ease;
                             }
@@ -3984,7 +4043,17 @@ fn build() -> Vec<CommandSpec> {
                 let (_, keyframes, value, keyed_at) = results.first().cloned().ok_or_else(|| bad("effects.setParam", "need `clip` or `clips`"))?;
                 let mut reply = json!({"keyframes": keyframes, "param": pid, "value": value});
                 if p.get("clips").is_some() {
-                    reply["clips"] = json!(results.iter().map(|(c, k, v, _)| json!({"clip": c.0, "keyframes": k, "value": v})).collect::<Vec<_>>());
+                    // each clip says where its own keyframe went: clips at other places in the
+                    // timeline, or at other speeds, key at other media times (#14)
+                    let entry = |(c, k, v, at): &(ClipId, usize, Value, Option<Tick>)| {
+                        let mut e = json!({"clip": c.0, "keyframes": k, "value": v});
+                        if let Some(mt) = at {
+                            e["mediaTime"] = json!(mt.0);
+                            e["mediaSeconds"] = json!(crate::time_params::secs(*mt));
+                        }
+                        e
+                    };
+                    reply["clips"] = json!(results.iter().map(entry).collect::<Vec<_>>());
                 }
                 if let (Some(ease), Some(mt)) = (ease, keyed_at) {
                     reply["mediaTime"] = json!(mt.0);
@@ -4286,13 +4355,22 @@ fn build() -> Vec<CommandSpec> {
         query!(
             "command.list",
             "List Commands",
-            r#"{"filter":str? (words, any order: each must appear in the id, label, menu path, params or keywords; case-insensitive)}"#,
+            r#"{"filter":str? (words, any order: each must appear in the id, label, menu path, params or keywords; case-insensitive; the best matches come first: every word in the id, then in the label, then in the keywords)}"#,
             |s, p| {
-                let filter = str_p(p, "filter").unwrap_or_default();
+                let filter = match p.get("filter") {
+                    None | Some(Value::Null) => "",
+                    Some(Value::String(f)) => f.as_str(),
+                    Some(v) => return Err(bad("command.list", format!("`filter` must be a string of words, got {v}"))),
+                };
+                let mut hits: Vec<(u8, &CommandSpec)> = command_specs()
+                    .iter()
+                    .filter_map(|c| filter_rank(c.id, c.label, &c.menu.join(" "), c.params, command_keywords(c.id).unwrap_or_default(), filter).map(|r| (r, c)))
+                    .collect();
+                // the best matches first; the registry's order within a rank (stable sort)
+                hits.sort_by_key(|(r, _)| *r);
                 Ok(Value::Array(
-                    command_specs()
-                        .iter()
-                        .filter(|c| command_matches(c, filter))
+                    hits.into_iter()
+                        .map(|(_, c)| c)
                         .map(|c| {
                             let all: Vec<&str> = s.shortcuts.for_command(c.id).iter().map(|b| b.keys.as_str()).collect();
                             let mut v = json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": s.shortcuts.primary(c.id), "shortcuts": all, "defaultShortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()});

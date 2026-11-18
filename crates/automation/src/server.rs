@@ -389,24 +389,21 @@ impl FilmagicMcp {
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
     async fn command_list(&self, Parameters(p): Parameters<ListParams>) -> Result<CallToolResult, McpError> {
-        // the engine matches every word of the filter against id, label, menu, params and keywords;
-        // the same match runs here too, for a bridged app that predates the engine's filter
+        // the engine matches and ranks every word of the filter against id, label, menu, params and
+        // keywords; the same match runs here too, for a bridged app that predates the engine's filter
         let filter = p.filter.unwrap_or_default();
-        let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
         let r = self.run("command.list", json!({"filter": filter})).await.map(|v| {
             let only = p.enabled_only.unwrap_or(false);
-            let matches = |c: &Value| {
-                let field = |k: &str| match &c[k] {
-                    Value::String(x) => x.clone(),
-                    Value::Array(a) => a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
-                    _ => String::new(),
-                };
-                let hay = ["id", "label", "menu", "params", "keywords"].map(field).join(" ").to_lowercase();
-                words.iter().all(|w| hay.contains(w.as_str()))
-            };
-            Value::Array(
-                v.as_array().cloned().unwrap_or_default().into_iter().filter(|c| matches(c) && (!only || c["enabled"].as_bool() == Some(true))).collect(),
-            )
+            let mut hits: Vec<(u8, Value)> = v
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| !only || c["enabled"].as_bool() == Some(true))
+                .filter_map(|c| filmagic_engine::commands::command_json_rank(&c, &filter).map(|r| (r, c)))
+                .collect();
+            hits.sort_by_key(|(r, _)| *r);
+            Value::Array(hits.into_iter().map(|(_, c)| c).collect())
         });
         wrap(r)
     }
