@@ -2093,3 +2093,23 @@ fn shift_click_selects_several_layers_and_a_drag_moves_them_together() {
     assert!(moved(0).0 < -20.0 && near(moved(0), moved(2)), "{before:?} → {after:?}");
     assert_eq!(after[1], before[1]);
 }
+
+/// Text Properties ▸ OK changes the layer without measuring how much the picture changed: that
+/// renders several frames, which a dialog's OK must not wait for (#16).
+#[test]
+fn text_properties_ok_skips_the_picture_change_measurement() {
+    let mut d = Driver::new();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let (clip, _) = d.paragraph_text();
+    d.ok("ui.click", json!({"id": "graphics.textProperties"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "graphics.textProperties.ligatures"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "graphics.textProperties.ok"}));
+    d.frames(4);
+    let journal = &d.harness.state().session.journal;
+    let (id, params) = journal.iter().rev().find(|(id, _)| id == "graphics.set").expect("OK set the ligatures");
+    assert_eq!(id, "graphics.set");
+    assert_eq!(params["pictureChange"], json!(false), "{params}");
+    assert_eq!(params["clip"], json!(clip), "{params}");
+}

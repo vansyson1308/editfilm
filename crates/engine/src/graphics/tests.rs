@@ -746,7 +746,8 @@ mod set_with_keyframes {
         let (mut s, clip) = ellipse();
         s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "props": {"position": [300, 540]}})).unwrap();
         let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "props": {"position": [1600, 540]}})).unwrap();
-        assert!(r.is_null(), "the result of a call without `keyframe` is unchanged: {r}");
+        assert!(r.get("keyframes").is_none(), "no keyframes without `keyframe`: {r}");
+        assert_eq!(r["accepted"]["position"], json!([1600.0, 540.0]));
         let (keys, fixed) = position(&s, clip);
         assert!(keys.is_empty(), "{keys:?}");
         assert_eq!(fixed, 1600.0);
@@ -756,9 +757,9 @@ mod set_with_keyframes {
     fn keyframe_true_animates_the_property() {
         let (mut s, clip) = ellipse();
         let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": 0, "keyframe": true, "props": {"position": [300, 540]}})).unwrap();
-        assert_eq!(r, json!({"keyframes": {"position": 1}}));
+        assert_eq!(r["keyframes"], json!({"position": 1}));
         let r = s.execute("graphics.set", json!({"clip": clip.0, "layer": 0, "time": AT_1_5_S, "keyframe": true, "props": {"position": [1600, 540]}})).unwrap();
-        assert_eq!(r, json!({"keyframes": {"position": 2}}));
+        assert_eq!(r["keyframes"], json!({"position": 2}));
         let (keys, _) = position(&s, clip);
         assert_eq!(keys, vec![(0, 300.0), (AT_1_5_S, 1600.0)]);
         // the layer really moves: between the keyframes it is between the two positions
@@ -945,4 +946,42 @@ fn applied_effects_render_the_same_before_or_after_the_intrinsic_ones() {
         s.execute("effects.setParam", json!({"clip": clip, "effect": effect, "param": param, "value": value})).unwrap();
     }
     check(s, clip, "video clip");
+}
+
+/// A session over a dark demo scene (City Night), 160×90 at 24 fps.
+fn dark_session(name: &str) -> Session {
+    let dir = crate::media_test_util::tmp_dir(name);
+    let path = dir.join("night.mov");
+    crate::media_test_util::make_movie(&path, filmagic_media::DemoScene::CityNight, 160, 90, 24);
+    crate::media_test_util::session_with(&[&path]).0
+}
+
+#[test]
+fn graphics_set_returns_what_it_accepted_and_how_much_shows() {
+    let mut s = dark_session("gfx-set-report");
+    let r = s.execute("graphics.newRectangle", json!({"position": [80, 6], "size": [160, 12]})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    let r = s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"fill_color": "#000000", "opacity": 50}})).unwrap();
+    assert_eq!(r["accepted"]["fill_color"], "#000000", "{r}");
+    assert_eq!(r["accepted"]["opacity"], 50.0);
+    assert_eq!(r["clip"], clip);
+    assert_eq!(r["layer"], 0);
+    // a half-transparent black band over a night scene: a viewer hardly sees it
+    let shows = r["layerShows"]["reads"].as_str().unwrap();
+    assert!(matches!(shows, "none" | "subtle"), "{r}");
+    assert!(r["pictureChange"].is_object(), "{r}");
+    // white and opaque, the same band is plain to see
+    let r = s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"fill_color": "#ffffff", "opacity": 100}})).unwrap();
+    let shows = r["layerShows"]["reads"].as_str().unwrap();
+    assert!(matches!(shows, "visible" | "strong"), "{r}");
+    assert!(matches!(r["pictureChange"]["reads"].as_str(), Some("visible" | "strong")), "{r}");
+    // a drag step is not measured
+    let r = s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"opacity": 90}, "merge": true})).unwrap();
+    assert!(r.get("pictureChange").is_none() && r["accepted"]["opacity"] == 90.0, "{r}");
+    // hostile values are refused, and name the property
+    for (props, word) in [(json!({"opacity": "half"}), "opacity"), (json!({"no_such": 1}), "no_such"), (json!({"position": [1]}), "position")] {
+        let e = s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": props})).unwrap_err().to_string();
+        assert!(e.contains(word), "{e}");
+    }
+    assert!(s.execute("graphics.set", json!({"clip": 99_999, "props": {"opacity": 1}})).is_err());
 }
