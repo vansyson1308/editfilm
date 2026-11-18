@@ -29,7 +29,7 @@ pub mod channels;
 pub mod design;
 pub mod ducking;
 pub mod effects;
-pub(crate) mod fft;
+pub mod fft;
 pub mod loudness;
 pub(crate) mod oversample;
 pub mod remix;

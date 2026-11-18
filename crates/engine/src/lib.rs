@@ -22,6 +22,7 @@ pub mod essential_sound;
 pub mod export_tools;
 pub mod graphic_templates;
 pub mod graphics;
+pub mod highlights;
 pub mod interchange;
 pub mod keyboard;
 mod keyframe_move;
@@ -59,6 +60,7 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod source_monitor;
+pub mod speed_ramp;
 pub mod story;
 pub mod sync;
 pub mod time_params;
@@ -500,6 +502,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// `story.highlights`: running jobs, finished results and the cue cache.
+    pub highlights: highlights::State,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -609,6 +613,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            highlights: Default::default(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -707,6 +712,7 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        highlights::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
         let Some(p) = self.persistence.as_mut() else { return };
@@ -1384,6 +1390,8 @@ mod file_tests;
 #[cfg(test)]
 mod gap_selection_tests;
 #[cfg(test)]
+mod highlights_tests;
+#[cfg(test)]
 mod history_tests;
 #[cfg(test)]
 mod image_sequence_tests;
@@ -1465,6 +1473,8 @@ mod sequence_tools_tests;
 mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod speed_ramp_tests;
 #[cfg(test)]
 mod split_edit_ripple_trim_tests;
 #[cfg(test)]

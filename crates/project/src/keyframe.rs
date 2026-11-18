@@ -358,6 +358,20 @@ impl Param {
     }
 }
 
+/// Whether the segment from `a` to `b` eases (is not a straight line in time).
+pub(crate) fn segment_eases(a: &Keyframe, b: &Keyframe) -> bool {
+    let out_ease = matches!(a.interp, Interpolation::Bezier | Interpolation::AutoBezier | Interpolation::ContinuousBezier | Interpolation::EaseOut);
+    let in_ease = matches!(b.interp, Interpolation::Bezier | Interpolation::AutoBezier | Interpolation::ContinuousBezier | Interpolation::EaseIn)
+        || matches!(a.interp, Interpolation::Bezier | Interpolation::ContinuousBezier);
+    out_ease || in_ease
+}
+
+/// The scalar value at `u` (0..1) of the segment from `a` (value `va`) to `b` (value `vb`), as
+/// [`Param::scalar_at`] evaluates it (without the hold).
+pub(crate) fn segment_value(a: &Keyframe, b: &Keyframe, u: f64, va: f64, vb: f64) -> f64 {
+    va + (vb - va) * ease(a, b, u)
+}
+
 /// Temporal easing for u∈[0,1] between two keyframes (1D cubic Bezier in time/value space).
 fn ease(a: &Keyframe, b: &Keyframe, u: f64) -> f64 {
     let out_ease = matches!(a.interp, Interpolation::Bezier | Interpolation::AutoBezier | Interpolation::ContinuousBezier | Interpolation::EaseOut);

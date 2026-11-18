@@ -292,6 +292,12 @@ where each clip could be cut → build the sequence (`sequence.clips` lists its 
 `story.rhythm` and `story.cuts` → look at the cuts they call out → `story.shadowCut` before trying
 another version, and `story.compare` to see shot by shot what the new one changed.
 
+For sports and event footage, see [highlights-and-speed-ramps.md](highlights-and-speed-ramps.md).
+`story.highlights` finds rallies, cheering, bursts of motion and scoreboard changes in long
+single-camera footage, where scene detection finds nothing. It runs as a job, and lists every
+impact it heard. `clip.speedRamp` makes a smooth speed change (100 % easing to 40 %) in one
+command, as Time Remapping keyframes that the renderer plays.
+
 Two habits make these reliable. Read `warnings` and `notes` in every result: they say what a
 command could not do. And read `pictureChange` after a command that alters the picture: `subtle`
 means a viewer will not notice it. A region read off a rendered frame takes `"space":"frame"`
