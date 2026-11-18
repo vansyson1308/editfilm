@@ -148,6 +148,12 @@ impl<'a> Remap<'a> {
         to_tick(v)
     }
 
+    /// A walk along the curve for many nearby times in turn (each frame of a clip): see [`RemapWalk`].
+    pub fn walk(&self) -> RemapWalk<'a> {
+        let base = self.anchor();
+        RemapWalk { remap: self.clone(), base, at: base.0 as f64 }
+    }
+
     /// The smallest linear media time whose shown media time reaches `target`, searched upward
     /// from `from` (or downward when `down`), or `None` when the curve never gets there (it ends
     /// in a hold) within the tick range.
@@ -182,6 +188,38 @@ impl<'a> Remap<'a> {
             if reached(mid) { hi = mid } else { lo = mid }
         }
         Some(hi)
+    }
+}
+
+/// [`Remap::shown`] for a run of times, each close to the one before (a clip's frames in turn,
+/// either way). [`Remap::shown`] integrates from the anchor every time, which costs a pass over
+/// every segment in between. A walk keeps the shown time of the last keyframe it went past and
+/// integrates only from there, so a step costs at most the segment it lands in, plus any
+/// segments it crosses.
+#[derive(Clone, Debug)]
+pub struct RemapWalk<'a> {
+    remap: Remap<'a>,
+    /// A keyframe time (or the anchor) that the walk went past.
+    base: Tick,
+    /// Shown media time at `base`, unrounded.
+    at: f64,
+}
+
+impl RemapWalk<'_> {
+    /// Shown media time at linear media time `b`: [`Remap::shown`] to within a tick.
+    pub fn shown(&mut self, b: Tick) -> Tick {
+        let k = self.remap.keys;
+        // the last keyframe between the base and `b`, on the way there
+        let past = if b > self.base {
+            k.partition_point(|x| x.time <= b).checked_sub(1).and_then(|i| k.get(i)).filter(|x| x.time > self.base)
+        } else {
+            k.get(k.partition_point(|x| x.time < b)).filter(|x| x.time < self.base)
+        };
+        if let Some(x) = past {
+            self.at += self.remap.integral(self.base, x.time);
+            self.base = x.time;
+        }
+        to_tick(self.at + self.remap.integral(self.base, b))
     }
 }
 
@@ -389,6 +427,30 @@ mod tests {
         // 1 s at a mean of 75 %, then 50 %: 0.75 + 0.5 s of media back from the top
         assert!(close(it.source_time_at(secs(2.0)), top - secs(1.25), 2));
         assert!(it.source_time_at(secs(3.0)) < it.source_time_at(secs(2.0)));
+    }
+
+    #[test]
+    fn a_walk_shows_what_the_curve_shows() {
+        let mut it = clip(0.0, 60.0, 5.0, 1.0, false);
+        let k: Vec<(f64, f64, Interpolation)> = (0..64)
+            .map(|i| (5.0 + i as f64 * 0.9, [100.0, 35.0, 0.0, 250.0][i % 4], if i % 3 == 0 { Interpolation::Bezier } else { Interpolation::Linear }))
+            .collect();
+        keys(&mut it, &k);
+        let r = it.remap().unwrap();
+        let frame = Tick(TICKS_PER_SECOND / 60);
+        for backward in [false, true] {
+            let mut w = r.walk();
+            for f in 0..3600 {
+                let b = if backward { secs(65.0) - Tick(frame.0 * f) } else { secs(5.0) + Tick(frame.0 * f) };
+                let (got, want) = (w.shown(b), r.shown(b));
+                assert!(close(got, want, 1), "{got:?} vs {want:?} at {b:?} (backward {backward})");
+            }
+        }
+        // a jump far away and back again
+        let mut w = r.walk();
+        for b in [secs(70.0), secs(1.0), secs(33.3), secs(33.31)] {
+            assert!(close(w.shown(b), r.shown(b), 1));
+        }
     }
 
     #[test]

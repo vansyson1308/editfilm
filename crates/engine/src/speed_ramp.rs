@@ -454,7 +454,10 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     let track = q.track(tid).ok_or_else(|| bad(CMD, "the clip's track is gone"))?;
     if track.kind != TrackKind::Video {
         // a sound clip that carries a ramp (a hand-edited project) is silent: clear takes it off
-        if flag(p, "clear", false)? && old.has_speed_ramp() && !track.locked {
+        if flag(p, "clear", false)? && old.has_speed_ramp() {
+            if track.locked {
+                return Err(EngineError::Edit(filmagic_edit::EditError::Locked));
+            }
             let mut fixed = old.clone();
             set_keys(&mut fixed, None);
             s.edit_sequence("Remove Speed Ramp", |q, _, _| filmagic_edit::retime_group(q, &[fixed], false).map_err(EngineError::from))?;

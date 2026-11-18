@@ -4,8 +4,8 @@ use filmagic_project::{ClipId, TrackItem};
 use filmagic_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
-use crate::Session;
 use crate::media_test_util::tmp_dir;
+use crate::{EngineError, Session};
 
 const FPS: i64 = 25;
 
@@ -470,6 +470,16 @@ fn a_ramped_sound_clip_is_flagged_and_can_be_cleared() {
     assert!(entry["speedRamp"].as_str().unwrap().starts_with("silent"), "{entry}");
     let mix = s.execute("mix.check", json!({})).unwrap();
     assert!(mix["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("speed ramp")), "{mix}");
+    // on a locked track it says so, rather than pointing at the picture
+    let lock = |s: &mut Session, on: bool| {
+        let id = s.state.active_sequence.unwrap();
+        std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap().audio_tracks[0].locked = on;
+    };
+    lock(&mut s, true);
+    let e = s.execute("clip.speedRamp", json!({"clip": a.0, "clear": true})).unwrap_err();
+    assert!(matches!(e, EngineError::Edit(filmagic_edit::EditError::Locked)), "{e}");
+    assert!(clip(&s, a.0).has_speed_ramp());
+    lock(&mut s, false);
     let r = s.execute("clip.speedRamp", json!({"clip": a.0, "clear": true})).unwrap();
     assert_eq!(r["cleared"], true);
     assert!(!clip(&s, a.0).has_speed_ramp());
