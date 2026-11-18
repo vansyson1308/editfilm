@@ -5,7 +5,7 @@
 use filmagic_time::FrameRate;
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{AudioCodec, AudioSettings, BitrateMode, ExportEffects, H264Profile, LoudnessNormalization, MxfVideoCodec, Scaling};
+use crate::settings::{AudioCodec, AudioSettings, BitrateMode, ExportEffects, H264Preset, H264Profile, LoudnessNormalization, MxfVideoCodec, Scaling};
 use crate::{ExportSettings, Format};
 
 /// A named set of export settings (`path` and `range` are left empty).
@@ -43,6 +43,34 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
         bitrate_mode: BitrateMode::Vbr1Pass,
         audio: AudioSettings { codec: AudioCodec::Aac, sample_rate: Some(48_000), channels: 2, bitrate_kbps: 320, bits: 16, ..Default::default() },
         ..Default::default()
+    }
+}
+
+/// The draft preset: a quick review copy of an edit, not a delivery (#18).
+pub const DRAFT_PRESET: &str = "Draft – Half Size Review";
+
+/// Constant rate factor of draft exports: small files that still show every cut, title and grade.
+pub const DRAFT_CRF: f32 = 30.0;
+
+/// Bits per pixel per frame of a draft encoded by a hardware encoder (VBR: NVENC and VideoToolbox
+/// take no CRF), about the size of a CRF 30 draft.
+pub const DRAFT_HARDWARE_BPP: f32 = 0.05;
+
+/// AAC bitrate of draft exports.
+pub const DRAFT_AUDIO_KBPS: u32 = 128;
+
+/// Draft settings ([`DRAFT_PRESET`], `file.exportMedia {"draft": true}`): H.264 at half the
+/// sequence's size, the encoder's `speed` preset, constant quality [`DRAFT_CRF`] and AAC at
+/// [`DRAFT_AUDIO_KBPS`]. 2.6–4× faster than the default export at 1080p (`docs/performance.md`).
+pub fn draft() -> ExportSettings {
+    ExportSettings {
+        scale: 0.5,
+        bitrate_mode: BitrateMode::Crf,
+        crf: DRAFT_CRF,
+        h264_preset: H264Preset::Speed,
+        max_bitrate_kbps: None,
+        audio: AudioSettings { bitrate_kbps: DRAFT_AUDIO_KBPS, ..h264(None, 0, 0).audio },
+        ..h264(None, 5_000, 0)
     }
 }
 
@@ -127,6 +155,12 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p(DEFAULT_PRESET, ms, "H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)", adaptive(0.2)),
         p("Match Source – Adaptive Medium Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.1 bits per pixel", adaptive(0.1)),
         p("Match Source – Adaptive Low Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.05 bits per pixel", adaptive(0.05)),
+        p(
+            DRAFT_PRESET,
+            ms,
+            "H.264 at half the sequence's frame size, fast encoder, constant quality CRF 30, AAC 128 kbps: to review an edit quickly, not to deliver it",
+            draft(),
+        ),
         p("High Quality 1080p HD", web, "H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps", h264(Some((1920, 1080)), 20_000, 24_000)),
         p("High Quality 2160p 4K", web, "H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps", h264(Some((3840, 2160)), 60_000, 72_000)),
         p("YouTube 1080p Full HD", web, "H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps", h264(Some((1920, 1080)), 16_000, 20_000)),
