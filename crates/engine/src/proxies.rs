@@ -168,6 +168,8 @@ fn transcode_with_file(
         part_of_batch: true,
         prores_profile: preset.prores.to_string(),
         output_file,
+        // a proxy, transcode or Project Manager copy keeps the media as it is: no limiter
+        effects: filmagic_export::ExportEffects { peak_limiter: filmagic_export::PeakLimiter::OFF, ..Default::default() },
         ..Default::default()
     };
     let project = Arc::new(p);

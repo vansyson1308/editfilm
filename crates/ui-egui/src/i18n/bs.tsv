@@ -2933,6 +2933,10 @@
 	Luma Min / Max	Luma min. / maks.
 	Loudness Normalization	Normalizacija glasnoće
 	True Peak Limit	Ograničenje stvarnog vrha
+	True-Peak Limiter	Limiter stvarnog vrha
+	Ceiling	Gornja granica
+	Find Speech Segments	Pronađi segmente govora
+	Check Mix Loudness	Provjeri glasnoću miksa
 	Audio only	Samo zvuk
 	Scaling	Skaliranje
 	Scale To Fit	Skaliraj da stane
