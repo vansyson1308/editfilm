@@ -3,11 +3,14 @@
 //!
 //! Methods (textbook, implemented from their definitions):
 //!
-//! - **Template tracking** — normalised cross-correlation (NCC) of a template against the frame
-//!   in a search window around a constant-velocity prediction, with a parabolic sub-pixel fit of
-//!   the correlation peak. The template is sampled on a grid of at most [`TEMPLATE_SIDE`]² points
-//!   whatever the object's size, so the cost per frame is bounded. A match below [`MIN_SCORE`] is
-//!   a lost frame: the position is predicted and the window grows until the object is found again.
+//! - **Template tracking** — normalised cross-correlation (NCC) of a template against the frame,
+//!   coarse to fine: a pass over a halved-down frame in a window around a constant-velocity
+//!   prediction (a wide one while no velocity is known), plus the blobs of the frame difference
+//!   near the predicted path, each refined at full resolution with a parabolic sub-pixel fit of
+//!   the correlation peak ([`PointTracker`] lists the steps and their cost). The template is
+//!   sampled on a grid of at most [`TEMPLATE_SIDE`]² points whatever the object's size. A match
+//!   below [`MIN_SCORE`] is a lost frame: the position is predicted, and the difference blobs are
+//!   searched over a growing region until the object is found again.
 //!   The template is refreshed slowly (only from confident matches) so lighting changes are
 //!   followed without drifting off the object. This complements the feature tracker behind
 //!   `masks.track` (Shi–Tomasi + Lucas–Kanade), which needs detail inside the region: a ball is
@@ -207,13 +210,193 @@ pub fn search(img: &Luma, t: &Template, around: Vec2, radius: i64) -> Option<(Ve
     Some((Vec2::new(bx as f64 + dx, by as f64 + dy), bs))
 }
 
+/// Fraction of the frame width searched when no velocity is known (the first frame, or after a
+/// long loss): a fast ball moves this far in one frame.
+pub const FIRST_RADIUS_OF_WIDTH: f64 = 0.12;
+/// Most correlation peaks of the coarse pass that are refined at full resolution.
+const COARSE_PEAKS: usize = 4;
+/// Most frame-difference blobs that are verified with the template.
+const MAX_BLOBS: usize = 16;
+/// Least NCC score for a match away from the predicted path (a re-acquisition): a stricter bar
+/// so that another mover is not taken for the object.
+const REACQUIRE_SCORE: f32 = 0.75;
+/// How much a candidate's distance from the prediction (in search radii) costs in score.
+const DISTANCE_COST: f32 = 0.15;
+/// Most coarse levels (each halves the frame).
+const MAX_LEVEL: u32 = 3;
+
+impl Luma {
+    /// Half the size, each pixel the mean of a 2×2 block (an odd last row or column is dropped).
+    fn halved(&self) -> Luma {
+        let (w, h) = ((self.w / 2).max(1), (self.h / 2).max(1));
+        let mut px = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let (x2, y2) = (2 * x as i64, 2 * y as i64);
+                px.push(0.25 * (self.at(x2, y2) + self.at(x2 + 1, y2) + self.at(x2, y2 + 1) + self.at(x2 + 1, y2 + 1)));
+            }
+        }
+        Luma { w, h, px }
+    }
+
+    fn level(&self, level: u32) -> Luma {
+        let mut out = self.clone();
+        for _ in 0..level.min(MAX_LEVEL) {
+            out = out.halved();
+        }
+        out
+    }
+}
+
+/// A connected region that changed between two frames: centroid and half extent (pixels).
+#[derive(Clone, Copy, Debug)]
+struct Blob {
+    at: Vec2,
+    half: f64,
+}
+
+/// The blobs of `|cur − prev|` inside the `radius` box around `around` (the whole frame when the
+/// box covers it), nearest `around` first, at most [`MAX_BLOBS`]; blobs larger than `max_area`
+/// pixels are something else (a player, a camera move) and are left out. The threshold sits
+/// above the region's median difference (grain, compression noise), so a static court line or
+/// a still floor makes no blob at all. Cost: one pass over the region plus a flood fill.
+fn motion_blobs(prev: &Luma, cur: &Luma, around: Vec2, radius: f64, max_area: usize) -> Vec<Blob> {
+    if prev.w != cur.w || prev.h != cur.h || cur.px.len() != cur.w * cur.h || prev.px.len() != cur.px.len() || cur.px.is_empty() {
+        return Vec::new();
+    }
+    if !(around.x.is_finite() && around.y.is_finite() && radius.is_finite()) {
+        return Vec::new();
+    }
+    let r = radius.clamp(1.0, 1e6);
+    let (w, h) = (cur.w as i64, cur.h as i64);
+    let x0 = ((around.x - r).floor() as i64).clamp(0, w - 1);
+    let x1 = ((around.x + r).ceil() as i64).clamp(0, w - 1);
+    let y0 = ((around.y - r).floor() as i64).clamp(0, h - 1);
+    let y1 = ((around.y + r).ceil() as i64).clamp(0, h - 1);
+    let (rw, rh) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+    let mut diff = Vec::with_capacity(rw * rh);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let i = (y * w + x) as usize;
+            let d = (cur.px.get(i).copied().unwrap_or(0.0) - prev.px.get(i).copied().unwrap_or(0.0)).abs();
+            diff.push(if d.is_finite() { d } else { 0.0 });
+        }
+    }
+    let mut sorted = diff.clone();
+    let mid = sorted.len() / 2;
+    let median = *sorted.select_nth_unstable_by(mid, f32::total_cmp).1;
+    let thr = (4.0 * median).max(0.06);
+    let mut seen = vec![false; diff.len()];
+    let mut blobs = Vec::new();
+    let mut stack = Vec::new();
+    for start in 0..diff.len() {
+        if seen[start] || diff[start] < thr {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        let (mut n, mut sx, mut sy) = (0usize, 0.0f64, 0.0f64);
+        let (mut bx0, mut bx1, mut by0, mut by1) = (usize::MAX, 0usize, usize::MAX, 0usize);
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % rw, i / rw);
+            n += 1;
+            sx += x as f64;
+            sy += y as f64;
+            (bx0, bx1, by0, by1) = (bx0.min(x), bx1.max(x), by0.min(y), by1.max(y));
+            let mut visit = |j: usize| {
+                if diff.get(j).is_some_and(|d| *d >= thr) && seen.get(j) == Some(&false) {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            };
+            if x > 0 {
+                visit(i - 1);
+            }
+            if x + 1 < rw {
+                visit(i + 1);
+            }
+            if y > 0 {
+                visit(i - rw);
+            }
+            if y + 1 < rh {
+                visit(i + rw);
+            }
+        }
+        if n < 2 || n > max_area {
+            continue;
+        }
+        let half = 0.5 * ((bx1 - bx0).max(by1 - by0) + 1) as f64;
+        blobs.push(Blob { at: Vec2::new(x0 as f64 + sx / n as f64, y0 as f64 + sy / n as f64), half });
+    }
+    blobs.sort_by(|a, b| (a.at - around).length().total_cmp(&(b.at - around).length()));
+    blobs.truncate(MAX_BLOBS);
+    blobs
+}
+
+/// The best few local peaks of `t` over the `radius` box around `around` of `img`, every pixel
+/// visited: the coarse pass over a small, halved-down frame.
+fn coarse_peaks(img: &Luma, t: &Template, around: Vec2, radius: i64) -> Vec<(Vec2, f32)> {
+    if !(around.x.is_finite() && around.y.is_finite()) {
+        return Vec::new();
+    }
+    let r = radius.clamp(1, MAX_RADIUS);
+    let cx = (around.x.round() as i64).clamp(0, img.w as i64 - 1);
+    let cy = (around.y.round() as i64).clamp(0, img.h as i64 - 1);
+    let sep = t.half.0.max(t.half.1).max(1);
+    let mut best: Vec<(i64, i64, f32)> = Vec::with_capacity(COARSE_PEAKS + 1);
+    for y in (cy - r).max(0)..=(cy + r).min(img.h as i64 - 1) {
+        for x in (cx - r).max(0)..=(cx + r).min(img.w as i64 - 1) {
+            let s = t.score(img, x, y);
+            if !s.is_finite() || s <= 0.0 {
+                continue;
+            }
+            // one entry per peak: a better score nearby replaces it
+            if let Some(near) = best.iter_mut().find(|b| (b.0 - x).abs() <= sep && (b.1 - y).abs() <= sep) {
+                if s > near.2 {
+                    *near = (x, y, s);
+                }
+                continue;
+            }
+            if best.len() < COARSE_PEAKS {
+                best.push((x, y, s));
+            } else if let Some(worst) = best.iter_mut().min_by(|a, b| a.2.total_cmp(&b.2))
+                && s > worst.2
+            {
+                *worst = (x, y, s);
+            }
+        }
+    }
+    best.into_iter().map(|(x, y, s)| (Vec2::new(x as f64, y as f64), s)).collect()
+}
+
 /// Follows one object from frame to frame.
+///
+/// Each frame: candidates come from (1) a coarse NCC pass over a frame halved `level` times,
+/// searching a window around a constant-velocity prediction (wide — [`FIRST_RADIUS_OF_WIDTH`]
+/// of the frame — while no velocity is known), (2) the blobs of the frame difference near the
+/// predicted path (a bounce reverses the velocity, so the prediction alone points the wrong
+/// way), and (3) the prediction itself. Each is refined at full analysis resolution and scored
+/// by NCC less a cost for its distance from the prediction. When the object is lost, the
+/// difference blobs are searched over a region that doubles every frame, up to the whole frame,
+/// and a far match must pass [`REACQUIRE_SCORE`].
+///
+/// Cost per frame, with `T` ≤ [`TEMPLATE_SIDE`]² template points and an analysis frame of `P`
+/// pixels: the pyramid and the difference are `O(P)`; the coarse pass is at most
+/// `(2·MAX_RADIUS/2^level + 1)²·T` (about 0.4 M multiply-adds for a ball at 640 px wide); the
+/// refinement is at most `(COARSE_PEAKS + MAX_BLOBS + 1)` small windows of `T` points each.
 pub struct PointTracker {
     tmpl: Template,
+    /// `tmpl` at the coarse level
+    coarse: Template,
+    level: u32,
     pos: Vec2,
     vel: Vec2,
+    /// whether `vel` was measured (false at the start and after a long loss)
+    known: bool,
     lost: u32,
     base_radius: i64,
+    /// the previous frame at the coarse level, for the frame difference
+    prev: Luma,
 }
 
 impl PointTracker {
@@ -223,26 +406,73 @@ impl PointTracker {
             return None;
         }
         let tmpl = Template::capture(first, at.x, at.y, half)?;
-        let base_radius = (half.0.max(half.1) * 2).clamp(8, MAX_RADIUS / 2);
-        Some(PointTracker { tmpl, pos: at, vel: Vec2::ZERO, lost: 0, base_radius })
+        let base_radius = (tmpl.half.0.max(tmpl.half.1) * 2).clamp(8, MAX_RADIUS / 2);
+        // coarse enough to be cheap, fine enough that the object stays a few pixels wide
+        let small = tmpl.half.0.min(tmpl.half.1);
+        let mut level = 0;
+        while level < MAX_LEVEL && (small >> (level + 1)) >= 2 {
+            level += 1;
+        }
+        let (coarse, level, prev) = loop {
+            let prev = first.level(level);
+            let f = f64::from(1u32 << level);
+            let ch = ((tmpl.half.0 as f64 / f).round() as i64, (tmpl.half.1 as f64 / f).round() as i64);
+            match Template::capture(&prev, at.x / f, at.y / f, (ch.0.max(1), ch.1.max(1))) {
+                Some(c) => break (c, level, prev),
+                None if level > 0 => level -= 1,
+                None => break (tmpl.clone(), 0, prev),
+            }
+        };
+        Some(PointTracker { tmpl, coarse, level, pos: at, vel: Vec2::ZERO, known: false, lost: 0, base_radius, prev })
     }
 
     /// Where the object is in `img` (the next frame), or `None` when it was not found there.
     pub fn step(&mut self, img: &Luma) -> Option<(Vec2, f32)> {
+        let cur = img.level(self.level);
+        let f = f64::from(1u32 << self.level);
         let pred = self.pos + self.vel;
+        let first = (FIRST_RADIUS_OF_WIDTH * img.w as f64).ceil() as i64;
+        let near = if self.known { (self.base_radius as f64 + 1.5 * self.vel.length()).min(MAX_RADIUS as f64) as i64 } else { first.max(self.base_radius) };
         let grow = i64::from(self.lost.min(6)) + 1;
-        let r = ((self.base_radius as f64 + self.vel.length()).min(MAX_RADIUS as f64) as i64).saturating_mul(grow).min(MAX_RADIUS);
-        let found = search(img, &self.tmpl, pred, r).filter(|(_, s)| *s >= MIN_SCORE);
-        match found {
-            Some((p, score)) => {
+        let r = near.saturating_mul(grow).clamp(1, MAX_RADIUS);
+        let refine = (f as i64) + 1;
+        let mut cands: Vec<(Vec2, i64)> =
+            coarse_peaks(&cur, &self.coarse, pred * (1.0 / f), (r as f64 / f).ceil() as i64).into_iter().map(|(p, _)| (p * f, refine)).collect();
+        // the changed blobs: near the path while tracking, a doubling region once lost
+        let region = (r as f64) * f64::from(1u32 << self.lost.min(10));
+        let box_area = ((2 * self.coarse.half.0 + 1) * (2 * self.coarse.half.1 + 1)).max(1) as usize;
+        for b in motion_blobs(&self.prev, &cur, pred * (1.0 / f), region / f, 16 * box_area) {
+            let rho = ((b.half * f).ceil() as i64 + 2).clamp(refine, MAX_RADIUS / 2);
+            cands.push((b.at * f, rho));
+        }
+        cands.push((pred, refine));
+        self.prev = cur;
+        let mut best: Option<(Vec2, f32, f32)> = None;
+        for (c, rho) in cands {
+            let Some((p, s)) = search(img, &self.tmpl, c, rho) else { continue };
+            let d = (p - pred).length() / r as f64;
+            if s < if d <= 1.0 { MIN_SCORE } else { REACQUIRE_SCORE } {
+                continue;
+            }
+            let rank = s - DISTANCE_COST * d.min(4.0) as f32;
+            if best.is_none_or(|b| rank > b.2) {
+                best = Some((p, s, rank));
+            }
+        }
+        match best {
+            Some((p, score, _)) => {
                 let moved = (p - self.pos) * (1.0 / f64::from(self.lost + 1));
-                self.vel = self.vel * 0.3 + moved * 0.7;
+                self.vel = if self.known && self.lost == 0 { self.vel * 0.2 + moved * 0.8 } else { moved };
+                self.known = true;
                 self.pos = p;
                 self.lost = 0;
-                if score >= REFRESH_SCORE
-                    && let Some(now) = self.tmpl.resample(img, p.x, p.y)
-                {
-                    self.tmpl = self.tmpl.blend(&now, 0.15);
+                if score >= REFRESH_SCORE {
+                    if let Some(now) = self.tmpl.resample(img, p.x, p.y) {
+                        self.tmpl = self.tmpl.blend(&now, 0.15);
+                    }
+                    if let Some(now) = self.coarse.resample(&self.prev, p.x / f, p.y / f) {
+                        self.coarse = self.coarse.blend(&now, 0.15);
+                    }
                 }
                 Some((p, score))
             }
@@ -250,6 +480,9 @@ impl PointTracker {
                 self.pos = Vec2::new(pred.x.clamp(0.0, img.w as f64), pred.y.clamp(0.0, img.h as f64));
                 self.vel = self.vel * 0.8;
                 self.lost = self.lost.saturating_add(1);
+                if self.lost > 3 {
+                    self.known = false;
+                }
                 None
             }
         }
@@ -364,6 +597,42 @@ mod tests {
         let _ = search(&one, &t, Vec2::new(f64::NAN, 0.0), 5);
         assert!(motion_centroid(&one, &Luma { w: 2, h: 1, px: vec![0.0, 1.0] }).is_none());
         let _ = Template::capture(&one, 0.0, 0.0, (i64::MAX, i64::MIN));
+    }
+
+    #[test]
+    fn motion_blobs_find_the_mover_not_the_static_line() {
+        let line = |dots: &[(f64, f64, f64)]| {
+            let mut f = frame(160, 90, dots);
+            for y in 0..90 {
+                for x in 78..82 {
+                    f.px[y * 160 + x] = 0.95;
+                }
+            }
+            f
+        };
+        let (a, b) = (line(&[(40.0, 45.0, 3.0)]), line(&[(52.0, 40.0, 3.0)]));
+        let blobs = motion_blobs(&a, &b, Vec2::new(80.0, 45.0), 1e9, 200);
+        // where the ball was and where it is; nothing on the line
+        assert_eq!(blobs.len(), 2, "{blobs:?}");
+        assert!(blobs.iter().any(|b| (b.at - Vec2::new(52.0, 40.0)).length() < 1.5), "{blobs:?}");
+        assert!(blobs.iter().all(|b| (b.at.x - 80.0).abs() > 5.0), "{blobs:?}");
+        assert!(motion_blobs(&a, &a, Vec2::new(80.0, 45.0), 1e9, 200).is_empty());
+        // hostile inputs
+        assert!(motion_blobs(&a, &Luma { w: 2, h: 1, px: vec![0.0, 1.0] }, Vec2::ZERO, 5.0, 9).is_empty());
+        assert!(motion_blobs(&a, &b, Vec2::new(f64::NAN, 0.0), 5.0, 9).is_empty());
+        let _ = motion_blobs(&a, &b, Vec2::new(-1e300, 1e300), f64::INFINITY, usize::MAX);
+    }
+
+    #[test]
+    fn finds_a_ball_moving_far_on_the_first_frame() {
+        // 30 px a frame at 320 wide: far beyond the object-sized window
+        let first = frame(320, 180, &[(60.0, 90.0, 4.0)]);
+        let mut t = PointTracker::new(&first, Vec2::new(60.0, 90.0), (5, 5)).unwrap();
+        for k in 1..8 {
+            let x = 60.0 + 30.0 * k as f64;
+            let p = t.step(&frame(320, 180, &[(x, 90.0, 4.0)])).map(|(p, _)| p);
+            assert!(p.is_some_and(|p| (p.x - x).abs() < 1.0), "frame {k}: {p:?} vs {x}");
+        }
     }
 
     #[test]
