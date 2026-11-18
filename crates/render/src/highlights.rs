@@ -26,11 +26,15 @@
 //!   misses scoreboards that move, fade or sit on moving video; a channel logo that animates
 //!   reads as a change.
 //!
+//! - **Speech** ([`filmagic_audio_dsp::speech`]): where someone talks, so that a suggested In or
+//!   Out does not cut a word (a player's call, a commentator) in half.
+//!
 //! [`find_highlights`] turns the cues into ranked segments: rallies (runs of impacts at a rally's
 //! cadence) and peaks of the combined score, each with a suggested In and Out that does not cut
-//! into a rally and lands where the picture is quietest nearby.
+//! into a rally or a sentence and lands where the picture is quietest nearby.
 
 use filmagic_audio_dsp::fft::Fft;
+use filmagic_audio_dsp::speech::{SpeechDetector, SpeechParams};
 
 /// Analysis sample rate of the sound, Hz (sounds are read already decimated to it).
 pub const AUDIO_RATE: u32 = 16_000;
@@ -73,6 +77,8 @@ pub struct AudioCues {
     pub onsets: Vec<Onset>,
     /// Sustained cheering: (start, end, rise over the baseline in dB), seconds.
     pub cheers: Vec<(f64, f64, f32)>,
+    /// Speech: (start, end), seconds.
+    pub speech: Vec<(f64, f64)>,
 }
 
 /// A scoreboard-like change of the picture (heuristic).
@@ -119,6 +125,7 @@ pub struct AudioAnalyser {
     im: Vec<f32>,
     /// Frames analysed at most (the caller's cap on the span); later samples are ignored.
     max_frames: usize,
+    speech: SpeechDetector,
 }
 
 /// Bins of the band read (150 Hz to 7 kHz).
@@ -146,6 +153,7 @@ impl AudioAnalyser {
             re: vec![0.0; N],
             im: vec![0.0; N],
             max_frames,
+            speech: SpeechDetector::new(f64::from(AUDIO_RATE), SpeechParams::default()),
         }
     }
 
@@ -154,7 +162,11 @@ impl AudioAnalyser {
             if self.flux.len() >= self.max_frames {
                 return;
             }
+            let start = self.pending.len();
             self.pending.extend(chunk.iter().map(|x| if x.is_finite() { x.clamp(-4.0, 4.0) } else { 0.0 }));
+            if let Some(new) = self.pending.get(start..) {
+                self.speech.process(new);
+            }
             while self.pending.len() >= N && self.flux.len() < self.max_frames {
                 self.frame();
                 self.pending.drain(..HOP);
@@ -198,7 +210,8 @@ impl AudioAnalyser {
         let onsets = pick_onsets(&self.flux, &self.level_db);
         let cheer = cheer_curve(&self.level_db, &self.flatness);
         let cheers = cheer_events(&cheer, &self.level_db);
-        AudioCues { level_db: self.level_db, cheer, onsets, cheers }
+        let speech = self.speech.finish().segments.iter().map(|g| (g.start_s, g.end_s)).collect();
+        AudioCues { level_db: self.level_db, cheer, onsets, cheers, speech }
     }
 }
 
@@ -526,6 +539,8 @@ pub struct Highlight {
     pub motion: Option<f64>,
     /// A scoreboard-like change during the moment or just after (heuristic).
     pub board: bool,
+    /// Someone speaks during the moment; its suggested In and Out do not cut a word.
+    pub speech: bool,
 }
 
 impl Highlight {
@@ -546,6 +561,9 @@ impl Highlight {
         }
         if self.board {
             v.push("scoreboard (heuristic)");
+        }
+        if self.speech {
+            v.push("speech");
         }
         v
     }
@@ -590,6 +608,7 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
     let cheers: Vec<(f64, f64, f32)> = cues.audio.as_ref().map(|a| a.cheers.clone()).unwrap_or_default();
     let motion = cues.picture.as_ref().map(|p| (p.times.clone(), motion_norm(p)));
     let board: Vec<f64> = cues.picture.as_ref().map(|p| p.board.iter().map(|b| b.t).collect()).unwrap_or_default();
+    let speech: Vec<(f64, f64)> = cues.audio.as_ref().map(|a| a.speech.clone()).unwrap_or_default();
     let mut found: Vec<Highlight> = Vec::new();
 
     let describe = |start: f64, end: f64, rally: bool, hits: &[Onset]| -> Highlight {
@@ -617,7 +636,19 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
         }
         weight += 0.05;
         let score = (score / weight.max(1e-9)).clamp(0.0, 1.0);
-        Highlight { start, end, suggested: (start, end), score, rally, impacts: hits.len(), cadence, cheer_db: cheer, motion: mot, board: has_board }
+        Highlight {
+            start,
+            end,
+            suggested: (start, end),
+            score,
+            rally,
+            impacts: hits.len(),
+            cadence,
+            cheer_db: cheer,
+            motion: mot,
+            board: has_board,
+            speech: false,
+        }
     };
 
     // rallies: runs of impacts at a rally's cadence
@@ -693,8 +724,16 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
         // never into another rally: the previous one's end and the next one's first impact bound the reach
         let before = rallies.iter().map(|r| r.1).filter(|e| *e <= h.start + 1e-9).fold(0.0f64, f64::max);
         let after = rallies.iter().map(|r| r.0).filter(|s| *s >= h.end - 1e-9).fold(span, f64::min);
-        let i = quiet_near(motion.as_ref(), h.start, 1.5, -1.0, before);
-        let out = quiet_near(motion.as_ref(), h.end, 1.5, 1.0, after);
+        let mut i = quiet_near(motion.as_ref(), h.start, 1.5, -1.0, before);
+        let mut out = quiet_near(motion.as_ref(), h.end, 1.5, 1.0, after);
+        // a cut inside a sentence moves out to its edge, up to 3 s, never into another rally
+        if let Some(g) = speech.iter().find(|g| g.0 < i && i < g.1) {
+            i = if i - g.0 <= 3.0 && g.0 >= before { g.0 } else { i };
+        }
+        if let Some(g) = speech.iter().find(|g| g.0 < out && out < g.1) {
+            out = if g.1 - out <= 3.0 && g.1 <= after { g.1 } else { out };
+        }
+        h.speech = speech.iter().any(|g| g.0 < out && g.1 > i);
         h.suggested = (i.max(0.0).min(h.start), out.min(span).max(h.end));
     }
     found.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.start.total_cmp(&b.start)));
@@ -840,6 +879,32 @@ mod tests {
         // rally mode: the lone hits are no moment
         let only = find_highlights(&cues, &Options { mode: Mode::Rally, ..Options::default() });
         assert!(only.iter().all(|x| x.rally));
+    }
+
+    /// A voice-like sound: harmonics of 140 Hz swelling at a syllable rate of 4 Hz.
+    fn voice(x: &mut [f32], a: f64, b: f64) {
+        for (i, v) in x.iter_mut().enumerate() {
+            let t = i as f64 / AUDIO_RATE as f64;
+            if t >= a && t <= b {
+                let env = 0.5 + 0.5 * (2.0 * std::f64::consts::PI * 4.0 * t).sin();
+                let tone: f64 = (1..8).map(|k| (2.0 * std::f64::consts::PI * 140.0 * k as f64 * t).sin() / k as f64).sum();
+                *v += (0.12 * env * tone) as f32;
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_does_not_split_a_sentence() {
+        // a rally from 4 s to 7.2 s; someone speaks from 7.6 s to 10 s, over where the Out would be
+        let clicks: Vec<f64> = (0..5).map(|i| 4.0 + 0.8 * i as f64).collect();
+        let mut x = signal(16.0, &clicks, None);
+        voice(&mut x, 7.6, 10.0);
+        let audio = analyse(&x);
+        assert!(audio.speech.iter().any(|g| g.0 < 8.8 && g.1 > 9.5), "{:?}", audio.speech);
+        let h = find_highlights(&Cues { span: 16.0, audio: Some(audio), picture: None }, &Options::default());
+        let r = h.iter().find(|x| x.rally).unwrap();
+        assert!(r.speech && r.cues().contains(&"speech"), "{r:?}");
+        assert!(r.suggested.1 >= 9.7, "the Out waits for the end of the sentence: {:?}", r.suggested);
     }
 
     #[test]

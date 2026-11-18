@@ -541,6 +541,7 @@ fn segment_json(ask: &Ask, rank: usize, h: &Highlight) -> Value {
         "cheerDb": h.cheer_db.map(|d| round3(f64::from(d))),
         "motion": h.motion.map(round3),
         "scoreboardChange": h.board,
+        "speech": h.speech,
     });
     if let Target::Clip { item, .. } = &ask.target {
         let m = |s: f64| item.source_time_at(at(ask, s).clamp(item.start, (item.end() - Tick(1)).max(item.start))).seconds();
@@ -563,6 +564,11 @@ fn report(cues: &Cues, ask: &Ask) -> Value {
                 .map(|c| json!({"start": round3(at(ask, c.0).seconds()), "end": round3(at(ask, c.1).seconds()), "riseDb": round3(f64::from(c.2))}))
                 .collect()
         })
+        .unwrap_or_default();
+    let speech: Vec<Value> = cues
+        .audio
+        .as_ref()
+        .map(|a| a.speech.iter().take(500).map(|g| json!({"start": round3(at(ask, g.0).seconds()), "end": round3(at(ask, g.1).seconds())})).collect())
         .unwrap_or_default();
     let board: Vec<Value> = cues
         .picture
@@ -605,6 +611,7 @@ fn report(cues: &Cues, ask: &Ask) -> Value {
         "impacts": impacts.len(),
         "impactTimes": impacts.iter().take(MAX_IMPACT_TIMES).collect::<Vec<_>>(),
         "cheers": cheers,
+        "speech": speech,
         "scoreboardChanges": board,
         "warnings": warnings,
         "notes": notes,

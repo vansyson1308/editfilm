@@ -45,14 +45,15 @@ Each segment has:
 - `start` and `end` (`seconds`, `ticks`, `frame`), and for a clip also `media` start and end;
 - `suggestedIn` and `suggestedOut`. These start before the first impact and end after the last,
   and after the cheering that follows. They sit at the quietest picture within 1.5 s, and never
-  inside another rally, so the cut does not land mid-motion;
-- `cues`: those that fired, from `impacts`, `rally`, `cheer`, `motion` and
-  `scoreboard (heuristic)`;
+  inside another rally, so the cut does not land mid-motion. One that would cut a sentence moves
+  to where the speech ends or begins (up to 3 s);
+- `cues`: those that fired, from `impacts`, `rally`, `cheer`, `motion`, `scoreboard (heuristic)`
+  and `speech`;
 - `impacts`, `cadenceSeconds`, `cheerDb` (the rise over the surrounding level), `motion` (0–1)
   and `scoreboardChange`.
 
 The result also lists every impact heard (`impactTimes`, at most 2000; counting paddle hits needs
-no other tool), the stretches of `cheers`, and the `scoreboardChanges`.
+no other tool), the stretches of `cheers` and of `speech`, and the `scoreboardChanges`.
 
 ### Cost
 
@@ -76,6 +77,7 @@ These are measurements, not judgement. None of them knows what it hears or sees.
 | Rally | A run of at least `minHits` impacts whose gaps all lie within `cadence` | Racket-sport rallies at a steady exchange | Tell two players' hits from one person bouncing a ball. A rally with a long lob breaks in two unless `cadence` is widened |
 | Cheering | A sustained (≥ 0.6 s) rise of the median level 6 dB or more over the 20th percentile of the surrounding 20 s, with a high spectral flatness (noise-like sound) | Applause, a crowd cheering, a shout of a group | Tell a cheer from wind, rain, traffic or a crowd talking loudly. Hear a quiet crowd, or one that never pauses |
 | Motion | Mean absolute luma difference of successive sampled frames on a 128×72 grid, scaled to the footage's busiest 5 % | How much of the picture changes: players running, a burst of action | See what moves. A pan, a zoom or a lighting change reads as motion; a small fast ball barely does |
+| Speech | The speech detector of `audio.speechSegments` (voicing and syllabic level modulation, no model) | Someone talking: a player's call, a commentator. A suggested In or Out inside a sentence moves to its edge, up to 3 s | Tell who speaks or what is said. A sung melody can read as speech |
 | Scoreboard (heuristic) | A 16×9 cell of the frame that holds still with fine detail for most of the footage, then changes for a moment while most other such cells do not | A burned-in score or clock that changes between points | Read digits. Find a scoreboard that moves, fades, or sits on moving video. An animated logo reads as a change |
 
 ## `clip.speedRamp`: one command for a speed ramp
