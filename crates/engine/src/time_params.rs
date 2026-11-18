@@ -331,6 +331,26 @@ fn call_base(id: &str, k: &TimeKey, top: &Value) -> Base {
     }
 }
 
+/// A source time is converted once, so a `frame` or `timecode` given for several clips (`clips`
+/// of `clip.frameHoldOptions`) must mean the same media time in each: their media must share a
+/// frame rate and a start timecode. Seconds and ticks do not depend on the media.
+fn one_clock_for_all(s: &Session, id: &str, k: &TimeKey, top: &Value) -> Result<()> {
+    let counted = top.get(&k.key).and_then(Value::as_object).is_some_and(|o| o.contains_key("frame") || o.contains_key("frames") || o.contains_key("timecode"));
+    let Some(clips) = top.get("clips").and_then(Value::as_array).filter(|c| counted && k.path.is_empty() && c.len() > 1) else { return Ok(()) };
+    let clock = |c: &Value| source_clock(s, id, &serde_json::json!({ "clip": c }), top).map(|k| (k.rate, k.drop_frame, k.start_frame));
+    let first = clips.first().and_then(clock);
+    if clips.iter().any(|c| clock(c) != first) {
+        return Err(bad(
+            id,
+            format!(
+                "`{}` in frames or timecode is source time of each clip, and these clips' media differ in frame rate or start timecode: give the flat `timecode` key (read per clip), {{\"seconds\": s}}, or one call per clip",
+                k.key
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Turn every time object (and every float tick count) under the time-valued parameters of
 /// command `id` into integer ticks. Integer ticks pass through untouched.
 pub fn normalize(s: &Session, id: &str, mut params: Value) -> Result<Value> {
@@ -338,6 +358,9 @@ pub fn normalize(s: &Session, id: &str, mut params: Value) -> Result<Value> {
     let top = params.clone();
     for k in keys {
         let base = call_base(id, k, &top);
+        if base == Base::Source {
+            one_clock_for_all(s, id, k, &top)?;
+        }
         let path: Vec<&str> = k.path.iter().map(|(p, _)| p.as_str()).collect();
         apply(&mut params, &path, 0, &mut |obj| convert_in(s, id, k, base, obj, &top))?;
     }
