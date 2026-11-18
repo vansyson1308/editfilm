@@ -385,7 +385,7 @@ fn analyse(w: &Work, o: Opts, prog: &filmagic_export::Progress) -> std::result::
         v
     };
     if subject.iter().all(Option::is_none) {
-        notes.push("nothing was found moving: the crop stays centred".to_string());
+        notes.push("nothing was found moving: the crop stays centred. A small, fast subject such as a ball moves too little of the frame to be found: seed it with `subject: {\"point\": [x, y], \"size\": px}` or `{\"box\": [x, y, w, h]}`".to_string());
     }
     let cx = axis(subject.iter().map(|s| s.map(|p| p.x)).collect(), hw, src_w);
     let cy = axis(subject.iter().map(|s| s.map(|p| p.y)).collect(), hh, src_h);
