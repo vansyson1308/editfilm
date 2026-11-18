@@ -854,3 +854,47 @@ fn media_cache_folders_may_not_overlap_the_default_engine_folder() {
     let ok = tempfile::tempdir().unwrap();
     s.execute("prefs.set", json!({"key": "mediaCache.location", "value": ok.path().to_string_lossy()})).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn proxies_ingest_copies_and_interchange_media_never_land_in_the_vieneu_engine_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut s = vieneu_session(root.path(), false);
+    let engine = root.path().join("engine");
+    let site = engine.join("venv/lib/python3.12/site-packages");
+    std::fs::create_dir_all(&site).unwrap();
+    let link = root.path().join("innocent");
+    std::os::unix::fs::symlink(&engine, &link).unwrap();
+    // file media, so media.createProxies is enabled
+    s.execute("tts.create", json!({"text": "Hello.", "voice": "basic-male", "dir": root.path().join("media").to_string_lossy()})).unwrap();
+    let snap = (*s.project).clone();
+    for dest in [site.clone(), link.join("venv/lib/python3.12/site-packages"), root.path().join("x/../engine/venv")] {
+        let d = dest.to_string_lossy();
+        let e = s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": d})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "ingest {d}: {e}");
+        let e = s.execute("media.createProxies", json!({"destination": d})).unwrap_err().to_string();
+        assert!(e.contains("engine folder"), "proxies {d}: {e}");
+        for cmd in ["file.exportAaf", "file.exportOmf"] {
+            let e = s.execute(cmd, json!({"path": dest.join("x.aaf").to_string_lossy(), "mixdownVideo": true, "audio": "separate"})).unwrap_err().to_string();
+            assert!(e.contains("engine folder"), "{cmd} {d}: {e}");
+        }
+    }
+    assert_eq!(s.project.settings.ingest, snap.settings.ingest, "the ingest settings are unchanged");
+    assert!(s.prefs.auto_save.scratch_folders.is_empty(), "the folder was not trusted");
+    let written: Vec<_> = walk(&engine).into_iter().filter(|p| !p.starts_with(engine.join("work"))).collect();
+    assert!(written.is_empty(), "{written:?}");
+    // a destination that arrives trusted anyway (a project file, a folder chosen earlier) is
+    // still refused where the copy is made
+    let wav = root.path().join("tone.wav");
+    std::fs::write(&wav, crate::voiceover::write_wav_f32(&[0.0; 4800], 48_000)).unwrap();
+    let d = site.to_string_lossy().into_owned();
+    s.prefs.auto_save.scratch_folders.push(d.clone());
+    let ing = &mut std::sync::Arc::make_mut(&mut s.project).settings.ingest;
+    (ing.enabled, ing.destination) = (true, Some(d));
+    ing.action = filmagic_project::IngestAction::Copy;
+    let e = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).map(|v| v.to_string()).unwrap_or_else(|e| e.to_string());
+    assert!(e.contains("engine folder"), "{e}");
+    assert!(!site.join("tone.wav").exists());
+    // elsewhere is fine
+    s.execute("project.ingestSettings", json!({"enabled": true, "action": "copy", "destination": root.path().join("ingest").to_string_lossy()})).unwrap();
+}

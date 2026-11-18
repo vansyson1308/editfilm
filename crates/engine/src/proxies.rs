@@ -213,8 +213,16 @@ impl Drop for ReservedOutput {
     }
 }
 
+/// Refuse writing into `dir` when it is inside VieNeu's engine folder `engine` (its Python
+/// environment runs what lands there, a `.pth` file in `site-packages` among them).
+fn outside_engine(engine: Option<&Path>, dir: &Path) -> Result<()> {
+    crate::narration::refuse_inside_engine(engine, dir).map_err(EngineError::Other)
+}
+
 /// Reserve a numbered output name without following a later replacement of its pathname.
-fn reserve_unique_path(dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[String]) -> Result<ReservedOutput> {
+/// Never inside VieNeu's engine folder `engine`.
+fn reserve_unique_path(engine: Option<&Path>, dir: &Path, stem: &str, suffix: &str, ext: &str, taken: &[String]) -> Result<ReservedOutput> {
+    outside_engine(engine, dir)?;
     std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
     let mut n = 1;
     loop {
@@ -487,6 +495,10 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
         crate::project_tools::trusted_scratch(s.project.settings.scratch.captured.as_deref(), s.path.as_deref(), &s.prefs.auto_save.scratch_folders)
             .map(|d| d.join("Proxies").to_string_lossy().into_owned())
     });
+    let engine = crate::narration::vieneu_engine(s);
+    if let Some(d) = dest.as_deref().filter(|d| !d.is_empty()) {
+        outside_engine(engine.as_deref(), Path::new(d)).map_err(|e| bad("media.createProxies", e.to_string()))?;
+    }
     let mut work = Vec::new();
     let mut taken = Vec::new();
     let mut skipped = Vec::new();
@@ -507,7 +519,7 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
             }
         };
         let stem = Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
-        let output = reserve_unique_path(&proxy_dir(&path, dest.as_deref()), &stem, "_Proxy", pr.extension, &taken)?;
+        let output = reserve_unique_path(engine.as_deref(), &proxy_dir(&path, dest.as_deref()), &stem, "_Proxy", pr.extension, &taken)?;
         let out = output.path().to_string_lossy().into_owned();
         taken.push(out.clone());
         work.push((i, output, pr));
@@ -529,6 +541,7 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
 fn copy_for_ingest(s: &mut Session, item: ItemId, path: &str, dir: &Path) -> Result<String> {
     let source = Path::new(path);
     let name = source.file_name().ok_or_else(|| bad("ingest", "source has no file name"))?;
+    outside_engine(crate::narration::vieneu_engine(s).as_deref(), dir)?;
     let mut input = std::fs::File::open(source).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     std::fs::create_dir_all(dir).map_err(|e| EngineError::Other(format!("{}: {e}", dir.display())))?;
     let mut number = 1u64;
@@ -629,7 +642,7 @@ pub fn ingest(s: &mut Session, items: &[ItemId]) -> Result<Value> {
                     _ => Path::new(&path).parent().unwrap_or(Path::new(".")).join("Ingested Media"),
                 };
                 let stem = Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name);
-                let output = reserve_unique_path(&dir, &stem, "", pr.extension, &taken)?;
+                let output = reserve_unique_path(crate::narration::vieneu_engine(s).as_deref(), &dir, &stem, "", pr.extension, &taken)?;
                 let out = output.path().to_string_lossy().into_owned();
                 taken.push(out.clone());
                 work.push((i, output, pr));
@@ -769,6 +782,11 @@ pub fn commands() -> Vec<CommandSpec> {
                 if let Some(d) = p.get("destination") {
                     ing.destination = d.as_str().filter(|d| !d.is_empty()).map(str::to_string);
                     if let Some(d) = ing.destination.as_ref() {
+                        let abs = match s.path.as_deref().and_then(|p| Path::new(p).parent()) {
+                            Some(dir) if Path::new(d).is_relative() => dir.join(d),
+                            _ => PathBuf::from(d),
+                        };
+                        outside_engine(crate::narration::vieneu_engine(s).as_deref(), &abs).map_err(|e| bad("project.ingestSettings", e.to_string()))?;
                         crate::project_tools::remember_scratch_folders(s, std::slice::from_ref(d));
                     }
                 }

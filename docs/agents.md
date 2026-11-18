@@ -623,17 +623,19 @@ which an agent can move. The models folder holds VieNeu's data only: `vieneu/cac
 model) and `vieneu/voices.json`. The child process gets none of Filmagic's `FILMAGIC_*` variables
 (the control token among them) and no `PYTHON*` variables. Every Python runs isolated (`-I`), so
 nothing beside the bridge or in the working directory is ever imported, in an empty working directory.
-The models folder may not overlap the engine directory (neither inside the other). The engine
-directory is created first, symbolic links are resolved, and on Windows and macOS letter case is
-ignored, as those file systems do. This is checked by `prefs.set`, by `models.setLocation` and
+The models folder may not overlap the engine directory (neither inside the other). Symbolic links
+are resolved as far as the folders exist, and on Windows and macOS letter case is ignored, as those
+file systems do, so the check also holds before the engine directory exists. This is checked by `prefs.set`, by `models.setLocation` and
 again before every run; `prefs.set` refuses the media cache folders (`mediaCache.location`,
 `mediaCache.databaseLocation`) there too. Nothing an agent names is written inside the engine
 directory either. These are refused there: narrations (`tts.create` and `tts.edit` with `dir`),
 `file.exportMedia` and the other exports (the output file and its folder, which also holds OP-Atom's
-audio files), project saves, `file.projectManager`'s destination, Scratch Disks folders, captions,
+audio files), AAF and OMF media, project saves, `file.projectManager`'s destination, Scratch Disks
+folders, `project.ingestSettings` and ingest copies, `media.createProxies` and transcodes, captions,
 markers, presets and `lut.export`. Filmagic runs its environment only if it created it: an existing
 `venv` folder without Filmagic's marker is reported by `tts.engines` and refused by
-`tts.setupVieneu`, with the advice to delete it.
+`tts.setupVieneu`, with the advice to delete it. To install by hand, make an environment in a folder
+of your own and name its interpreter with `FILMAGIC_VIENEU_PYTHON` (`installSteps` shows how).
 
 1. `tts.engines` reports whether a Python with `vieneu` was found, what was tried, and
    `installSteps` with the exact commands for this machine.

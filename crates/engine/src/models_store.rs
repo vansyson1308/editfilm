@@ -475,7 +475,9 @@ mod tests {
     #[test]
     fn the_setting_must_be_an_absolute_folder() {
         assert!(validate_setting(&json!("")).is_ok());
-        assert!(validate_setting(&json!(std::env::temp_dir().to_string_lossy())).is_ok());
+        // a fresh folder of its own: the temporary folder itself may hold the data directory
+        let fresh = tempfile::tempdir().unwrap();
+        assert!(validate_setting(&json!(fresh.path().join("models").to_string_lossy())).is_ok());
         for bad in [json!("models"), json!("./m"), json!(3), json!(null), json!(["/x"])] {
             assert!(validate_setting(&bad).is_err(), "{bad}");
         }

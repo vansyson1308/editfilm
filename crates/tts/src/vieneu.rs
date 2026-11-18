@@ -246,16 +246,14 @@ pub fn inside(path: &Path, dir: &Path) -> bool {
     starts_with_folded(&resolved(path), &resolved(dir), CASE_INSENSITIVE)
 }
 
-/// [`overlap`] for VieNeu's engine directory, which is created first: a folder that does not
-/// exist yet cannot be canonicalized, so its real spelling (case, links) would be unknown.
+/// [`overlap`] for VieNeu's engine directory, which need not exist yet: its existing part is
+/// canonicalized, the rest compared as written (letter case folded where the file system does).
 pub fn engine_overlaps(engine: &Path, other: &Path) -> bool {
-    let _ = std::fs::create_dir_all(engine);
     overlap(engine, other)
 }
 
-/// [`inside`] VieNeu's engine directory, which is created first (see [`engine_overlaps`]).
+/// [`inside`] VieNeu's engine directory, which need not exist yet (see [`engine_overlaps`]).
 pub fn inside_engine(engine: &Path, path: &Path) -> bool {
-    let _ = std::fs::create_dir_all(engine);
     inside(path, engine)
 }
 
@@ -568,10 +566,26 @@ pub fn install_steps(st: &Status, dirs: &Dirs) -> Vec<String> {
             if cfg!(windows) { "py -3".to_string() } else { "python3".to_string() }
         }
     };
-    out.push(format!("{py} -I -m venv {}", q(&dirs.venv())));
-    out.push(format!("{} -I -m pip install {PACKAGE_SPEC}", q(&dirs.venv_python())));
-    out.push("Then run tts.setupVieneu (it downloads the voice model, about 0.6 GB, into the models directory and lists the voices)".to_string());
+    out.push(format!(
+        "Run tts.setupVieneu {{\"install\": true}}: it creates Filmagic's own environment in {} and installs {PACKAGE_SPEC} there (Filmagic runs only an environment it created itself, so do not make that folder by hand)",
+        q(&dirs.venv())
+    ));
+    // by hand: an environment of the user's own, outside the engine folder, named by a person
+    let mine = manual_venv();
+    let mine_py = if cfg!(windows) { mine.join("Scripts").join("python.exe") } else { mine.join("bin").join("python") };
+    out.push(format!("Or by hand, in a folder of your own: {py} -I -m venv {}", q(&mine)));
+    out.push(format!("{} -I -m pip install {PACKAGE_SPEC}", q(&mine_py)));
+    out.push(format!(
+        "Then start Filmagic with {PYTHON_ENV} set to {} and run tts.setupVieneu (it downloads the voice model, about 0.6 GB, into the models directory and lists the voices)",
+        q(&mine_py)
+    ));
     out
+}
+
+/// A folder for an environment made by hand: `vieneu-venv` in the home folder.
+fn manual_venv() -> PathBuf {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).filter(|h| !h.is_empty());
+    home.map_or_else(|| PathBuf::from("vieneu-venv"), |h| PathBuf::from(h).join("vieneu-venv"))
 }
 
 /// Create the environment in the engine directory with `python` (when it is not there yet) and
@@ -587,9 +601,13 @@ pub fn install(python: &Python, dirs: &Dirs, cancel: Option<&AtomicBool>, log: &
         log(&format!("Creating a Python environment in {}", dirs.venv().display()));
         let mut cmd = command(&python.program, dirs, false)?;
         cmd.args(&python.args).args(["-I", "-m", "venv"]).arg(dirs.venv());
-        let out = run_process(cmd, b"", MAX_STDOUT, Duration::from_secs(600), cancel)?;
-        if !out.success || !vpy.is_file() {
-            return Err(format!("{} -m venv failed: {}", python.display(), out.stderr));
+        let made = run_process(cmd, b"", MAX_STDOUT, Duration::from_secs(600), cancel)
+            .and_then(|out| if out.success && vpy.is_file() { Ok(()) } else { Err(format!("{} -m venv failed: {}", python.display(), out.stderr)) });
+        if let Err(e) = made {
+            // a stopped or failed `venv` leaves a half-made folder without the marker, which would
+            // then be refused as not Filmagic's: remove it (only Filmagic got this far)
+            let _ = std::fs::remove_dir_all(dirs.venv());
+            return Err(e);
         }
         let marker = dirs.venv_marker();
         std::fs::write(&marker, b"This Python environment was created by Filmagic.\n").map_err(|e| format!("{}: {e}", marker.display()))?;
@@ -1109,13 +1127,23 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
     }
 
     #[test]
-    fn an_engine_folder_that_does_not_exist_yet_is_created_before_comparing() {
+    fn an_engine_folder_that_does_not_exist_yet_is_compared_without_creating_it() {
         let root = tempfile::tempdir().unwrap();
-        let engine = root.path().join("Local").join("Filmagic").join("vieneu");
+        let local = root.path().join("Local");
+        std::fs::create_dir_all(&local).unwrap();
+        let engine = local.join("Filmagic").join("vieneu");
         let d = Dirs { engine: engine.clone(), models: engine.join("bridge") };
         assert!(d.check().is_err());
-        assert!(engine.is_dir(), "created, so its real spelling is known");
+        #[cfg(unix)]
+        {
+            // a linked parent of a folder that does not exist yet
+            std::os::unix::fs::symlink(&local, root.path().join("alias")).unwrap();
+            let via = root.path().join("alias").join("Filmagic").join("vieneu").join("bridge");
+            assert!(Dirs { engine: engine.clone(), models: via }.check().is_err());
+            assert!(inside_engine(&engine, &root.path().join("alias/Filmagic/vieneu/venv/x.pth")));
+        }
         assert!(Dirs { engine: engine.clone(), models: root.path().join("models") }.check().is_ok());
+        assert!(!local.join("Filmagic").exists(), "comparing creates nothing");
     }
 
     /// NTFS and APFS treat `VIENEU` and `vieneu` as one folder, so a models folder spelled in
@@ -1129,6 +1157,21 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
             let d = Dirs { engine: engine.clone(), models: models.clone() };
             assert!(d.check().unwrap_err().contains("overlap"), "{}", models.display());
         }
+        assert!(!engine.exists(), "the engine folder need not exist, and is not created");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_venv_step_leaves_no_half_made_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let d = dirs(root.path());
+        // makes the folder, then fails (as a stopped `python -m venv` does)
+        let script = root.path().join("half-venv.sh");
+        std::fs::write(&script, "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nmkdir -p \"$last/lib\"\nexit 1\n").unwrap();
+        let py = Python::new("sh", &[&*script.to_string_lossy()], "host");
+        assert!(install(&py, &d, None, &mut |_| {}).unwrap_err().contains("venv failed"));
+        assert!(!d.venv().exists(), "removed, so a retry is not refused as not Filmagic's");
+        assert!(!d.foreign_venv());
     }
 
     #[cfg(unix)]
@@ -1338,8 +1381,14 @@ if [ "$op" = voices ]; then R '{{"ok":true,"sampleRate":48000,"voices":[{{"name"
         let root = tempfile::tempdir().unwrap();
         let d = dirs(root.path());
         let steps = install_steps(&Status::default(), &d);
-        assert!(steps.iter().any(|s| s.contains("-I -m venv") && s.contains(&*d.venv().to_string_lossy())), "{steps:?}");
+        assert!(steps.iter().any(|s| s.contains("tts.setupVieneu {\"install\": true}") && s.contains(&*d.venv().to_string_lossy())), "{steps:?}");
+        // the manual route makes an environment outside the engine folder and names it with the
+        // environment variable: a hand-made venv in the engine folder would be refused
+        let by_hand: Vec<&String> = steps.iter().filter(|s| s.contains("-I -m venv")).collect();
+        assert_eq!(by_hand.len(), 1, "{steps:?}");
+        assert!(!by_hand[0].contains(&*d.engine.to_string_lossy()), "{steps:?}");
         assert!(steps.iter().any(|s| s.contains("-I -m pip install vieneu==3.8.4")), "{steps:?}");
+        assert!(steps.iter().any(|s| s.contains(PYTHON_ENV)), "{steps:?}");
         assert!(steps.first().is_some_and(|s| s.contains("Python 3.10")), "no Python found: install it first");
     }
 

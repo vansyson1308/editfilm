@@ -164,16 +164,21 @@ Vietnamese narration uses VieNeu-TTS (Apache-2.0, offline, runs on the CPU), an 
 On Windows 10 or 11:
 
 1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/windows/). Tick **Add python.exe to PATH**, then open a new terminal.
-2. Let Filmagic set it up. Ask your agent to run `tts.setupVieneu {"install": true}`, or run `filmagic-cli exec tts.setupVieneu install=true wait=true`. This creates a Python environment in `%LOCALAPPDATA%\Filmagic\vieneu`, installs `vieneu==3.8.4` there (about 0.9 GB), downloads the voice model into the models folder (about 0.6 GB) and lists the voices. To do it by hand, `tts.engines` prints the exact commands. In Command Prompt:
+2. Let Filmagic set it up. Ask your agent to run `tts.setupVieneu {"install": true}`, or run `filmagic-cli exec tts.setupVieneu install=true wait=true`. This creates a Python environment in `%LOCALAPPDATA%\Filmagic\vieneu`, installs `vieneu==3.8.4` there (about 0.9 GB), downloads the voice model into the models folder (about 0.6 GB) and lists the voices. Filmagic runs only an environment it created itself, so don't make that folder by hand.
+
+   To install by hand instead, make an environment in a folder of your own and point Filmagic at it (`tts.engines` prints these commands for your machine). In Command Prompt:
    ```bat
-   py -3 -I -m venv "%LOCALAPPDATA%\Filmagic\vieneu\venv"
-   "%LOCALAPPDATA%\Filmagic\vieneu\venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   py -3 -I -m venv "%USERPROFILE%\vieneu-venv"
+   "%USERPROFILE%\vieneu-venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   set FILMAGIC_VIENEU_PYTHON=%USERPROFILE%\vieneu-venv\Scripts\python.exe
    ```
    In PowerShell:
    ```powershell
-   py -3 -I -m venv "$env:LOCALAPPDATA\Filmagic\vieneu\venv"
-   & "$env:LOCALAPPDATA\Filmagic\vieneu\venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   py -3 -I -m venv "$env:USERPROFILE\vieneu-venv"
+   & "$env:USERPROFILE\vieneu-venv\Scripts\python.exe" -I -m pip install vieneu==3.8.4
+   $env:FILMAGIC_VIENEU_PYTHON = "$env:USERPROFILE\vieneu-venv\Scripts\python.exe"
    ```
+   Start Filmagic from that terminal, then run `tts.setupVieneu` (without `install`) to download the voice model.
 3. `tts.voices` now lists voices such as `vieneu:Hải Đăng` and `vieneu:Mai Anh`. Use them with `tts.create`, or pick **Vietnamese** in the Text to Speech panel.
 
 To use a Python you installed `vieneu` into yourself, start Filmagic with `FILMAGIC_VIENEU_PYTHON` set to that interpreter. For safety, no setting or command can choose the program Filmagic runs. VieNeu voices take a while to speak, so an agent runs `tts.render` (a job) before `tts.create`.
