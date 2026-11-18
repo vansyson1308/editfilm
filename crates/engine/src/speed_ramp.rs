@@ -205,7 +205,7 @@ struct Key {
 fn keys_of(it: &TrackItem, pts: &[Point]) -> Vec<Key> {
     let dir: i64 = if it.reverse { -1 } else { 1 };
     let mut ks: Vec<Key> = Vec::with_capacity(pts.len() * 2);
-    let mut push = |ks: &mut Vec<Key>, k: Key| match ks.last_mut() {
+    let push = |ks: &mut Vec<Key>, k: Key| match ks.last_mut() {
         Some(last) if (k.lin.0 - last.lin.0).saturating_mul(dir) <= 0 => *last = k,
         _ => ks.push(k),
     };
@@ -458,11 +458,8 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     if track.locked {
         return Err(EngineError::Edit(filmagic_edit::EditError::Locked));
     }
-    match s.project.item(old.item).map(|i| &i.kind) {
-        Some(filmagic_project::ItemKind::Graphic { .. } | filmagic_project::ItemKind::AdjustmentLayer { .. }) => {
-            return Err(bad(CMD, "a graphic or adjustment layer has no frames to ramp: animate its layers or effects with keyframes instead"));
-        }
-        _ => {}
+    if let Some(filmagic_project::ItemKind::Graphic { .. } | filmagic_project::ItemKind::AdjustmentLayer { .. }) = s.project.item(old.item).map(|i| &i.kind) {
+        return Err(bad(CMD, "a graphic or adjustment layer has no frames to ramp: animate its layers or effects with keyframes instead"));
     }
     if old.frame_hold.is_some() {
         return Err(bad(CMD, "the clip is a frame hold (it shows one frame): remove the hold (clip.frameHoldOptions) before ramping its speed"));
