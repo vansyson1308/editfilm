@@ -249,8 +249,34 @@ Volume, Channel Volume and Panner in Effect Controls and Properties, and the Vol
 clips in the Timeline (a drag is one undo step, Pen-tool keyframes, keyframe drags, a click or
 right-click on the line still reaches the clip; `FILMAGIC_UI_SHOTS=<dir>` writes `volume-*.png`).
 
+Audio safety tests (#15) use generated signals only: speech-like voiced tones with and without
+pauses, decaying noise bursts and low thunks as car doors, plucked notes, room-tone noise, steady
+tones. The detector (`crates/audio-dsp/src/speech.rs`) finds speech within 30–60 ms, also with no
+pause at all and over room tone, and finds nothing in bursts, thunks, plucked notes, tones, hum,
+beeps and silence. The engine (`crates/engine/src/audio_check_tests.rs`):
+- a no-speech Dialogue clip is not matched; other types get their own target with the ±12 dB cap;
+- speech segments of a clip, an item and a range are found;
+- razor, Add Edit and trim warn inside a sentence with the pauses around it, once for a linked
+  pair, and not when the check is off;
+- ducking follows speech (also from two overlapping Dialogue tracks), not room tone, at `depthDb`;
+- `mix.check` measures dialogue over its speech and the music under it, suggests the right fix
+  for music too loud or too quiet, ignores solo and asks for parts of a long film;
+- proxies, transcodes and OMF clip audio keep peaks above the limiter ceiling;
+- the `file.exportMedia` result reports its true peak.
+
+The export tests (`true_peak_limiter_*` in `crates/export/src/settings_tests.rs`):
+- a +2.7 dBFS tone is written at -1.0 dBTP by default;
+- audio under the ceiling is byte-identical with the limiter on or off, at 48 and 44.1 kHz, in
+  mono, stereo and 5.1;
+- float PCM exports keep their overs unless the limiter is turned on; a float setting with AAC,
+  MP3, FLAC or H.264 keeps the limiter;
+- every export reports its true peak.
+
+The limiter tests (`crates/audio-dsp/src/effects/dynamics.rs`): it returns to exact unity after an
+over, and with the export's margin it holds -1 dBTP on an fs/4 sine.
+
 Essential Sound engine tests (`crates/engine/src/essential_sound_tests.rs`) build projects from
-generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target (measured: 0.000 LU,
+generated speech-like and tonal WAVs: Auto-Match lands within ±0.5 LU of the target over the speech (measured: 0.02 LU,
 with and without a repair/clarity chain) and measures a mono clip as one channel (3.01 LU below the
 same signal as dual mono, within 0.1 LU of a one-channel meter over the file); ducking on a dialogue +
 music project gives keyframes within 60 ms of the expected times (measured 20 ms) and −15.00 dB in the
