@@ -802,3 +802,51 @@ fn the_no_control_message_says_what_works() {
     assert!(!why.contains("let `app_open`") && !why.contains("or let"), "{why}");
     assert!(why.contains("close it") && why.contains("--control"), "{why}");
 }
+
+/// A 16-bit mono WAV of `x` at `rate`.
+fn wav16(x: &[f32], rate: u32) -> Vec<u8> {
+    let data: Vec<u8> = x.iter().flat_map(|v| ((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let mut out = Vec::with_capacity(44 + data.len());
+    out.extend(b"RIFF");
+    out.extend((36 + data.len() as u32).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(rate.to_le_bytes());
+    out.extend((rate * 2).to_le_bytes());
+    out.extend(2u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend((data.len() as u32).to_le_bytes());
+    out.extend(data);
+    out
+}
+
+/// `story.highlights` with `wait: true` over headless MCP runs as a polled job (the session is
+/// not held for the analysis) and answers with the segments its `resultCommand` reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocking_highlights_call_over_mcp_answers_the_segments() {
+    let dir = std::env::temp_dir().join(format!("filmagic-mcp-highlights-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 16_000u32;
+    let mut x = vec![0.0f32; rate as usize * 10];
+    for c in [2.0, 2.8, 3.6, 4.4] {
+        let a = (c * f64::from(rate)) as usize;
+        for (k, v) in x.iter_mut().skip(a).take(48).enumerate() {
+            *v = 0.6 * (-(k as f32) / 10.0).exp() * if k % 2 == 0 { 1.0 } else { -1.0 };
+        }
+    }
+    let path = dir.join("hits.wav");
+    std::fs::write(&path, wav16(&x, rate)).unwrap();
+    let mut s = Session::default();
+    let item = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let mut c = Client::start(s);
+    c.init().await;
+    let r = c.call(1, "command_run", json!({"id": "story.highlights", "params": {"item": item, "wait": true}})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let answer: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((answer["status"].as_str(), answer["impacts"].as_u64()), (Some("done"), Some(4)), "{answer}");
+    assert_eq!(answer["segments"][0]["kind"], "rally", "{answer}");
+    let _ = std::fs::remove_dir_all(dir);
+}

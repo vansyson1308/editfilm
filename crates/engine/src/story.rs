@@ -1446,9 +1446,18 @@ fn list_clips(s: &mut Session, p: &Value) -> Result<Value> {
                     "endFrame": rate.frame_at(it.end()),
                     "sourceIn": round3(it.source_in.seconds()),
                 });
-                let extra: [(&str, Option<Value>); 6] = [
+                // a picture clip's speed ramp; a sound clip that carries one is silent
+                let ramp = it.has_speed_ramp().then(|| {
+                    if t.kind == TrackKind::Audio {
+                        json!("silent: a sound clip does not follow a speed ramp (clip.speedRamp clear:true)")
+                    } else {
+                        json!(true)
+                    }
+                });
+                let extra: [(&str, Option<Value>); 7] = [
                     ("link", it.link.map(Value::from)),
                     ("speed", (it.speed != 1.0).then(|| json!(it.speed))),
+                    ("speedRamp", ramp),
                     ("reverse", it.reverse.then_some(Value::Bool(true))),
                     ("disabled", (!it.enabled).then_some(Value::Bool(true))),
                     ("held", it.frame_hold.map(|h| json!(round3(h.seconds())))),

@@ -712,23 +712,40 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         "backward" => true,
         d => return Err(bad("masks.track", format!("direction `{d}`: forward or backward"))),
     };
-    if it.has_speed_ramp() {
-        // tracked keys are timed at the media frames tracked; on a ramped clip those are not the
-        // clip's keyframe clock
-        return Err(bad("masks.track", "the clip has a speed ramp: track the mask first and ramp afterwards, or remove the ramp (clip.speedRamp clear:true)"));
-    }
     let rate = s.project.item(it.item).map(|i| i.frame_rate()).unwrap_or(seq.settings.frame_rate);
     let fd = rate.frame_duration();
     let ph = time_p(s, p, "").unwrap_or(s.playhead());
-    let mt0 = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
-    let (a, b) = (it.source_time_at(it.start), it.source_time_at(it.end() - Tick(1)));
-    let (lo, hi) = (a.min(b), a.max(b));
-    let room = if backward { (mt0 - lo).0 / fd.0.max(1) } else { (hi - mt0).0 / fd.0.max(1) };
-    let steps = match u64_p(p, "frames") {
-        Some(n) => (n as i64).min(room),
-        None => room,
-    }
-    .max(0) as usize;
+    let ph = ph.clamp(it.start, it.end() - Tick(1));
+    let asked = u64_p(p, "frames");
+    // (media time decoded, time of the key written) for the start and each step. A clip without a
+    // speed ramp steps through its media frames and keys each at its own media time. A ramped
+    // clip steps through sequence frames: it decodes the frame each one shows and keys it at that
+    // moment's linear media time, the clock its keyframes are evaluated in (`effect_time_at`).
+    let schedule: Vec<(Tick, Tick)> = if it.has_speed_ramp() {
+        let sfd = seq.settings.frame_rate.frame_duration().max(Tick(1));
+        let room = if backward { (ph - it.start).0 / sfd.0 } else { (it.end() - Tick(1) - ph).0 / sfd.0 };
+        let n = asked.map_or(room, |n| (n.min(i64::MAX as u64) as i64).min(room)).clamp(0, crate::scene_detect::MAX_ANALYSED_FRAMES);
+        (0..=n)
+            .map(|k| {
+                let t = if backward { ph - Tick(sfd.0 * k) } else { ph + Tick(sfd.0 * k) };
+                (it.source_time_at(t), it.linear_source_time_at(t))
+            })
+            .collect()
+    } else {
+        let mt0 = it.source_time_at(ph);
+        let (a, b) = (it.source_time_at(it.start), it.source_time_at(it.end() - Tick(1)));
+        let (lo, hi) = (a.min(b), a.max(b));
+        let room = if backward { (mt0 - lo).0 / fd.0.max(1) } else { (hi - mt0).0 / fd.0.max(1) };
+        let n = asked.map_or(room, |n| (n.min(i64::MAX as u64) as i64).min(room)).clamp(0, crate::scene_detect::MAX_ANALYSED_FRAMES);
+        (0..=n)
+            .map(|k| {
+                let t = if backward { mt0 - Tick(fd.0 * k) } else { mt0 + Tick(fd.0 * k) };
+                (t, t)
+            })
+            .collect()
+    };
+    let steps = schedule.len().saturating_sub(1);
+    let (mt0, key0) = schedule.first().copied().unwrap_or((ph, ph));
     if steps == 0 {
         return Err(bad("masks.track", if backward { "already at the clip's first frame" } else { "already at the clip's last frame" }));
     }
@@ -741,7 +758,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
     job.progress.total.store(steps as u64, std::sync::atomic::Ordering::Relaxed);
     let keys: Arc<Mutex<Vec<(Tick, MaskPath)>>> = Arc::default();
     let (prog, res, out) = (job.progress.clone(), job.result.clone(), keys.clone());
-    let start_path = mask.path_at(mt0);
+    let start_path = mask.path_at(key0);
     let run = move || {
         use std::sync::atomic::Ordering;
         let t0 = web_time::Instant::now();
@@ -761,7 +778,7 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
         match frame(mt0) {
             None => err = Some("can't decode the clip".into()),
             Some(first) => {
-                lock(&out).push((mt0, path.clone()));
+                lock(&out).push((key0, path.clone()));
                 // what is inside the mask now, to notice a mask that slides off it: every step can
                 // fit the motion it finds while that motion is the background's
                 let start: Vec<Vec2> = path.flatten(0.5).into_iter().map(|q| q * first.k).collect();
@@ -782,8 +799,8 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
                         err = Some("stopped".into());
                         break;
                     }
-                    let t = if backward { mt0 - Tick(fd.0 * step as i64) } else { mt0 + Tick(fd.0 * step as i64) };
-                    let Some(next) = frame(t) else {
+                    let Some(&(decode, t)) = schedule.get(step) else { break };
+                    let Some(next) = frame(decode) else {
                         err = Some(format!("can't decode frame {step}"));
                         break;
                     };

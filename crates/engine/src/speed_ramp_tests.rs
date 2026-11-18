@@ -433,3 +433,44 @@ fn clearing_nothing_changes_nothing_and_over_cap_speeds_are_refused() {
     let r = ramp(&mut s, json!({"clip": c, "to": 70}));
     assert!(r["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("replaced")), "{r}");
 }
+
+#[test]
+fn ramping_a_clip_with_followed_keys_warns() {
+    let (mut s, c, _) = numbered();
+    for k in 0..10 {
+        s.execute(
+            "effects.setParam",
+            json!({"clip": c, "effect": "motion", "param": "position", "value": [8.0 + k as f64, 8.0], "time": {"frame": k * 4}, "keyframe": true}),
+        )
+        .unwrap();
+    }
+    let r = ramp(&mut s, json!({"clip": c, "to": 50}));
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no longer line up")), "{r}");
+}
+
+#[test]
+fn a_ramped_sound_clip_is_flagged_and_can_be_cleared() {
+    // only a hand-edited project gives a sound clip a ramp: it is silent, and says so
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    let a = s.active_sequence().unwrap().audio_tracks[0].items[0].id;
+    {
+        let id = s.state.active_sequence.unwrap();
+        let q = std::sync::Arc::make_mut(&mut s.project).sequence_mut(id).unwrap();
+        let (_, it) = q.find_item_mut(a).unwrap();
+        if it.effect("time_remap").is_none() {
+            it.effects.push(filmagic_project::find_effect("time_remap").unwrap().instance());
+        }
+        let p = it.effect_mut("time_remap").unwrap().param_mut("speed").unwrap();
+        p.keyframes = vec![filmagic_project::Keyframe::new(Tick(0), filmagic_project::ParamValue::Float(50.0))];
+        assert!(it.has_speed_ramp());
+    }
+    let listed = s.execute("sequence.clips", json!({})).unwrap();
+    let entry = listed["tracks"].as_array().unwrap().iter().flat_map(|t| t["clips"].as_array().unwrap().iter()).find(|c| c["clip"] == a.0).unwrap().clone();
+    assert!(entry["speedRamp"].as_str().unwrap().starts_with("silent"), "{entry}");
+    let mix = s.execute("mix.check", json!({})).unwrap();
+    assert!(mix["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("speed ramp")), "{mix}");
+    let r = s.execute("clip.speedRamp", json!({"clip": a.0, "clear": true})).unwrap();
+    assert_eq!(r["cleared"], true);
+    assert!(!clip(&s, a.0).has_speed_ramp());
+}

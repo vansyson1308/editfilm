@@ -453,6 +453,15 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     let (tid, old) = q.find_item(clip).ok_or_else(|| bad(CMD, format!("no clip {} in the active sequence", clip.0)))?;
     let track = q.track(tid).ok_or_else(|| bad(CMD, "the clip's track is gone"))?;
     if track.kind != TrackKind::Video {
+        // a sound clip that carries a ramp (a hand-edited project) is silent: clear takes it off
+        if flag(p, "clear", false)? && old.has_speed_ramp() && !track.locked {
+            let mut fixed = old.clone();
+            set_keys(&mut fixed, None);
+            s.edit_sequence("Remove Speed Ramp", |q, _, _| filmagic_edit::retime_group(q, &[fixed], false).map_err(EngineError::from))?;
+            return Ok(
+                json!({"clip": clip.0, "cleared": true, "warnings": [], "notes": ["the sound clip's speed ramp was removed: it plays again"], "pictureChange": Value::Null}),
+            );
+        }
         return Err(bad(CMD, "a speed ramp is set on the picture: name the video clip (its linked sound follows)"));
     }
     if track.locked {
@@ -540,6 +549,20 @@ fn speed_ramp(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if locked_partners > 0 {
         warnings.push(format!("{locked_partners} linked sound clip(s) on locked tracks were left as they are"));
+    }
+    // keys that followed the subject frame by frame (a tracked mask, an auto-reframe's Motion)
+    // were made for the old speeds: the clip now shows other frames at those moments
+    let tracked_masks = old.effects.iter().flat_map(|e| e.masks.iter()).filter(|m| m.path.keyframes.len() > 2).count();
+    let followed_motion = old.effect("motion").is_some_and(|e| e.params.values().any(|p| p.keyframes.len() >= 8));
+    if tracked_masks > 0 || followed_motion {
+        warnings.push(format!(
+            "keys that followed the subject ({}) no longer line up with the frames the clip now shows: track the masks again (masks.track) or re-run the reframe after ramping",
+            match (tracked_masks > 0, followed_motion) {
+                (true, true) => "tracked masks and Motion keyframes",
+                (true, false) => "tracked masks",
+                _ => "Motion keyframes",
+            }
+        ));
     }
     if had_ramp && !clear {
         notes.push("the clip's earlier speed ramp was replaced by this one".into());

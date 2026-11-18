@@ -680,9 +680,14 @@ pub fn find_highlights(cues: &Cues, o: &Options) -> Vec<Highlight> {
     // peaks of cheering or of a burst of impacts that is no rally
     if o.mode != Mode::Rally {
         for c in &cheers {
-            let (a, b) = ((c.0 - 3.0).max(0.0), (c.1 + 1.0).min(span));
-            // the padded span: a peak never reaches into a moment already found
-            if found.iter().any(|h| h.start < b && h.end > a) {
+            // cheering inside a moment already found belongs to it
+            if found.iter().any(|h| h.start < c.1 && h.end > c.0) {
+                continue;
+            }
+            // its lead-in and tail stop where a moment before or after it does
+            let a = found.iter().filter(|h| h.end <= c.0).map(|h| h.end).fold((c.0 - 3.0).max(0.0), f64::max);
+            let b = found.iter().filter(|h| h.start >= c.1).map(|h| h.start).fold((c.1 + 1.0).min(span), f64::min);
+            if b - a < 0.5 {
                 continue;
             }
             let hits: Vec<Onset> = impacts.iter().copied().filter(|x| x.t >= a && x.t <= b).collect();
@@ -904,6 +909,20 @@ mod tests {
             assert!(p.start >= rally.end - 1e-9 || p.end <= rally.start + 1e-9, "{p:?} overlaps {rally:?}");
             assert!(p.suggested.0 >= rally.end - 1e-9 || p.suggested.1 <= rally.start + 1e-9, "{p:?} cuts into {rally:?}");
         }
+    }
+
+    #[test]
+    fn a_cheer_after_a_rally_is_trimmed_not_dropped() {
+        // the rally's cheering ends at 6.5 s; another cheer at 7–8 s is a moment of its own
+        let mut x = signal(14.0, &[1.0, 1.8, 2.6, 3.4], Some((5.5, 6.5)));
+        let more = signal(14.0, &[], Some((7.0, 8.0)));
+        x.iter_mut().zip(&more).for_each(|(a, b)| *a += b);
+        let audio = analyse(&x);
+        assert_eq!(audio.cheers.len(), 2, "{:?}", audio.cheers);
+        let h = find_highlights(&Cues { span: 14.0, audio: Some(audio), picture: None }, &Options::default());
+        let rally = h.iter().find(|x| x.rally).unwrap();
+        let peak = h.iter().find(|x| !x.rally).expect("the second cheer is kept");
+        assert!(peak.start >= rally.end - 1e-9 && peak.start < 7.0 && peak.end >= 8.0, "{peak:?} after {rally:?}");
     }
 
     /// A voice-like sound: harmonics of 140 Hz swelling at a syllable rate of 4 Hz.

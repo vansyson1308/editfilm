@@ -162,7 +162,11 @@ keeps every remaining frame where it was, on both pieces.
 - **Limits.** A ramp's speeds are a factor of the clip's own speed, at most 1000×: a point above
   that is refused (raise the clip's speed with `clip.speedDuration` first). Keys that all say
   100 % are no ramp.
-- **Mask tracking.** `masks.track` is refused on a ramped clip: track first, then ramp.
+- **Mask tracking.** Ramp first, then track. On a ramped clip `masks.track` steps through the
+  sequence's frames, follows the frame each one shows, and keys it in the linear clock, so the
+  mask stays on its subject through the ramp. Keys that followed the subject before a ramp (a
+  tracked mask, an auto-reframe's Motion keys) no longer line up with the frames shown after
+  it: `clip.speedRamp` warns, and they need tracking or reframing again.
 - **Sound clips.** Time Remapping is a picture effect. A sound clip that carries a ramp (only a
   hand-edited project makes one) is silent.
 - **Speed/Duration.** Changing a ramped clip's speed with `clip.speedDuration` scales the ramp

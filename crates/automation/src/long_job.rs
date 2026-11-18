@@ -28,6 +28,13 @@ pub fn result_command(start: &Value) -> Option<(String, Value)> {
     Some((rc.get("command")?.as_str()?.to_string(), rc.get("params").cloned().unwrap_or(Value::Null)))
 }
 
+/// A job's answer that says it did not finish (`"status": "failed"` or `"cancelled"`): the error
+/// to report instead of a success.
+pub fn unfinished(id: &str, answer: &Value) -> Option<String> {
+    let status = answer.get("status").and_then(Value::as_str)?;
+    matches!(status, "failed" | "cancelled").then(|| format!("{id} {status}: {}", answer.get("error").and_then(Value::as_str).unwrap_or(status)))
+}
+
 /// Whether `command_run {id, params}` is a long call this module runs.
 pub fn is_long(id: &str, params: &Value) -> bool {
     LONG_COMMANDS.contains(&id) && params.get("wait").and_then(Value::as_bool) == Some(true)
@@ -88,7 +95,10 @@ impl FilmagicMcp {
                 // a job whose answer is not its report says which command reads it (story.highlights)
                 if let Some((cmd, p)) = result_command(&start) {
                     return match self.run(&cmd, p).await {
-                        Ok(v) => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
+                        Ok(v) => match unfinished(id, &v) {
+                            Some(e) => CallToolResult::error(vec![Content::text(e)]),
+                            None => CallToolResult::success(vec![Content::text(serde_json::to_string_pretty(&v).unwrap_or_default())]),
+                        },
                         Err(e) => CallToolResult::error(vec![Content::text(e.to_string())]),
                     };
                 }
