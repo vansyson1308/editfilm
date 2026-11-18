@@ -91,7 +91,7 @@ enum Target {
     Clip {
         seq: ItemId,
         clip: ClipId,
-        item: TrackItem,
+        item: Box<TrackItem>,
     },
     Item {
         item: ItemId,
@@ -125,14 +125,14 @@ fn whole(p: &Value, key: &str, lo: u64, hi: u64, default: u64) -> Result<u64> {
 }
 
 fn options(p: &Value) -> Result<(Options, usize)> {
-    let mut o = Options::default();
-    o.mode = match p.get("mode") {
+    let mode = match p.get("mode") {
         None | Some(Value::Null) => Mode::Auto,
         Some(Value::String(m)) if m == "auto" => Mode::Auto,
         Some(Value::String(m)) if m == "rally" => Mode::Rally,
         Some(Value::String(m)) if m == "peaks" => Mode::Peaks,
         Some(_) => return Err(bad(CMD, "`mode` must be \"auto\", \"rally\" or \"peaks\"")),
     };
+    let mut o = Options { mode, ..Options::default() };
     if let Some(c) = p.get("cadence").filter(|v| !v.is_null()) {
         let pair = c.as_array().filter(|a| a.len() == 2).and_then(|a| Some((a[0].as_f64()?, a[1].as_f64()?)));
         let Some((a, b)) = pair.filter(|(a, b)| a.is_finite() && b.is_finite() && *a >= 0.05 && a < b && *b <= 30.0) else {
@@ -328,7 +328,7 @@ fn highlights(s: &mut Session, p: &Value) -> Result<Value> {
             let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
             let (it, sound, pic, stamp, notes) = clip_readers(s, c, picture)?;
             let (from, to) = span(p, it.start, it.end())?;
-            (Target::Clip { seq, clip: c, item: it }, from, to, s.sequence_rate(), sound, pic, stamp, notes)
+            (Target::Clip { seq, clip: c, item: Box::new(it) }, from, to, s.sequence_rate(), sound, pic, stamp, notes)
         }
         (None, Some(i)) => {
             let (lo, hi, rate, sound, pic, stamp) = item_readers(s, i, picture)?;
