@@ -27,6 +27,37 @@ pub fn note_hw_encode_frame() {
     HW_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+thread_local! {
+    /// Why hardware encoders declined, on the thread that picks an export's encoder.
+    static DECLINED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Most reasons [`note_hw_encode_declined_because`] keeps per pick (each factory declines once).
+const MAX_DECLINED: usize = 8;
+
+/// A hardware encoder declined a request, and why (the software encoder takes it): counted like
+/// [`note_hw_encode_declined`], and the reason goes into the export's result
+/// ([`crate::EncoderReport::hardware_declined`]) so the user or agent can see it without the log.
+pub fn note_hw_encode_declined_because(why: &str) {
+    note_hw_encode_declined();
+    DECLINED.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.len() < MAX_DECLINED {
+            d.push(why.chars().take(300).collect());
+        }
+    });
+}
+
+/// Start collecting decline reasons for a new encoder pick on this thread.
+pub(crate) fn clear_declined_reasons() {
+    DECLINED.with(|d| d.borrow_mut().clear());
+}
+
+/// The reasons noted on this thread since [`clear_declined_reasons`].
+pub(crate) fn take_declined_reasons() -> Vec<String> {
+    DECLINED.with(|d| std::mem::take(&mut *d.borrow_mut()))
+}
+
 /// A hardware encoder was created.
 pub fn note_hw_encode_session() {
     HW_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
