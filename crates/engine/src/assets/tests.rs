@@ -831,10 +831,26 @@ fn urls_to_this_machine_or_a_private_network_are_refused() {
         "https://[fe80::1]/x",
         "https://[::]/x",
         "https://0/x",
+        // benchmarking, multicast and reserved ranges
+        "https://198.18.0.1/x",
+        "https://198.19.255.255/x",
+        "https://224.0.0.1/x",
+        "https://239.255.255.250/x",
+        "https://240.0.0.1/x",
+        "https://255.255.255.254/x",
+        "https://[::ffff:198.18.0.1]/x",
     ] {
         assert!(manifest::check_url_with(u, false).is_err(), "{u}");
     }
-    for u in ["https://134744072/x", "https://[2606:4700::1111]/x", "https://1e100.net/x", "https://0x.example.com/x"] {
+    for u in [
+        "https://134744072/x",
+        "https://[2606:4700::1111]/x",
+        "https://1e100.net/x",
+        "https://0x.example.com/x",
+        "https://198.17.255.255/x",
+        "https://198.20.0.1/x",
+        "https://223.255.255.255/x",
+    ] {
         assert!(manifest::check_url_with(u, false).is_ok(), "{u} is public");
     }
 }

@@ -448,6 +448,7 @@ impl Limits {
 /// The entry count and central-directory size a zip's end record claims, read before the zip
 /// reader parses the directory: an archive claiming more entries than `max` (or a zip64 count) is
 /// refused without reading the rest. `None` when no end record is found (the reader then fails).
+#[cfg(not(target_arch = "wasm32"))]
 fn eocd_claims(archive: &Path) -> Result<Option<(u64, u64)>, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
@@ -650,7 +651,8 @@ pub fn download(url: &str, sha256: &str, size: Option<u64>, max: u64, dest: &Pat
 }
 
 /// Where a redirect from `from` to `location` (absolute, scheme-relative, absolute-path or
-/// relative) leads.
+/// relative) leads. Only downloads follow redirects; tests check it in every build.
+#[cfg(any(test, all(feature = "pack-download", not(target_arch = "wasm32"))))]
 pub(crate) fn redirect_target(from: &str, location: &str) -> String {
     let l = location.trim();
     let lower = l.to_ascii_lowercase();

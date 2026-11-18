@@ -423,9 +423,21 @@ fn loose_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
     u32::try_from(v).ok().map(std::net::Ipv4Addr::from)
 }
 
+/// Loopback, private, link-local, unspecified and broadcast addresses, `0.0.0.0/8`, shared
+/// address space `100.64.0.0/10`, benchmarking `198.18.0.0/15`, multicast `224.0.0.0/4` and
+/// reserved `240.0.0.0/4`: none is a public web host.
 fn is_local_v4(a: std::net::Ipv4Addr) -> bool {
     let [x, y, ..] = a.octets();
-    a.is_loopback() || a.is_private() || a.is_link_local() || a.is_unspecified() || a.is_broadcast() || x == 0 || (x == 100 && (64..=127).contains(&y))
+    a.is_loopback()
+        || a.is_private()
+        || a.is_link_local()
+        || a.is_unspecified()
+        || a.is_broadcast()
+        || a.is_multicast()
+        || x == 0
+        || x >= 240
+        || (x == 100 && (64..=127).contains(&y))
+        || (x == 198 && (18..=19).contains(&y))
 }
 
 fn is_local_v6(a: std::net::Ipv6Addr) -> bool {
