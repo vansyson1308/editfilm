@@ -150,6 +150,7 @@ pub(crate) fn export(
         }
     }
     sink.write(enc.flush()?)?;
+    *progress.audio.lock().unwrap_or_else(|e| e.into_inner()) = Some(a.report());
     let n = sink.finish(settings)?;
     if settings.part_of_batch {
         progress.done.store(1, Ordering::Relaxed);

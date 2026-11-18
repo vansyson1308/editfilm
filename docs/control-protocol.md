@@ -119,8 +119,8 @@ Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialog
 `repair.noise.on`, `repair.noise.amount` (0–10), `repair.humHz`, `clarity.eqPreset`, `clarity.enhanceTone`,
 `creative.reverbPreset`, `ducking.against`, `ducking.reduceDb`, `ducking.fadeS`, `pan.value`,
 `volume.levelDb`, `mute`, section switches `<section>.enabled`), `essentialSound.applyPreset {preset, type?}`,
-`essentialSound.savePreset {name}`, `essentialSound.deletePreset {name}`, `essentialSound.autoMatch {target?}`,
-`essentialSound.generateDucking`; all take `clips` (default: the selected audio clips). UI ids:
+`essentialSound.savePreset {name}`, `essentialSound.deletePreset {name}`, `essentialSound.autoMatch {target?, targets?, maxGainDb?}`,
+`essentialSound.generateDucking {depthDb?, by?}`; all take `clips` (default: the selected audio clips). UI ids:
 `essentialSound.tab.<Browse|Edit>`, `essentialSound.type.<Dialogue|Music|SFX|Ambience>`,
 `essentialSound.clearType`, `essentialSound.preset[.save|.delete|.name|.ok]`,
 `essentialSound.section.<Name>[.toggle]`, a row per setting key (`essentialSound.repair.noise.on`,

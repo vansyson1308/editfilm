@@ -2942,6 +2942,10 @@
 	Luma Min / Max	Luminance min. / max.
 	Loudness Normalization	Normalisation de la sonie
 	True Peak Limit	Limite de crête réelle
+	True-Peak Limiter	Limiteur de crête réelle
+	Ceiling	Plafond
+	Find Speech Segments	Trouver les segments de parole
+	Check Mix Loudness	Vérifier la sonie du mixage
 	Audio only	Audio uniquement
 	Scaling	Mise à l'échelle
 	Scale To Fit	Mettre à l'échelle pour adapter
