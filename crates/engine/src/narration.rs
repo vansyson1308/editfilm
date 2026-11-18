@@ -407,7 +407,15 @@ fn finish(prog: &filmagic_export::Progress, res: &JobResult, r: std::result::Res
     let r = match r {
         Ok(status) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = status;
-            Ok(filmagic_export::Report { path: String::new(), frames: 0, seconds: secs, bytes: 0, render_fps: 0.0, extra_files: Vec::new() })
+            Ok(filmagic_export::Report {
+                path: String::new(),
+                frames: 0,
+                seconds: secs,
+                bytes: 0,
+                render_fps: 0.0,
+                extra_files: Vec::new(),
+                ..Default::default()
+            })
         }
         Err(e) => {
             *prog.status.lock().unwrap_or_else(PoisonError::into_inner) = e.clone();
