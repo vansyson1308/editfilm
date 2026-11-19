@@ -264,6 +264,8 @@ fn running_reply(d: &Pending, job: u64, cmd: &str) -> Value {
         "cancel": "jobs.cancel",
         "result": format!("the draft is built; `{cmd}` runs as job {job}. Run the resultCommand once the job has finished (over MCP, wait:true does this for you)"),
         "resultCommand": {"command": RUN, "params": {"recipe": d.recipe.id, "follow": d.key}},
+        // a failed or stopped follow-on falls back (a centre crop) or warns: see `failed`
+        "resultOnFailure": true,
     })
 }
 

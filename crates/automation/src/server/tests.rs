@@ -970,3 +970,55 @@ async fn a_recipe_follow_on_job_over_mcp_is_polled_and_folded() {
     assert_eq!(text.matches("Recipe: Vertical").count(), 1, "{h}");
     assert!(!text.contains("Auto Reframe"), "the reframe is folded into the recipe's step: {h}");
 }
+
+/// With the analysis cached, a comedy-meme's first job is its Vietnamese voice-over. VieNeu is not
+/// installed, so that job fails at once: the waiting call still builds the draft, with the
+/// voice-over skipped and how to install VieNeu (#22).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recipe_whose_first_job_is_a_failed_voice_over_still_answers_the_draft() {
+    let dir = std::env::temp_dir().join(format!("filmagic-mcp-recipe-voice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 16_000u32;
+    let mut x = vec![0.0f32; rate as usize * 10];
+    for c in [2.0, 2.8, 3.6, 4.4, 6.0] {
+        let a = (c * f64::from(rate)) as usize;
+        for (k, v) in x.iter_mut().skip(a).take(4000).enumerate() {
+            *v = 0.5 * ((k as f32) * 0.31).sin() * (-(k as f32) / 2000.0).exp();
+        }
+    }
+    let snd = dir.join("laugh.wav");
+    std::fs::write(&snd, wav16(&x, rate)).unwrap();
+    // a small movie of it (a meme needs a picture): plain frames with that sound, as ProRes
+    let mut s = Session::default();
+    s.execute("prefs.set", json!({"key": "media.indeterminateTimebase", "value": "25"})).unwrap();
+    for n in 0..250u32 {
+        image::RgbaImage::from_pixel(64, 36, image::Rgba([40, 40 + (n % 50) as u8, 40, 255])).save(dir.join(format!("f{n:05}.png"))).unwrap();
+    }
+    let pics =
+        s.execute("file.import", json!({"paths": [dir.join("f00000.png").to_string_lossy()], "imageSequence": true})).unwrap()["items"][0].as_u64().unwrap();
+    let aud = s.execute("file.import", json!({"paths": [snd.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    s.execute("file.newSequence", json!({"name": "src", "width": 64, "height": 36, "fps": 25, "video": 1, "audio": 1})).unwrap();
+    s.execute("timeline.place", json!({"item": pics, "track": "V1", "time": 0, "audio": false})).unwrap();
+    s.execute("timeline.place", json!({"item": aud, "track": "A1", "time": 0})).unwrap();
+    let path = dir.join("laugh.mov");
+    s.execute("file.exportMedia", json!({"path": path.to_string_lossy(), "format": "prores", "wait": true})).unwrap();
+    let mut s = Session::default();
+    let item = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let mut c = Client::start(s);
+    c.init().await;
+    let params = json!({"recipe": "comedy-meme", "item": item, "punchText": "BRUH", "voiceover": {"text": "Xin chao", "voice": "vieneu:Ngoc"}, "picture": false, "wait": true});
+    for (i, id) in [(0, 1), (1, 3)] {
+        let r = c.call(id, "command_run", json!({"id": "recipes.run", "params": params})).await;
+        assert_eq!(r["result"]["isError"], false, "run {i}: {r}");
+        let answer: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(answer["status"], "done", "run {i}: {answer}");
+        let tts = answer["steps"].as_array().unwrap().iter().find(|s| s["command"] == "tts.create").cloned().unwrap_or(Value::Null);
+        assert_eq!(tts["status"], "skipped", "run {i}: {answer}");
+        assert!(answer.to_string().contains("tts.setupVieneu"), "run {i}: the install hint: {answer}");
+        if i == 0 {
+            // the second run reads the cached analysis: its first job is the voice-over
+            c.call(2, "command_run", json!({"id": "edit.undo", "params": {}})).await;
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

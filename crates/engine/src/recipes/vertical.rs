@@ -103,9 +103,7 @@ fn refit(s: &mut Session, st: &mut Steps) {
         .as_array()
         .into_iter()
         .flatten()
-        // every graphic: one drawn for the old shape may not show in the new frame at all
-        // (no box, nothing outside), and is fitted all the same
-        .filter(|i| !i["outside"].is_null() || i["kind"] == "graphic")
+        .filter(|i| refits(i))
         .filter_map(|i| {
             let b = i["samples"].as_array().into_iter().flatten().find(|x| x["box"].is_array()).map(|x| &x["box"]);
             Some((i["clip"].as_u64()?, anchor_of(b, h)))
@@ -115,6 +113,18 @@ fn refit(s: &mut Session, st: &mut Steps) {
     for (clip, anchor) in out {
         super::fit(s, st, clip, anchor);
     }
+}
+
+/// The overlays the sports commands key to a tracked object (`sports.ballTrail` and its kin):
+/// they follow the object out of the frame on purpose, so the layout pass leaves them alone.
+const TRACKED: [&str; 4] = ["Ball Trail", "Track Point", "Ground Ring", "Path Line"];
+
+/// Whether the layout pass fits this layout.check item: every graphic (one drawn for the old shape
+/// may not show in the new frame at all: no box, nothing outside) and anything outside, except a
+/// tracked overlay.
+pub(super) fn refits(i: &Value) -> bool {
+    let tracked = i["kind"] == "graphic" && i["name"].as_str().is_some_and(|n| TRACKED.contains(&n));
+    !tracked && (!i["outside"].is_null() || i["kind"] == "graphic")
 }
 
 /// The safe-area anchor nearest a layout.check box (`[x0, y0, x1, y1]`) in a frame `h` high:
