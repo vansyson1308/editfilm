@@ -56,6 +56,7 @@ pub mod project_manager;
 pub mod project_panel;
 pub mod project_tools;
 pub mod proxies;
+pub mod recipes;
 pub mod relight;
 pub mod relink;
 pub mod remix;
@@ -531,6 +532,8 @@ pub struct Session {
     pub sports_reports: std::collections::BTreeMap<u64, Value>,
     /// `story.highlights`: running jobs, finished results and the cue cache.
     pub highlights: highlights::State,
+    /// `recipes.run`: drafts built from finished analysis jobs.
+    pub recipes: recipes::State,
     /// Cuts found inside source files, per media item ([`source_cuts`]).
     pub source_cuts: source_cuts::Cache,
     /// The highest job id handed out ([`Session::next_job_id`]).
@@ -677,6 +680,7 @@ impl Session {
             sports_jobs: Vec::new(),
             sports_reports: Default::default(),
             highlights: Default::default(),
+            recipes: Default::default(),
             source_cuts: Default::default(),
             job_ids: 0,
             presets: Default::default(),

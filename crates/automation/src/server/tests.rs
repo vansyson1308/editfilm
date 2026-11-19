@@ -914,3 +914,59 @@ async fn a_blocking_highlights_call_over_mcp_answers_the_segments() {
     assert_eq!(answer["segments"][0]["kind"], "rally", "{answer}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `recipes.run` with `wait: true` over headless MCP starts its analysis as a polled job, then
+/// builds the draft through its `resultCommand`, as one undo step (#22).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocking_recipe_over_mcp_answers_the_draft() {
+    let dir = std::env::temp_dir().join(format!("filmagic-mcp-recipe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 16_000u32;
+    let mut x = vec![0.0f32; rate as usize * 10];
+    for c in [2.0, 2.8, 3.6, 4.4] {
+        let a = (c * f64::from(rate)) as usize;
+        for (k, v) in x.iter_mut().skip(a).take(48).enumerate() {
+            *v = 0.6 * (-(k as f32) / 10.0).exp() * if k % 2 == 0 { 1.0 } else { -1.0 };
+        }
+    }
+    let path = dir.join("hits.wav");
+    std::fs::write(&path, wav16(&x, rate)).unwrap();
+    let mut s = Session::default();
+    let item = s.execute("file.import", json!({"paths": [path.to_string_lossy()]})).unwrap()["items"][0].as_u64().unwrap();
+    let mut c = Client::start(s);
+    c.init().await;
+    let params = json!({"recipe": "sports-highlight", "item": item, "targetSeconds": 10, "title": false, "wait": true});
+    // run as a polled job, never inside the session lock
+    assert!(crate::long_job::is_long("recipes.run", &params));
+    let r = c.call(1, "command_run", json!({"id": "recipes.run", "params": params})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let answer: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["status"], "done", "{answer}");
+    assert_eq!(answer["moments"].as_array().map(Vec::len), Some(1), "{answer}");
+    assert!(answer["steps"].as_array().unwrap().iter().any(|s| s["command"] == "timeline.place" && s["status"] == "done"), "{answer}");
+    let h = c.call(2, "command_run", json!({"id": "history.list", "params": {}})).await;
+    assert!(h.to_string().contains("Recipe: Sports Highlight"), "{h}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A recipe whose draft continues in a follow-on job (`clip.autoReframe`) is followed over
+/// headless MCP through its chained `resultCommand`, and the whole draft is one undo step (#22).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recipe_follow_on_job_over_mcp_is_polled_and_folded() {
+    let mut s = Session::default();
+    let item = s.execute("file.importDemoFootage", json!({"scene": "Aurora"})).unwrap()["items"][0].as_u64().unwrap();
+    let mut c = Client::start(s);
+    c.init().await;
+    let params = json!({"recipe": "vertical", "item": item, "wait": true});
+    assert!(crate::long_job::is_long("recipes.run", &params));
+    let r = c.call(1, "command_run", json!({"id": "recipes.run", "params": params})).await;
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let answer: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["status"], "done", "{answer}");
+    let steps = answer["steps"].as_array().unwrap();
+    assert!(steps.iter().any(|s| s["command"] == "clip.autoReframe" && s["status"] == "done"), "{answer}");
+    let h = c.call(2, "command_run", json!({"id": "history.list", "params": {}})).await;
+    let text = h.to_string();
+    assert_eq!(text.matches("Recipe: Vertical").count(), 1, "{h}");
+    assert!(!text.contains("Auto Reframe"), "the reframe is folded into the recipe's step: {h}");
+}
