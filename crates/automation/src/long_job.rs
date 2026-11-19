@@ -68,6 +68,13 @@ pub fn too_many_hops(id: &str, answer: &Value) -> String {
     )
 }
 
+/// Whether a start (or follow-on) reply says its resultCommand handles a failed job
+/// (`"resultOnFailure": true`, a recipe): then a waiting caller runs it even when the job failed,
+/// instead of answering the job's error. Every other command's failed job is its error.
+pub fn result_on_failure(start: &Value) -> bool {
+    start.get("resultOnFailure").and_then(Value::as_bool) == Some(true)
+}
+
 /// The job a resultCommand's answer started, when it says to wait for that one in turn
 /// (`"status": "running"` with a `job` and another `resultCommand`).
 pub fn next_job(answer: &Value) -> Option<u64> {
@@ -141,9 +148,9 @@ impl FilmagicMcp {
                 let offline = state.as_ref().and_then(|j| j.get("offlineMedia").cloned());
                 let status = state.as_ref().and_then(|j| j.get("status").cloned()).filter(|v| v.as_str().is_some_and(|s| !s.is_empty()));
                 let result = state.map(|j| j["result"].clone()).unwrap_or(Value::Null);
-                // a followed job (hops > 0) is the command's own follow-on: its resultCommand says
-                // what its failure means (a recipe skips a voice-over that could not be spoken)
-                if hops == 0
+                // unless the reply says its resultCommand reads a failure too (a recipe skips a
+                // voice-over that could not be spoken), a failed job is the call's error
+                if !result_on_failure(&start)
                     && let Some(e) = result.get("error").and_then(Value::as_str)
                 {
                     return CallToolResult::error(vec![Content::text(format!("{} failed: {e}", what(id)))]);

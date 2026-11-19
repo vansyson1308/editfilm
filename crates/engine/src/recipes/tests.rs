@@ -320,6 +320,12 @@ fn recipe(s: &mut Session, p: Value) -> Value {
     s.execute("recipes.run", p.clone()).unwrap_or_else(|e| panic!("{p}: {e}"))
 }
 
+/// The drift clip.speedRamp warns of is handled (the sound ends at Out): a note says so, not a warning.
+fn ramp_sound_is_handled(r: &Value) {
+    assert!(!r["warnings"].to_string().contains("drifts from the picture"), "{r}");
+    assert!(notes(r).contains("does not drift"), "{r}");
+}
+
 fn steps_of<'a>(r: &'a Value, cmd: &str) -> Vec<&'a Value> {
     r["steps"].as_array().unwrap().iter().filter(|x| x["command"] == cmd).collect()
 }
@@ -370,6 +376,7 @@ fn a_sports_highlight_reel_from_a_rally_recording() {
     assert_eq!(q.markers.len(), 2, "a marker on each moment");
     assert!(q.markers[0].name.starts_with("Highlight"));
     assert!(steps_of(&r, "clip.speedRamp")[0]["result"]["keyframes"].as_u64().is_some_and(|k| k >= 2), "slow motion: {r}");
+    ramp_sound_is_handled(&r);
     // no music pack installed: said so, with what to add
     assert!(notes(&r).contains("no music"), "{r}");
     // and the slowed tail, where the moment's own sound has ended, is said to have none
@@ -849,6 +856,17 @@ fn copies_in_a_new_shape_keep_text_inside_and_the_freeze_covers_the_frame() {
     let g = layout["items"].as_array().unwrap().iter().find(|i| i["kind"] == "graphic").unwrap_or_else(|| panic!("{layout}"));
     assert!(g["samples"].as_array().unwrap().iter().any(|x| x["box"].is_array()), "the text shows in the copy: {layout}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_layout_pass_leaves_tracked_overlays_alone() {
+    use super::vertical::refits;
+    // a ball trail leaves the crop with its ball: that is not a layout problem
+    assert!(!refits(&json!({"kind": "graphic", "name": "Ball Trail", "outside": "frame"})));
+    assert!(refits(&json!({"kind": "graphic", "name": "HIGHLIGHTS", "outside": "frame"})));
+    assert!(refits(&json!({"kind": "graphic", "name": "EDGE", "outside": null})));
+    assert!(refits(&json!({"kind": "caption", "outside": "titleSafe"})));
+    assert!(!refits(&json!({"kind": "caption", "outside": null})));
 }
 
 #[test]

@@ -84,8 +84,8 @@ impl BridgeClient {
                 }
             };
             let (result, _, _) = &polled;
-            // a followed job's failure is for its resultCommand to report (see long_job)
-            if hops == 0
+            // unless its resultCommand reads a failure too (see long_job::result_on_failure)
+            if !crate::long_job::result_on_failure(&start)
                 && let Some(e) = result.get("error").and_then(Value::as_str)
             {
                 return Err(AutomationError::App(format!("{} failed: {e}", crate::long_job::what(id))));
@@ -410,8 +410,10 @@ mod tests {
 
     /// A stand-in app for a recipe whose answer starts a second job (a voice-over after the
     /// analysis), which then fails: the failure is the recipe's to report, so its resultCommand
-    /// still runs. `hops` follow-on jobs are chained, each failing.
-    async fn hop_app(hops: u64) -> (String, Arc<Mutex<Vec<Value>>>) {
+    /// still runs. `hops` follow-on jobs are chained, each failing. With `first_fails` the first job
+    /// fails too (a voice-over that is the first job, the analysis being cached). With `flag` false
+    /// the replies do not say `resultOnFailure`, as any other command's.
+    async fn hop_app(hops: u64, first_fails: bool, flag: bool) -> (String, Arc<Mutex<Vec<Value>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let port = listener.local_addr().unwrap().port();
@@ -435,15 +437,15 @@ mod tests {
                         let at = p["follow"].as_u64().or_else(|| p["job"].as_u64().map(|_| 7)).unwrap_or(6);
                         if at < 7 + hops {
                             let next = at + 1;
-                            json!({"job": next, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"follow": next}}})
+                            json!({"job": next, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"follow": next}}, "resultOnFailure": flag})
                         } else if at == 6 {
-                            json!({"job": 7, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"job": 7}}})
+                            json!({"job": 7, "status": "running", "resultCommand": {"command": "recipes.run", "params": {"job": 7}}, "resultOnFailure": flag})
                         } else {
                             json!({"status": "done", "steps": [{"command": "tts.create", "status": "skipped"}]})
                         }
                     }
                     Some("jobs.list") => json!((7..8 + hops)
-                        .map(|id| json!({"id": id, "finished": true, "result": if id == 7 { json!({"frames": 1}) } else { json!({"error": "VieNeu is not installed"}) }}))
+                        .map(|id| json!({"id": id, "finished": true, "result": if id == 7 && !first_fails { json!({"frames": 1}) } else { json!({"error": "VieNeu is not installed"}) }}))
                         .collect::<Vec<_>>()),
                     _ => json!(null),
                 };
@@ -459,7 +461,7 @@ mod tests {
     /// past MAX_HOPS.
     #[tokio::test]
     async fn a_failed_follow_on_job_is_left_to_the_recipe() {
-        let (addr, seen) = hop_app(1).await;
+        let (addr, seen) = hop_app(1, false, true).await;
         let b = BridgeClient::new(addr).unwrap();
         let r = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap();
         assert_eq!(r["status"], "done", "{r}");
@@ -468,10 +470,29 @@ mod tests {
         assert_eq!(runs.len(), 3, "start, after the analysis, after the follow-on: {runs:?}");
         assert_eq!(runs[2], &json!({"follow": 8}));
         drop(seen);
-        let (addr, _) = hop_app(crate::long_job::MAX_HOPS as u64 + 2).await;
+        let (addr, _) = hop_app(crate::long_job::MAX_HOPS as u64 + 2, false, true).await;
         let b = BridgeClient::new(addr).unwrap();
         let e = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap_err().to_string();
         assert!(e.contains("still running after") && e.contains("job"), "{e}");
+    }
+
+    /// The analysis is cached, so a recipe's first job is its voice-over, and it fails: the
+    /// recipe's reply says its resultCommand reads that (`resultOnFailure`), so the draft is still
+    /// built, with the voice-over skipped. A first job that fails without the flag is the call's
+    /// error, as for every other command.
+    #[tokio::test]
+    async fn a_failed_first_job_is_left_to_a_recipe_that_says_so() {
+        let (addr, seen) = hop_app(0, true, true).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let r = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap();
+        assert_eq!(r["status"], "done", "{r}");
+        assert_eq!(r["steps"][0]["status"], "skipped", "{r}");
+        let runs = seen.lock().await.iter().filter(|q| q["params"]["command"] == "recipes.run").count();
+        assert_eq!(runs, 2, "the start, then the resultCommand of the failed job");
+        let (addr, _) = hop_app(0, true, false).await;
+        let b = BridgeClient::new(addr).unwrap();
+        let e = b.execute("recipes.run", json!({"recipe": "comedy-meme", "item": 1, "wait": true})).await.unwrap_err().to_string();
+        assert!(e.contains("VieNeu is not installed"), "{e}");
     }
 
     #[tokio::test]

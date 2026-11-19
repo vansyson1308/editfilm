@@ -272,15 +272,26 @@ fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, chosen: &[Seg
             && let Some(ai) = clip_of(s, *a)
         {
             let keep = rate.snap(pl.media_out - pl.media_in);
-            if ai.duration > keep + rate.frame_duration() {
+            let ends_at_out = if ai.duration > keep + rate.frame_duration() {
                 silent = Some((ai.duration - keep).seconds());
-                st.may(
-                    s,
-                    "end the moment's sound at its Out (it plays at its own speed under the slow motion)",
-                    "timeline.trim",
-                    json!({"clip": a.0, "edge": "out", "mode": "regular", "delta": (keep - ai.duration).0, "linked": false}),
-                );
+                let trimmed = st
+                    .may(
+                        s,
+                        "end the moment's sound at its Out (it plays at its own speed under the slow motion)",
+                        "timeline.trim",
+                        json!({"clip": a.0, "edge": "out", "mode": "regular", "delta": (keep - ai.duration).0, "linked": false}),
+                    )
+                    .is_some();
                 st.may(s, "fade it out", "sequence.applyAudioTransition", json!({"clip": a.0, "edge": "out", "frames": 8, "align": "end"}));
+                trimmed
+            } else {
+                true
+            };
+            if ends_at_out {
+                // clip.speedRamp's warning that the sound drifts is answered: say what was done instead
+                st.warnings.retain(|w| !(w.starts_with("clip.speedRamp:") && w.contains("drifts from the picture")));
+                st.notes
+                    .push("the slow motion's own sound plays at normal speed and ends at the moment's Out, faded, so it does not drift past the moment".into());
             }
         }
     }

@@ -431,6 +431,9 @@ pub(crate) fn running(recipe: &str, p: &Value, job: u64) -> Value {
         "cancel": "jobs.cancel",
         "result": format!("{RUN} with \"job\": {job} (and the same parameters) builds the draft once the analysis has finished; over MCP, wait:true does this for you"),
         "resultCommand": {"command": RUN, "params": params},
+        // the resultCommand says what a failed job means (a voice-over that could not be spoken is
+        // skipped): a waiting caller runs it even then
+        "resultOnFailure": true,
     })
 }
 
