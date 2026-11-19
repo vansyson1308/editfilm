@@ -248,6 +248,8 @@ fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, chosen: &[Seg
     let cuts: Vec<(Tick, Tick)> = chosen.iter().map(|g| (g.a, g.b)).collect();
     let placed = place_cuts(s, st, f, &cuts, "moment")?;
     let rate = s.sequence_rate();
+    // seconds of the slow motion left without the moment's sound (it ends at its Out)
+    let mut silent: Option<f64> = None;
     // slow motion on the best moment's last stretch: the reel grows, later moments move along
     let best = chosen.iter().zip(&placed).max_by(|x, y| x.0.score.total_cmp(&y.0.score).then(y.0.a.cmp(&x.0.a))).map(|(_, pl)| pl.clone());
     if o.slow
@@ -271,6 +273,7 @@ fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, chosen: &[Seg
         {
             let keep = rate.snap(pl.media_out - pl.media_in);
             if ai.duration > keep + rate.frame_duration() {
+                silent = Some((ai.duration - keep).seconds());
                 st.may(
                     s,
                     "end the moment's sound at its Out (it plays at its own speed under the slow motion)",
@@ -316,8 +319,14 @@ fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, chosen: &[Seg
     }
     let (a, b) = extent(s);
     d.looks = Some((crate::story::looks_across(s, a, b), a, b));
-    music_step(s, &mut d.steps, &o.music);
+    let scored = music_step(s, &mut d.steps, &o.music);
     let st = &mut d.steps;
+    if let Some(secs) = silent.filter(|_| !scored) {
+        // the ducked music, once placed, plays on at full level under it
+        st.notes.push(format!(
+            "the last {secs:.1} s of the slow motion has no sound (the moment's sound ends at its Out): add music (assets.place with \"duck\": true), or lengthen that audio clip (timeline.trim)"
+        ));
+    }
     if let Some(ball) = &o.ball {
         match ball_seed(s, &placed, ball) {
             Ok(f) => d.then(f(reel)),
@@ -392,9 +401,10 @@ fn finish(s: &mut Session, d: &mut Pending) -> Result<()> {
 }
 
 /// Music under the whole reel, ducked under speech, from an installed pack.
-pub(super) fn music_step(s: &mut Session, st: &mut Steps, music: &Pick) {
+/// Music under the reel from the packs; whether it was placed.
+pub(super) fn music_step(s: &mut Session, st: &mut Steps, music: &Pick) -> bool {
     let asset = match music {
-        Pick::Off => return,
+        Pick::Off => return false,
         Pick::Asset(a) => Some(a.clone()),
         Pick::Auto => find_asset(s, st, json!("music"), &["sport", "energetic", "upbeat"], "music in the installed packs"),
     };
@@ -404,7 +414,9 @@ pub(super) fn music_step(s: &mut Session, st: &mut Steps, music: &Pick) {
                 st.may(s, "music under the reel, ducked", "assets.place", json!({"asset": a, "time": 0, "untilEnd": true, "audioTrack": "new", "duck": true}))
             {
                 st.next("clip.volumeDownMany", json!({"clips": v["clips"]}), "the music a little quieter");
+                return true;
             }
+            false
         }
         None => {
             st.notes.push(
@@ -412,6 +424,7 @@ pub(super) fn music_step(s: &mut Session, st: &mut Steps, music: &Pick) {
                     .into(),
             );
             st.next("assets.search", json!({"kind": "music"}), "music in the installed packs, once one is installed");
+            false
         }
     }
 }

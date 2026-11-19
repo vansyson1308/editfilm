@@ -539,8 +539,14 @@ fn build(s: &mut Session, d: &mut Pending, f: &Footage, r: &Value, o: Opts) -> R
         ),
     );
     if let Some(asp) = o.aspect {
-        // the pieces are reframed (a freeze cannot be: it is made to fill the frame after)
-        let clips: Vec<u64> = placed.iter().filter_map(|pl| pl.video.map(|c| c.0)).collect();
+        // every clip of the edit's picture track is reframed, the pieces split off by the freeze
+        // included; the freeze itself cannot be (it is made to fill the frame after)
+        let clips: Vec<u64> = s
+            .project
+            .sequence(edit_seq)
+            .and_then(|q| q.video_tracks.first())
+            .map(|t| t.items.iter().filter(|i| i.frame_hold.is_none()).map(|i| i.id.0).take(256).collect())
+            .unwrap_or_default();
         d.then(Follow::Reframe { seq: edit_seq, aspect: asp, name: format!("{} {asp}", o.name), graphics: "follow", clips: Some(clips) });
     }
     d.ctx = json!({

@@ -94,8 +94,8 @@ fn finish(s: &mut Session, d: &mut Pending) -> Result<()> {
     Ok(())
 }
 
-/// Every graphic of the active sequence that leaves its safe area, made smaller and anchored
-/// where it was (top, middle or bottom) until it fits.
+/// Every graphic of the active sequence fitted to its frame: one that leaves its safe area is made
+/// smaller and anchored where it was (top, middle or bottom) until it fits.
 fn refit(s: &mut Session, st: &mut Steps) {
     let Ok(r) = s.execute("layout.check", json!({})) else { return };
     let h = s.active_sequence().map_or(1080.0, |q| f64::from(q.settings.height));
@@ -103,26 +103,30 @@ fn refit(s: &mut Session, st: &mut Steps) {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|i| !i["outside"].is_null())
+        // every graphic: one drawn for the old shape may not show in the new frame at all
+        // (no box, nothing outside), and is fitted all the same
+        .filter(|i| !i["outside"].is_null() || i["kind"] == "graphic")
         .filter_map(|i| {
-            let clip = i["clip"].as_u64()?;
-            let b = i["samples"].get(0).map(|x| &x["box"]);
-            let y = b.and_then(|b| Some(b.get(1)?.as_f64()? + b.get(3)?.as_f64()? / 2.0)).unwrap_or(h / 2.0);
-            Some((
-                clip,
-                if y < h / 3.0 {
-                    "top"
-                } else if y > h * 2.0 / 3.0 {
-                    "bottom"
-                } else {
-                    "center"
-                },
-            ))
+            let b = i["samples"].as_array().into_iter().flatten().find(|x| x["box"].is_array()).map(|x| &x["box"]);
+            Some((i["clip"].as_u64()?, anchor_of(b, h)))
         })
         .take(64)
         .collect();
     for (clip, anchor) in out {
         super::fit(s, st, clip, anchor);
+    }
+}
+
+/// The safe-area anchor nearest a layout.check box (`[x0, y0, x1, y1]`) in a frame `h` high:
+/// the third its middle is in.
+pub(super) fn anchor_of(b: Option<&Value>, h: f64) -> &'static str {
+    let y = b.and_then(|b| Some((b.get(1)?.as_f64()? + b.get(3)?.as_f64()?) / 2.0)).unwrap_or(h / 2.0);
+    if y < h / 3.0 {
+        "top"
+    } else if y > h * 2.0 / 3.0 {
+        "bottom"
+    } else {
+        "center"
     }
 }
 

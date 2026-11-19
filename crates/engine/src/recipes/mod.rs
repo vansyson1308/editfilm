@@ -637,17 +637,24 @@ pub(crate) fn find_asset(s: &mut Session, steps: &mut Steps, kind: Value, querie
 pub(crate) fn fit(s: &mut Session, st: &mut Steps, clip: u64, anchor: &str) -> bool {
     let frame = s.active_sequence().map_or((1920.0, 1080.0), |q| (f64::from(q.settings.width), f64::from(q.settings.height)));
     let mut scale: Option<f64> = None;
+    let Ok(first) = s.execute("graphics.list", json!({"clip": clip})) else { return false };
+    let canvas = first["canvas"].as_array().and_then(|c| Some((c.first()?.as_f64()?, c.get(1)?.as_f64()?))).unwrap_or(frame);
+    // a graphic drawn for another frame shape (a copy in another aspect) is always scaled to fit
+    // the frame whole first, even when nothing of it shows in the new frame; the safe-area anchor
+    // then no longer applies (it reads the canvas)
+    let other_shape = (canvas.0 - frame.0).abs() > 0.5 || (canvas.1 - frame.1).abs() > 0.5;
     for _ in 0..8 {
         let Ok(r) = s.execute("layout.check", json!({"clip": clip})) else { return false };
-        let outside = r["items"].as_array().into_iter().flatten().find(|i| i["clip"] == clip).map(|i| i["outside"].clone()).unwrap_or(Value::Null);
-        if outside.is_null() {
+        let item = r["items"].as_array().into_iter().flatten().find(|i| i["clip"] == clip).cloned().unwrap_or(Value::Null);
+        let drawn = item["samples"].as_array().into_iter().flatten().any(|x| x["box"].is_array());
+        if item["outside"].is_null() && !(other_shape && scale.is_none()) {
+            if !drawn {
+                st.warnings.push(format!("graphic clip {clip} draws nothing in this frame: move it into view (graphics.set position)"));
+                return false;
+            }
             return true;
         }
         let Ok(list) = s.execute("graphics.list", json!({"clip": clip})) else { return false };
-        let canvas = list["canvas"].as_array().and_then(|c| Some((c.first()?.as_f64()?, c.get(1)?.as_f64()?))).unwrap_or(frame);
-        // a graphic drawn for another frame shape (a copy in another aspect) is first scaled to fit
-        // the frame whole; the safe-area anchor then no longer applies (it reads the canvas)
-        let other_shape = (canvas.0 - frame.0).abs() > 0.5 || (canvas.1 - frame.1).abs() > 0.5;
         if other_shape {
             // shrink the whole graphic about the frame's centre (Motion scale), which keeps a
             // centred title centred

@@ -10,9 +10,9 @@
 //! job runs stops the folding (it would otherwise be undone with the draft), and the result says so.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use filmagic_project::ItemId;
+use filmagic_project::{ItemId, Project};
 use filmagic_time::Tick;
 use serde_json::{Map, Value, json};
 
@@ -45,15 +45,6 @@ impl Follow {
         match self {
             Follow::Trail { .. } => "sports.ballTrail",
             Follow::Reframe { .. } | Follow::Keys { .. } => "clip.autoReframe",
-        }
-    }
-
-    /// The undo label the job's result is applied under.
-    fn label(&self) -> &'static str {
-        match self {
-            Follow::Trail { .. } => "Ball Trail",
-            Follow::Reframe { .. } => "Auto Reframe Sequence",
-            Follow::Keys { .. } => "Auto Reframe",
         }
     }
 
@@ -92,7 +83,7 @@ pub(crate) struct Pending {
     /// The newest undo entry before the recipe (its snapshot), `None` for an empty history:
     /// every entry above it is the draft's, folded into the first one. `fold` false once someone
     /// else edited while a job ran.
-    base: Option<usize>,
+    base: Option<Weak<Project>>,
     fold: bool,
     /// Entries above `base` after the last fold (0 before the draft's first edit, else 1).
     owned: usize,
@@ -117,7 +108,7 @@ pub(crate) struct Pending {
 pub(crate) struct Built {
     params: Value,
     epoch: u64,
-    entry: Option<usize>,
+    entry: Option<Weak<Project>>,
     sequence: Option<u64>,
     pub value: Value,
 }
@@ -132,21 +123,43 @@ pub struct Drafts {
     next_key: u64,
     /// Narration jobs a comedy-meme started (a `voiceJob` must be one of them).
     pub voice_jobs: VecDeque<u64>,
+    /// The undo entry each recently applied sports job made, by job ([`Drafts::applied`]): how a
+    /// draft tells its own follow-on's entry from an edit of the same name made meanwhile.
+    applied: VecDeque<(u64, Weak<Project>)>,
 }
 
-fn ptr(s: &Session, i: usize) -> Option<usize> {
-    s.history.undo.get(i).map(|u| Arc::as_ptr(&u.1) as usize)
+impl Drafts {
+    /// `sports::poll` applied `job`'s result: its undo entry is the newest one.
+    pub(crate) fn applied(&mut self, job: u64, undo: &[(String, Arc<Project>, Option<String>)]) {
+        if let Some(u) = undo.last() {
+            self.applied.retain(|a| a.0 != job);
+            self.applied.push_back((job, Arc::downgrade(&u.1)));
+            while self.applied.len() > KEEP * 4 {
+                self.applied.pop_front();
+            }
+        }
+    }
 }
 
-fn top(s: &Session) -> Option<usize> {
+/// An undo entry, by its snapshot. A `Weak` keeps the snapshot's allocation (not the project), so
+/// no later snapshot can take its address.
+fn ptr(s: &Session, i: usize) -> Option<Weak<Project>> {
+    s.history.undo.get(i).map(|u| Arc::downgrade(&u.1))
+}
+
+fn same(a: &Arc<Project>, b: &Weak<Project>) -> bool {
+    std::ptr::eq(Arc::as_ptr(a), b.as_ptr())
+}
+
+fn top(s: &Session) -> Option<Weak<Project>> {
     s.history.undo.len().checked_sub(1).and_then(|i| ptr(s, i))
 }
 
 /// Index just above `base` in the undo history (0 for no base), if `base` is still there.
-fn above(s: &Session, base: Option<usize>) -> Option<usize> {
+fn above(s: &Session, base: Option<&Weak<Project>>) -> Option<usize> {
     match base {
         None => Some(0),
-        Some(b) => s.history.undo.iter().rposition(|u| Arc::as_ptr(&u.1) as usize == b).map(|i| i + 1),
+        Some(b) => s.history.undo.iter().rposition(|u| same(&u.1, b)).map(|i| i + 1),
     }
 }
 
@@ -195,7 +208,7 @@ impl Pending {
         if !self.fold {
             return;
         }
-        let Some(i) = above(s, self.base) else {
+        let Some(i) = above(s, self.base.as_ref()) else {
             // the base left the history (its limit): nothing safe to fold into
             self.fold = false;
             return;
@@ -215,13 +228,20 @@ impl Pending {
         if !self.fold {
             return;
         }
-        let Some(i) = above(s, self.base) else {
+        let Some(i) = above(s, self.base.as_ref()) else {
             self.fold = false;
             return;
         };
-        let new: Vec<&str> = s.history.undo.iter().skip(i + self.owned).map(|u| u.0.as_str()).collect();
-        let expected = self.running.as_ref().map(|r| r.1.label());
-        let ours = new.is_empty() || (new.len() == 1 && Some(new[0]) == expected);
+        // the running job's entry is known by the token sports::poll left for it, not by its label
+        // (an edit of the same name made meanwhile is someone else's)
+        let new: Vec<&Arc<Project>> = s.history.undo.iter().skip(i + self.owned).map(|u| &u.1).collect();
+        let job = self.running.as_ref().map(|r| r.0);
+        let made = job.and_then(|j| s.recipes.applied.iter().find(|a| a.0 == j)).map(|a| &a.1);
+        let ours = match (new.as_slice(), made) {
+            ([], _) => true,
+            ([one], Some(w)) => same(one, w),
+            _ => false,
+        };
         if !ours {
             self.fold = false;
             self.steps.warnings.push(
@@ -377,7 +397,7 @@ pub(crate) fn advance(s: &mut Session, mut d: Pending, wait: bool) -> Result<Val
         }
         (d.finish)(s, &mut d)?;
         d.fold(s);
-        let entry = above(s, d.base).filter(|_| d.fold).and_then(|i| ptr(s, i));
+        let entry = above(s, d.base.as_ref()).filter(|_| d.fold).and_then(|i| ptr(s, i));
         let Pending { recipe, label, key, epoch, steps, extra, cache, .. } = d;
         let value = done(recipe, s, steps, extra, label);
         let built = Built { params: Value::Null, epoch, entry, sequence: value["sequence"].as_u64(), value: value.clone() };
@@ -410,7 +430,7 @@ fn keep(s: &mut Session, d: Pending) {
 /// the history (not undone), its sequence still there.
 fn alive(s: &Session, b: &Built) -> bool {
     b.epoch == s.document_epoch
-        && b.entry.is_none_or(|e| s.history.undo.iter().any(|u| Arc::as_ptr(&u.1) as usize == e))
+        && b.entry.as_ref().is_none_or(|e| s.history.undo.iter().any(|u| same(&u.1, e)))
         && b.sequence.is_none_or(|q| s.project.sequence(ItemId(q)).is_some())
 }
 

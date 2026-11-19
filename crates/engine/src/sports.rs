@@ -259,7 +259,11 @@ pub fn poll(s: &mut Session) {
             _ => Err(EngineError::Other("internal: the job's result does not match its request".into())),
         };
         let report = match r {
-            Ok(v) => v,
+            Ok(v) => {
+                // a recipe following this job knows its undo entry by this, not by its label
+                s.recipes.applied(pj.job, &s.history.undo);
+                v
+            }
             Err(e) => {
                 s.error_toast("sports", e.to_string());
                 json!({"error": e.to_string()})

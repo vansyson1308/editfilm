@@ -372,6 +372,8 @@ fn a_sports_highlight_reel_from_a_rally_recording() {
     assert!(steps_of(&r, "clip.speedRamp")[0]["result"]["keyframes"].as_u64().is_some_and(|k| k >= 2), "slow motion: {r}");
     // no music pack installed: said so, with what to add
     assert!(notes(&r).contains("no music"), "{r}");
+    // and the slowed tail, where the moment's own sound has ended, is said to have none
+    assert!(notes(&r).contains("has no sound"), "{r}");
     assert!(r["nextSteps"].as_array().unwrap().iter().any(|x| x["command"] == "story.highlights"));
     assert!(r["pictureChange"].is_object(), "{r}");
     // one undo step takes the whole draft back
@@ -771,6 +773,28 @@ fn wide_rally(dir: &Path) -> PathBuf {
     movie_sized(dir, "wide", &x, &[(4.0, 9.0), (12.0, 17.0)], (320, 180))
 }
 
+/// The first frame of the active sequence a few frames after `t`.
+fn q_after(s: &Session, t: filmagic_time::Tick) -> i64 {
+    s.active_sequence().unwrap().settings.frame_rate.frame_at(t) + 3
+}
+
+/// The top and bottom eighths of frame `f` of the active sequence are not black.
+fn no_black_band(s: &mut Session, f: i64, at: &str) {
+    let (w, h, px) = crate::media_test_util::frame_rgba(s, f, 1.0);
+    let rows = |a: usize, b: usize| {
+        let mut sum = 0u64;
+        for y in a..b {
+            for x in 0..w {
+                let i = (y * w + x) * 4;
+                sum += u64::from(px[i]) + u64::from(px[i + 1]) + u64::from(px[i + 2]);
+            }
+        }
+        sum as f64 / (3 * w * (b - a)) as f64
+    };
+    let (top, bottom) = (rows(0, h / 8), rows(h - h / 8, h));
+    assert!(top > 10.0 && bottom > 10.0, "black band {at} (frame {f}): top {top} bottom {bottom}");
+}
+
 /// Every graphic and caption of the active sequence inside its safe area.
 fn all_fit(s: &mut Session) -> Value {
     let r = s.execute("layout.check", json!({})).unwrap();
@@ -796,18 +820,10 @@ fn copies_in_a_new_shape_keep_text_inside_and_the_freeze_covers_the_frame() {
     assert!(q.settings.height > q.settings.width);
     let hold = q.video_tracks.iter().flat_map(|t| t.items.iter()).find(|i| i.frame_hold.is_some()).unwrap().clone();
     let f = q.settings.frame_rate.frame_at(hold.start) + 2;
-    let (w, h, px) = crate::media_test_util::frame_rgba(&mut s, f, 1.0);
-    let rows = |a: usize, b: usize| {
-        let mut sum = 0u64;
-        for y in a..b {
-            for x in 0..w {
-                let i = (y * w + x) * 4;
-                sum += u64::from(px[i]) + u64::from(px[i + 1]) + u64::from(px[i + 2]);
-            }
-        }
-        sum as f64 / (3 * w * (b - a)) as f64
-    };
-    assert!(rows(0, h / 8) > 10.0 && rows(h - h / 8, h) > 10.0, "black band at the freeze: top {} bottom {}", rows(0, h / 8), rows(h - h / 8, h));
+    no_black_band(&mut s, f, "at the freeze");
+    // and the payoff after the freeze (split off the last piece by the freeze) is reframed too
+    let after = q_after(&s, hold.end());
+    no_black_band(&mut s, after, "after the freeze");
     // the edit itself keeps its text too
     super::follow::open_seq(&mut s, filmagic_project::ItemId(r["edit"].as_u64().unwrap()));
     all_fit(&mut s);
@@ -824,7 +840,26 @@ fn copies_in_a_new_shape_keep_text_inside_and_the_freeze_covers_the_frame() {
     let r = recipe(&mut s, json!({"recipe": "vertical", "wait": true}));
     assert_eq!(r["status"], "done", "{r}");
     all_fit(&mut s);
+    // a text near the right edge, wholly outside the 9:16 copy's frame, is brought into it
+    s.execute("file.newSequence", json!({"name": "Edge", "fromItem": item})).unwrap();
+    s.execute("graphics.newText", json!({"text": "EDGE", "size": 20, "time": 0, "seconds": 4, "track": "auto", "position": [290, 90]})).unwrap();
+    let r = recipe(&mut s, json!({"recipe": "vertical", "wait": true}));
+    assert_eq!(r["status"], "done", "{r}");
+    let layout = all_fit(&mut s);
+    let g = layout["items"].as_array().unwrap().iter().find(|i| i["kind"] == "graphic").unwrap_or_else(|| panic!("{layout}"));
+    assert!(g["samples"].as_array().unwrap().iter().any(|x| x["box"].is_array()), "the text shows in the copy: {layout}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_graphic_is_anchored_by_the_middle_of_its_box() {
+    use super::vertical::anchor_of;
+    // boxes are [x0, y0, x1, y1]: a caption across the middle of a 1920-high frame
+    assert_eq!(anchor_of(Some(&json!([100, 900, 980, 1000])), 1920.0), "center");
+    assert_eq!(anchor_of(Some(&json!([100, 100, 980, 200])), 1920.0), "top");
+    assert_eq!(anchor_of(Some(&json!([100, 1700, 980, 1800])), 1920.0), "bottom");
+    assert_eq!(anchor_of(None, 1920.0), "center");
+    assert_eq!(anchor_of(Some(&json!(["x"])), 1920.0), "center");
 }
 
 /// Over MCP (no `wait`) the heavy follow-ons run as jobs: each call answers at once, with the
@@ -960,5 +995,35 @@ fn a_failed_required_step_rolls_the_whole_draft_back() {
     assert!(e.contains("step") && e.contains("timeline.place") && e.contains("rolled back"), "{e}");
     assert_eq!(serde_json::to_value(&*s.project).unwrap(), before, "the project is exactly as before");
     assert_eq!((s.history.undo.len(), s.history.redo.len(), s.state.active_sequence), (undo, redo, active));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// An edit made while a follow-on job runs is never folded into the draft, even when it has the
+/// job's undo label: the job's own entry is known by a token, not by its name.
+#[test]
+fn an_edit_named_like_the_follow_on_is_not_folded_into_the_draft() {
+    let dir = tmp_dir("recipe-foreign");
+    let path = rally_movie(&dir);
+    let mut s = session(&dir.join("data"));
+    let item = import(&mut s, &path);
+    let r = recipe(&mut s, json!({"recipe": "vertical", "item": item}));
+    assert_eq!(r["status"], "running", "{r}");
+    let job = r["job"].as_u64().unwrap();
+    // the recipe's reframe is stopped, and the user reframes the clip themselves
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    for _ in 0..4000 {
+        if s.jobs.iter().find(|j| j.id == job).is_none_or(|j| j.progress.finished.load(std::sync::atomic::Ordering::Relaxed)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("clip.autoReframe", json!({"clips": [clip], "aspect": "9:16", "output": "keyframes", "wait": true})).unwrap();
+    let label = s.history.undo.last().unwrap().0.clone();
+    let r = recipe(&mut s, r["resultCommand"]["params"].clone());
+    assert_eq!(r["status"], "done", "{r}");
+    assert!(r["warnings"].to_string().contains("edited while"), "{r}");
+    let labels: Vec<&str> = s.history.undo.iter().map(|u| u.0.as_str()).collect();
+    assert!(labels.contains(&label.as_str()), "the user's own {label} stays its own undo step: {labels:?}");
     let _ = std::fs::remove_dir_all(dir);
 }
